@@ -32,19 +32,11 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // CRITICAL: Use getUser() to validate the cookie session
+  // This will refresh session if expired - required for Server Components
   const { data: { user } } = await supabase.auth.getUser()
 
-  const isDashboard = request.nextUrl.pathname.startsWith('/dashboard')
-  const isLogin = request.nextUrl.pathname === '/login'
-
-  // If logged in and on login page -> go to dashboard
-  if (user && isLogin) {
-    return NextResponse.redirect(new URL('/dashboard/projects', request.url))
-  }
-
-  // If NOT logged in and on dashboard -> go to login
-  if (!user && isDashboard) {
+  // Protect dashboard routes
+  if (!user && request.nextUrl.pathname.startsWith('/dashboard')) {
     return NextResponse.redirect(new URL('/login', request.url))
   }
 
@@ -52,5 +44,14 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/login'],
+  matcher: [
+    /*
+     * Match all request paths except for the ones starting with:
+     * - _next/static (static files)
+     * - _next/image (image optimization files)
+     * - favicon.ico (favicon file)
+     * - public (public assets)
+     */
+    '/((?!_next/static|_next/image|favicon.ico|public).*)',
+  ],
 }
