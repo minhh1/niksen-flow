@@ -1,3 +1,4 @@
+// lib/hooks/usePresetTable.ts
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
@@ -9,7 +10,10 @@ interface UsePresetTableOptions {
   defaultCols: string[];
   defaultExpandCols?: string[];
   defaultExpandRelations?: string[];
-  fetchItems: () => Promise<any[]>;
+  // Receives the resolved visible columns (table + expand combined) as
+  // soon as the active preset is known — the fetcher no longer needs to
+  // independently re-derive the preset itself.
+  fetchItems: (visibleColumns: string[]) => Promise<any[]>;
 }
 
 export function usePresetTable({
@@ -40,11 +44,17 @@ export function usePresetTable({
     if (!user) { setLoading(false); return; }
 
     const saved = await preferenceService.getByTable(user.id, tableSlug);
+
+    let resolvedTableCols = defaultCols;
+    let resolvedExpandCols = defaultExpandCols;
+
     if (saved?.length) {
       setPresets(saved);
       const active = saved.find(p => p.is_active) || saved[0];
-      setTableCols(active.columns || defaultCols);
-      setExpandCols(active.expansion_columns || defaultExpandCols);
+      resolvedTableCols = active.columns || defaultCols;
+      resolvedExpandCols = active.expansion_columns || defaultExpandCols;
+      setTableCols(resolvedTableCols);
+      setExpandCols(resolvedExpandCols);
       setColWidths(active.column_widths || {});
       setExpandRelations(active.expand_relations || defaultExpandRelations);
       setActivePreset(active.preset_name);
@@ -52,21 +62,16 @@ export function usePresetTable({
       setPresets([]);
     }
 
-    const data = await fetchItems();
+    const data = await fetchItems([...resolvedTableCols, ...resolvedExpandCols]);
     setItems(data);
     setLoading(false);
   }, [tableSlug, fetchItems]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { init(); }, [init]);
 
-  // Auto-save edits (column toggle, drag-reorder, resize, relation toggle)
-  // to the active preset. Each param defaults to the latest known state
-  // for that field, so callers only need to pass what actually changed.
   const autoSave = async (
-    t: string[] = tableCols,
-    e: string[] = expandCols,
-    w: Record<string, number> = colWidths,
-    r: string[] = expandRelations
+    t: string[] = tableCols, e: string[] = expandCols,
+    w: Record<string, number> = colWidths, r: string[] = expandRelations
   ) => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
@@ -86,6 +91,14 @@ export function usePresetTable({
 
     const { data: { user } } = await supabase.auth.getUser();
     if (user) await preferenceService.setActive(user.id, tableSlug, p.preset_name);
+
+    // Switching presets can introduce columns whose data was never
+    // fetched (e.g. a category this preset shows that the previous one
+    // didn't) — re-fetch with the newly selected preset's full column
+    // list so nothing renders blank.
+    const data = await fetchItems([...(p.columns || []), ...(p.expansion_columns || [])]);
+    setItems(data);
+
     setIsBusy(false);
   };
 
@@ -134,6 +147,9 @@ export function usePresetTable({
       setColWidths(fallback.column_widths || {});
       setExpandRelations(fallback.expand_relations || []);
       setActivePreset(fallback.preset_name);
+
+      const data = await fetchItems([...(fallback.columns || []), ...(fallback.expansion_columns || [])]);
+      setItems(data);
     }
 
     setIsBusy(false);
@@ -181,16 +197,12 @@ export function usePresetTable({
   };
 
   return {
-    // data
     items, setItems, loading, refresh: init,
-    // layout
     tableCols, setTableCols, expandCols, setExpandCols, colWidths, setColWidths,
     expandRelations, setExpandRelations,
     draggedIdx, setDraggedIdx, expandedRow, toggleExpandRow,
-    // presets
     presets, activePreset, isBusy,
     handleSelectPreset, handleSaveAsNew, handleDeletePreset,
-    // column config
     handleToggleColumn, handleReorder, startResizing, handleToggleRelation,
   };
 }

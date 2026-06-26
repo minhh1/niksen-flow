@@ -4,7 +4,7 @@ import React, { useState, Suspense, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { erpData } from "@/lib/erp-data";
-import { Search, Settings2, Building2 } from "lucide-react";
+import { Search, Settings2 } from "lucide-react";
 
 import EntityDashboard from "./EntityDashboard";
 import ColumnConfigDrawer from "@/components/ColumnConfigDrawer";
@@ -24,11 +24,14 @@ function EntityMaster() {
   const [search, setSearch] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
-  const [dbSections, setDbSections] = useState<any[]>([]);
+  const [dbSections] = useState(buildEntitySections());
+  const [companyId, setCompanyId] = useState<string | null>(null);
 
-  const fetchItems = useCallback(async () => {
-        setDbSections(buildEntitySections());
-        return erpData.getEntities();
+  const fetchItems = useCallback(async (_visibleColumns: string[]) => {
+    const { data: { user } } = await supabase.auth.getUser();
+    const { data: prof } = await supabase.from("profiles").select("company_id").eq("id", user?.id).single();
+    setCompanyId(prof?.company_id || null);
+    return erpData.getEntities();
   }, []);
 
   const t = usePresetTable({
@@ -39,8 +42,6 @@ function EntityMaster() {
 
   const resolveValue = (item: any, path: string) => item[path];
 
-  // Per requirement: entity name and entity type link to the entity dashboard.
-  // Everything else expands the row.
   const getLinkTarget = (colId: string, item: any): string | null => {
     if (colId === 'name' || colId === 'entity_type') {
       return `/dashboard/entities?id=${item.id}`;
@@ -86,9 +87,6 @@ function EntityMaster() {
         expandCols={t.expandCols}
         activePresetName={t.activePreset}
         onToggle={t.handleToggleColumn}
-        relations={ENTITY_RELATIONS}
-        expandRelations={t.expandRelations}
-        onToggleRelation={t.handleToggleRelation}
       />
 
       <main className="flex-1 overflow-auto p-8">
@@ -105,9 +103,14 @@ function EntityMaster() {
           toggleExpandRow={t.toggleExpandRow}
           resolveValue={resolveValue}
           getLinkTarget={getLinkTarget}
-          minWidth={1000}
           relations={ENTITY_RELATIONS}
           expandRelations={t.expandRelations}
+          minWidth={1000}
+          baseTable="entities"
+          parentType="entity"
+          companyId={companyId ?? undefined}
+          editableCols={['acn', 'abn', 'gst_registered', 'trust_deed_date', 'established_date']}
+          onRowMutated={t.refresh}
         />
       </main>
       <NewEntityModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onRefresh={t.refresh} />

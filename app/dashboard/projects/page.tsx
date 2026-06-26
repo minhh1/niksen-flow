@@ -2,6 +2,7 @@
 
 import React, { useState, Suspense, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabase";
 import { erpData } from "@/lib/erp-data";
 import { Search, Settings2 } from "lucide-react";
 
@@ -22,10 +23,13 @@ function ProjectMaster() {
   const [search, setSearch] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isConfigOpen, setIsConfigOpen] = useState(false);
-  const [dbSections, setDbSections] = useState<any[]>([]);
+  const [dbSections] = useState(buildProjectSections());
+  const [companyId, setCompanyId] = useState<string | null>(null);
 
-  const fetchItems = useCallback(async () => {
-    setDbSections(buildProjectSections());
+  const fetchItems = useCallback(async (_visibleColumns: string[]) => {
+    const { data: { user } } = await supabase.auth.getUser();
+    const { data: prof } = await supabase.from("profiles").select("company_id").eq("id", user?.id).single();
+    setCompanyId(prof?.company_id || null);
     return erpData.getProjects();
   }, []);
 
@@ -104,6 +108,11 @@ function ProjectMaster() {
           resolveValue={resolveValue}
           getLinkTarget={getLinkTarget}
           minWidth={1000}
+          baseTable="projects"
+          parentType="project"
+          companyId={companyId ?? undefined}
+          editableCols={['description', 'estimated_completion_date']}
+          onRowMutated={t.refresh}
         />
       </main>
       <NewProjectModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onRefresh={t.refresh} />

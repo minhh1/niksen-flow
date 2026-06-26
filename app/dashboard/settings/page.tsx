@@ -5,7 +5,8 @@ import { supabase } from "@/lib/supabase";
 import { 
   Database, Clock, Copy, ArrowLeft, Loader2, 
   CheckCircle2, RotateCcw, ChevronRight, AlertCircle, 
-  Trash2, Building2, MapPin, LayoutGrid, Upload, FileText, Wand2
+  Trash2, Building2, MapPin, LayoutGrid, Upload, FileText, Wand2,
+  ChevronDown, ChevronUp
 } from "lucide-react";
 import ImportModal from "@/components/ImportModal";
 import DataFormattingTool from "@/components/DataFormattingTool";
@@ -18,6 +19,7 @@ export default function SettingsPage() {
   const [activeDupType, setActiveDupType] = useState<DupType>("properties");
   const [items, setItems] = useState<any[]>([]);
   const [history, setHistory] = useState<any[]>([]);
+  const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [isImportOpen, setIsImportOpen] = useState(false);
@@ -30,9 +32,19 @@ export default function SettingsPage() {
 
   const fetchHistory = async () => {
     setLoading(true);
-    const { data } = await supabase.from("import_history").select(`*, profiles:user_id(full_name)`).order('created_at', { ascending: false });
+    const { data } = await supabase
+      .from("import_history")
+      .select(`*, profiles:user_id(full_name)`)
+      .is("deleted_at", null)
+      .order('created_at', { ascending: false });
     setHistory(data || []);
     setLoading(false);
+  };
+
+  const handleArchiveLog = async (id: string) => {
+    if (!window.confirm("Archive this import log? It will be hidden from this list but not permanently deleted.")) return;
+    const { error } = await supabase.from("import_history").update({ deleted_at: new Date().toISOString() }).eq("id", id);
+    if (!error) setHistory(prev => prev.filter(h => h.id !== id));
   };
 
   const fetchDuplicates = async () => {
@@ -50,6 +62,9 @@ export default function SettingsPage() {
     setSelected([]);
     fetchDuplicates();
   };
+
+  const formatTargetTable = (table: string) =>
+    (table || '').replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
 
   return (
     <div className="flex flex-col h-screen bg-[#F9FAFB] font-sans antialiased text-slate-600 overflow-hidden">
@@ -70,6 +85,11 @@ export default function SettingsPage() {
                 <ChevronRight size={18} className="text-slate-200 group-hover:text-indigo-600 transition-all"/>
               </button>
 
+              <button onClick={() => setView("history")} className="flex items-center justify-between p-6 bg-white border border-slate-200 rounded-[32px] hover:border-indigo-500 transition-all group shadow-sm">
+                <div className="flex items-center gap-5"><div className="p-3 bg-slate-50 rounded-2xl text-slate-400 group-hover:text-indigo-600 transition-colors"><Clock size={20} /></div><span className="text-[15px] font-medium text-slate-700">Import history</span></div>
+                <ChevronRight size={18} className="text-slate-200 group-hover:text-indigo-600 transition-all"/>
+              </button>
+
               <button onClick={() => setIsFormatterOpen(true)} className="flex items-center justify-between p-6 bg-white border border-slate-200 rounded-[32px] hover:border-indigo-500 transition-all group shadow-sm">
                 <div className="flex items-center gap-5"><div className="p-3 bg-slate-50 rounded-2xl text-slate-400 group-hover:text-indigo-600 transition-colors"><Wand2 size={20} /></div><span className="text-[15px] font-medium text-slate-700">Database case standardizer</span></div>
                 <ChevronRight size={18} className="text-slate-200 group-hover:text-indigo-600 transition-all"/>
@@ -79,6 +99,76 @@ export default function SettingsPage() {
                 <div className="flex items-center gap-5"><div className="p-3 bg-slate-50 rounded-2xl text-slate-400 group-hover:text-amber-600 transition-colors"><Copy size={20} /></div><span className="text-[15px] font-medium text-slate-700">Reconciliation tool (Duplicates)</span></div>
                 <ChevronRight size={18} className="text-slate-200 group-hover:text-indigo-600 transition-all"/>
               </button>
+            </div>
+          )}
+
+          {view === "history" && (
+            <div className="space-y-3 animate-in fade-in">
+              {loading ? (
+                <div className="flex justify-center p-20"><Loader2 className="animate-spin text-slate-300" /></div>
+              ) : history.length === 0 ? (
+                <p className="text-center text-slate-300 text-[11px] uppercase font-bold tracking-widest p-20">No import history yet</p>
+              ) : (
+                history.map(log => {
+                  const isExpanded = expandedLogId === log.id;
+                  const results = log.results_json || [];
+                  const successCount = log.success_count ?? results.filter((r: any) => r.status === 'new' || r.status === 'updated').length;
+                  const failedCount = log.error_count ?? results.filter((r: any) => r.status === 'failed').length;
+                  const totalRows = log.total_rows ?? results.length;
+
+                  return (
+                    <div key={log.id} className="bg-white border border-slate-200 rounded-[32px] overflow-hidden shadow-sm">
+                      <div className="flex items-center justify-between p-6">
+                        <button onClick={() => setExpandedLogId(isExpanded ? null : log.id)} className="flex items-center gap-5 flex-1 text-left">
+                          <div className="p-3 bg-slate-50 rounded-2xl text-slate-400">
+                            {isExpanded ? <ChevronUp size={18}/> : <ChevronDown size={18}/>}
+                          </div>
+                          <div>
+                            <p className="text-[15px] font-medium text-slate-900">{log.filename || 'Unnamed import'}</p>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
+                              {formatTargetTable(log.target_table)} · {new Date(log.created_at).toLocaleString('en-AU')} · by {log.profiles?.full_name || 'Unknown'} · {totalRows} rows · <span className="text-emerald-600">{successCount} ok</span> · <span className="text-red-500">{failedCount} failed</span>
+                            </p>
+                          </div>
+                        </button>
+                        <button onClick={() => handleArchiveLog(log.id)} className="p-3 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-all" title="Archive this log">
+                          <Trash2 size={16}/>
+                        </button>
+                      </div>
+
+                      {isExpanded && (
+                        <div className="border-t border-slate-100 p-6 bg-slate-50/50 overflow-x-auto">
+                          {results.length === 0 ? (
+                            <p className="text-[11px] text-slate-300 italic py-4">No row-level details stored for this import.</p>
+                          ) : (
+                            <table className="w-full text-left text-[11px] min-w-max">
+                              <thead className="text-slate-400">
+                                <tr>
+                                  <th className="p-2 font-bold uppercase text-[9px]">Status</th>
+                                  <th className="p-2 font-bold uppercase text-[9px]">Identifier</th>
+                                  <th className="p-2 font-bold uppercase text-[9px]">Message</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {results.map((r: any, i: number) => (
+                                  <tr key={i} className="border-t border-slate-100">
+                                    <td className="p-2">
+                                      <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${r.status === 'failed' ? 'bg-red-50 text-red-600' : r.status === 'updated' ? 'bg-blue-50 text-blue-600' : 'bg-emerald-50 text-emerald-600'}`}>
+                                        {r.status}
+                                      </span>
+                                    </td>
+                                    <td className="p-2 font-bold text-slate-700">{r.identifier}</td>
+                                    <td className="p-2 text-slate-500">{r.message || '—'}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
           )}
 

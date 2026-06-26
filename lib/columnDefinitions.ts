@@ -1,4 +1,6 @@
-import { MapPin, Building2, Folder } from "lucide-react";
+// lib/columnDefinitions.ts
+
+import { MapPin, Building2, Folder, KeyRound } from "lucide-react";
 
 const formatLabel = (s: string) =>
   s.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
@@ -10,8 +12,6 @@ const buildFields = (cols: string[], prefix = '') =>
   }));
 
 // ---- properties ----
-// Excluded: id, created_at, updated_at, deleted_at, import_id, company_id (metadata)
-// No sensitive fields on properties itself (credentials live in property_credentials, a separate table, not exposed here)
 export const PROPERTY_COLUMNS = [
   'street_address', 'suburb', 'state', 'postcode', 'country',
   'folio_identifier', 'holding_entity_id', 'purchase_price', 'purchase_date',
@@ -21,24 +21,54 @@ export const PROPERTY_COLUMNS = [
 ];
 
 // ---- entities ----
-// Excluded: id, company_id, created_at, type_id, deleted_at, import_id (metadata)
-// Excluded as sensitive: tfn, bank_name, bsb, account_number, nab_connect_id
 export const ENTITY_COLUMNS = [
   'name', 'entity_type', 'acn', 'abn', 'gst_registered',
   'trust_deed_date', 'established_date',
 ];
 
 // ---- projects ----
-// Excluded: id, created_at, created_by(*), updated_at, deleted_at, import_id, company_id (metadata)
-// (*created_by kept out since it's a profile reference, not a display field — see note below)
 export const PROJECT_COLUMNS = [
   'name', 'description', 'property_id', 'estimated_completion_date',
 ];
+
+const CREDENTIAL_CATEGORIES = ['Council', 'Electricity', 'Water', 'Land Tax', 'Gas'];
+
+const CREDENTIAL_FIELD_LABELS: { suffix: string; label: string }[] = [
+  { suffix: 'account_name', label: 'Account Name' },
+  { suffix: 'account_number', label: 'Account Number' },
+  { suffix: 'login_id', label: 'Login ID' },
+  { suffix: 'nominated_mobile', label: 'Nominated Mobile' },
+  { suffix: 'additional_email', label: 'Additional Email' },
+  { suffix: 'access_note', label: 'Online Access Note' },
+  { suffix: 'nominated_payor', label: 'Payor' },
+  { suffix: 'auto_forward_note', label: 'Auto Forward Note' },
+  { suffix: 'credential_provider', label: 'Provider (Credential)' },
+  { suffix: 'bill_provider', label: 'Provider (Bill)' },
+];
+
+// Note: encrypted_password is deliberately excluded from this list and
+// will never be added as a toggleable column — passwords are never
+// surfaced in the master table, per the earlier decision in this
+// project to keep credential secrets out of any list/export view.
+export function buildCredentialColumnSections() {
+  return CREDENTIAL_CATEGORIES.map(category => {
+    const key = category.toLowerCase().replace(/\s+/g, '_');
+    return {
+      title: `${category} Details`,
+      icon: KeyRound,
+      fields: CREDENTIAL_FIELD_LABELS.map(f => ({
+        id: `${key}_${f.suffix}`,
+        label: `${category} ${f.label}`,
+      })),
+    };
+  });
+}
 
 export function buildPropertySections() {
   return [
     { title: "Property", icon: MapPin, fields: buildFields(PROPERTY_COLUMNS) },
     { title: "Holding Entity", icon: Building2, fields: buildFields(ENTITY_COLUMNS, 'holding_entity') },
+    ...buildCredentialColumnSections(),
   ];
 }
 

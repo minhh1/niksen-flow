@@ -1,10 +1,10 @@
 "use client";
 
-import React, { useState, Suspense, useCallback } from "react";
+import React, { useState, useRef, Suspense, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { propertyService } from "@/lib/services/propertyService";
-import { Search, Settings2, MapPin, Building2 } from "lucide-react";
+import { Search, Settings2 } from "lucide-react";
 
 import PropertyDashboard from "./PropertyDashboard";
 import ColumnConfigDrawer from "@/components/ColumnConfigDrawer";
@@ -13,34 +13,41 @@ import MasterTable from "@/components/MasterTable";
 import UniversalSelectionModal from "@/components/UniversalSelectionModal";
 import { usePresetTable } from "@/lib/hooks/usePresetTable";
 import { buildPropertySections } from "@/lib/columnDefinitions";
-  import { PROPERTY_RELATIONS } from "@/lib/relationDefinitions";
+import { PROPERTY_RELATIONS } from "@/lib/relationDefinitions";
 
 export const dynamic = "force-dynamic";
 
-// Every column belonging to the properties table itself navigates to that
-// property's dashboard — per requirement: "anything in property table
-// link to properties." Holding-entity columns are the exception.
-const PROPERTY_OWN_COLS = new Set([
-  'street_address', 'suburb', 'state', 'postcode', 'country',
-  'folio_identifier', 'purchase_price', 'purchase_date', 'insurer_name',
-  'insurance_expiry', 'policy_number', 'project_manager', 'project_owner',
-  'last_coc_date', 'is_sold', 'sold_date', 'sold_price',
-]);
+const CATEGORY_KEYS = ['council', 'electricity', 'water', 'land_tax', 'gas'];
+
+function getCategoryKeyForColumn(colId: string): string | null {
+  for (const key of CATEGORY_KEYS) {
+    if (colId.startsWith(`${key}_`)) return key;
+  }
+  return null;
+}
 
 function PropertyMaster() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const id = searchParams.get("id");
   const [search, setSearch] = useState("");
-  const [dbSections, setDbSections] = useState<any[]>([]);
+  const [dbSections] = useState(buildPropertySections());
   const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [companyId, setCompanyId] = useState<string | null>(null);
 
+  const fetchedCategoriesRef = useRef<Set<string>>(new Set());
 
-    const fetchItems = useCallback(async () => {
-        setDbSections(buildPropertySections());
-        return propertyService.getAll();
-    }, []);
+  const fetchItems = useCallback(async (visibleColumns: string[]) => {
+    const { data: { user } } = await supabase.auth.getUser();
+    const { data: prof } = await supabase.from("profiles").select("company_id").eq("id", user?.id).single();
+    setCompanyId(prof?.company_id || null);
+
+    fetchedCategoriesRef.current = new Set(
+      visibleColumns.map(getCategoryKeyForColumn).filter((k): k is string => k !== null)
+    );
+    return propertyService.getAll(visibleColumns);
+  }, []);
 
   const t = usePresetTable({
     tableSlug: "properties",
@@ -48,14 +55,30 @@ function PropertyMaster() {
     fetchItems,
   });
 
+  const handleToggleColumnWithRefetch = async (fieldId: string, target: 'table' | 'expand' | 'none') => {
+    t.handleToggleColumn(fieldId, target);
+    if (target === 'none') return;
+    const categoryKey = getCategoryKeyForColumn(fieldId);
+    if (!categoryKey) return;
+    if (fetchedCategoriesRef.current.has(categoryKey)) return;
+    fetchedCategoriesRef.current.add(categoryKey);
+    const nextCols = [...new Set([...t.tableCols, ...t.expandCols, fieldId])];
+    const data = await propertyService.getAll(nextCols);
+    t.setItems(data);
+  };
+
   const resolveValue = (item: any, path: string) => {
     if (path === 'holding_entity_id') return item.holding_entity?.name || "";
-    const value = path.split('.').reduce((obj, key) => obj?.[key], item);
+    const value = path.split('.').reduce((obj: any, key: string) => obj?.[key], item);
     return typeof value === 'object' ? "" : value;
   };
 
+  // Only street_address navigates to the property's own dashboard now —
+  // every other field (suburb, price, dates, insurer details, etc.) is
+  // inline-editable on the master list instead. holding_entity columns
+  // still navigate to the linked entity's dashboard.
   const getLinkTarget = (colId: string, item: any): string | null => {
-    if (PROPERTY_OWN_COLS.has(colId)) return `/dashboard/properties?id=${item.id}`;
+    if (colId === 'street_address') return `/dashboard/properties?id=${item.id}`;
     if (colId === 'holding_entity_id' || colId.startsWith('holding_entity.')) {
       const entityId = item.holding_entity?.id || item.holding_entity_id;
       return entityId ? `/dashboard/entities?id=${entityId}` : null;
@@ -102,10 +125,7 @@ function PropertyMaster() {
         tableCols={t.tableCols}
         expandCols={t.expandCols}
         activePresetName={t.activePreset}
-        onToggle={t.handleToggleColumn}
-        relations={PROPERTY_RELATIONS}
-        expandRelations={t.expandRelations}
-        onToggleRelation={t.handleToggleRelation}
+        onToggle={handleToggleColumnWithRefetch}
       />
 
       <main className="flex-1 overflow-auto p-8">
@@ -122,9 +142,35 @@ function PropertyMaster() {
           toggleExpandRow={t.toggleExpandRow}
           resolveValue={resolveValue}
           getLinkTarget={getLinkTarget}
+          relations={PROPERTY_RELATIONS}
+          expandRelations={t.expandRelations}
           minWidth={1400}
-        relations={PROPERTY_RELATIONS}
-        expandRelations={t.expandRelations}
+          baseTable="properties"
+          parentType="property"
+          companyId={companyId ?? undefined}
+          editableCols={['street_address', 'suburb', 'state', 'postcode', 'folio_identifier', 'purchase_price', 'purchase_date', 'insurer_name', 'policy_number', 'insurance_expiry', 'project_manager', 'project_owner', 'holding_entity_id']}
+          relationalEditCols={{
+            holding_entity_id: {
+              table: 'entities',
+              title: 'Select holding entity',
+              editParentType: 'entity',
+              editFields: [
+                { id: 'name', label: 'Entity name' },
+                {
+                  id: 'entity_type',
+                  label: 'Entity type',
+                  type: 'select',
+                  fetchOptions: async () => {
+                    const { data } = await supabase.from('entity_types').select('label').order('label');
+                    return (data || []).map((t: any) => ({ value: t.label, label: t.label }));
+                  },
+                },
+                { id: 'abn', label: 'ABN' },
+                { id: 'acn', label: 'ACN' },
+              ],
+            },
+          }}
+          onRowMutated={t.refresh}
         />
       </main>
 
