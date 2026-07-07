@@ -160,7 +160,7 @@ export async function applyProjectLabel(
   supabase: any
 ): Promise<void> {
   const token = await refreshTokenIfNeeded(userId, supabase);
-  const labelName = `niksen/${projectName}`;
+  const labelName = `Shared Labels/${projectName}`;
 
   // List existing labels
   const labelsRes = await fetch(
