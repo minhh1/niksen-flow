@@ -1,18 +1,40 @@
-// app/api/gmail/messages/[id]/route.ts
+// app/api/gmail/messages/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
-import { fetchEmailBody } from "@/lib/gmail/client";
+import { fetchEmails } from "@/lib/gmail/client";
 
-export async function GET(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const { id } = await params;
+export async function GET(req: NextRequest) {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
 
-  const supabase = await createSupabaseServerClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (authError || !user) {
+      console.error('Auth error:', authError?.message);
+      return NextResponse.json({ error: 'Unauthorized', messages: [] }, { status: 401 });
+    }
 
-  const body = await fetchEmailBody(id, user.id, supabase);
-  return NextResponse.json({ body });
+    // Check token exists
+    const { data: tokenRow, error: tokenError } = await supabase
+      .from('user_gmail_tokens')
+      .select('email, token_expires_at')
+      .eq('user_id', user.id)
+      .single();
+
+    if (tokenError || !tokenRow) {
+      console.error('Token fetch error:', tokenError?.message);
+      return NextResponse.json({ error: 'Gmail not connected', messages: [] }, { status: 400 });
+    }
+
+    console.log('Fetching emails for:', tokenRow.email);
+
+    const query = req.nextUrl.searchParams.get('q') || 'in:inbox';
+    const messages = await fetchEmails(user.id, supabase, query);
+
+    console.log('Fetched', messages.length, 'messages');
+
+    return NextResponse.json({ messages });
+  } catch (err: any) {
+    console.error('Gmail messages error:', err?.message || err);
+    return NextResponse.json({ error: err?.message, messages: [] }, { status: 500 });
+  }
 }
