@@ -571,23 +571,54 @@ export default function Sidebar() {
   const fetchProfile = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
-    const { data } = await supabase
+
+    // Try with sidebar_visible_tables first, fall back if column doesn't exist
+    let prof: any = null;
+    let visibleTablesData: any = null;
+
+    const { data: profFull, error } = await supabase
       .from("profiles")
-      .select("*, company:active_company_id(id, name, status), sidebar_visible_tables")
+      .select("id, full_name, is_admin, active_company_id, sidebar_visible_tables")
       .eq("id", user.id)
       .single();
-    setProfile(data);
-    setIsAdmin(data?.is_admin || false);
 
-    if (data?.sidebar_visible_tables) {
-      setVisibleTables(data.sidebar_visible_tables);
+    if (error) {
+      // Column might not exist yet — fetch without it
+      const { data: profBasic } = await supabase
+        .from("profiles")
+        .select("id, full_name, is_admin, active_company_id")
+        .eq("id", user.id)
+        .single();
+      prof = profBasic;
     } else {
-      setVisibleTables([
-        ...ALL_SYSTEM_TABLES.map(t => t.slug),
-        ...customTables.map(t => t.slug),
-      ]);
+      prof = profFull;
+      visibleTablesData = profFull?.sidebar_visible_tables;
     }
 
+    if (!prof) return;
+
+    // Get company
+    let company = null;
+    if (prof.active_company_id) {
+      const { data: comp } = await supabase
+        .from("companies")
+        .select("id, name, status")
+        .eq("id", prof.active_company_id)
+        .single();
+      company = comp;
+    }
+
+    setProfile({ ...prof, company });
+    setIsAdmin(prof?.is_admin || false);
+
+    // Set visible tables
+    if (visibleTablesData) {
+      setVisibleTables(visibleTablesData);
+    } else {
+      setVisibleTables(ALL_SYSTEM_TABLES.map(t => t.slug));
+    }
+
+    // Get memberships
     const { data: ms } = await supabase
       .from("company_memberships")
       .select("company_id, role, company:company_id(id, name, status)")

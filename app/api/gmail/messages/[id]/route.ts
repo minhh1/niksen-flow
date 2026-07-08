@@ -19,12 +19,12 @@ export async function GET(
       .eq('user_id', user.id)
       .single();
 
-    if (!tokenRow) return NextResponse.json({ error: 'Gmail not connected' }, { status: 400 });
+    if (!tokenRow) return NextResponse.json({ error: 'Not connected' }, { status: 400 });
 
-    // Refresh token if needed
+    // Refresh if needed
     let accessToken = tokenRow.access_token;
-    const expiresAt = new Date(tokenRow.token_expires_at).getTime();
-    if (Date.now() > expiresAt - 5 * 60 * 1000) {
+    const isExpired = Date.now() > new Date(tokenRow.token_expires_at).getTime() - 5 * 60 * 1000;
+    if (isExpired) {
       const refreshRes = await fetch('https://oauth2.googleapis.com/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -45,53 +45,88 @@ export async function GET(
       }
     }
 
-    const res = await fetch(
+    // Get parent label for this company
+    const { data: prof } = await supabase
+      .from('profiles').select('active_company_id').eq('id', user.id).single();
+    let parentLabel = 'Shared Emails';
+    if (prof?.active_company_id) {
+      const { data: company } = await supabase
+        .from('companies').select('gmail_parent_label').eq('id', prof.active_company_id).single();
+      if (company?.gmail_parent_label) parentLabel = company.gmail_parent_label;
+    }
+
+    // Get all labels to resolve IDs → names
+    const allLabelsRes = await fetch(
+      'https://gmail.googleapis.com/gmail/v1/users/me/labels',
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    const allLabelsData = await allLabelsRes.json();
+    const labelIdToName = new Map<string, string>();
+    (allLabelsData.labels || []).forEach((l: any) => labelIdToName.set(l.id, l.name));
+
+    // Get full message
+    const msgRes = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
     );
-
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error('Gmail fetch body error:', res.status, errText);
-      return NextResponse.json({ error: `Gmail API error: ${res.status}`, body: null });
+    if (!msgRes.ok) {
+      const err = await msgRes.json();
+      return NextResponse.json({ error: err.error?.message }, { status: msgRes.status });
     }
+    const msgData = await msgRes.json();
 
-    const msg = await res.json();
+    // Decode body
+    const body = extractBody(msgData.payload);
 
-    // Extract body — inline here to avoid Buffer issues
-    const extractBody = (payload: any): string => {
-      if (!payload) return '';
-      if (payload.body?.data) {
-        try {
-          const base64 = payload.body.data.replace(/-/g, '+').replace(/_/g, '/');
-          return atob(base64);
-        } catch { return ''; }
-      }
-      if (payload.parts?.length) {
-        const html = payload.parts.find((p: any) => p.mimeType === 'text/html');
-        const text = payload.parts.find((p: any) => p.mimeType === 'text/plain');
-        const part = html || text;
-        if (part?.body?.data) {
-          try {
-            const base64 = part.body.data.replace(/-/g, '+').replace(/_/g, '/');
-            return atob(base64);
-          } catch { return ''; }
-        }
-        for (const p of payload.parts) {
-          const body = extractBody(p);
-          if (body) return body;
-        }
-      }
-      return '';
-    };
+    const labelIds: string[] = msgData.labelIds || [];
+    const SYSTEM_PREFIXES = ['INBOX','UNREAD','IMPORTANT','SENT','DRAFT','SPAM','TRASH','STARRED','CATEGORY_'];
 
-    const body = extractBody(msg.payload);
-    const labelIds = msg.labelIds || [];
+    const niksenLabels = labelIds
+      .map(id => labelIdToName.get(id))
+      .filter((name): name is string =>
+        !!name &&
+        !SYSTEM_PREFIXES.some(p => name.startsWith(p)) &&
+        name.startsWith(`${parentLabel}/`)
+      );
 
-    return NextResponse.json({ body, labelIds });
+    return NextResponse.json({
+      id: msgData.id,
+      body,
+      labelIds,
+      niksenLabels,   // ← resolved names for display
+    });
 
   } catch (err: any) {
-    console.error('getMessage error:', err);
-    return NextResponse.json({ error: err.message, body: null });
+    console.error('[message/id] Error:', err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
+}
+
+function extractBody(payload: any): string {
+  if (!payload) return '';
+
+  // Direct body
+  if (payload.body?.data) {
+    return Buffer.from(payload.body.data, 'base64').toString('utf-8');
+  }
+
+  // Multipart — prefer text/html then text/plain
+  if (payload.parts) {
+    const htmlPart = payload.parts.find((p: any) => p.mimeType === 'text/html');
+    if (htmlPart?.body?.data) {
+      return Buffer.from(htmlPart.body.data, 'base64').toString('utf-8');
+    }
+    const textPart = payload.parts.find((p: any) => p.mimeType === 'text/plain');
+    if (textPart?.body?.data) {
+      const text = Buffer.from(textPart.body.data, 'base64').toString('utf-8');
+      return `<pre style="font-family: sans-serif; white-space: pre-wrap;">${text}</pre>`;
+    }
+    // Recurse into nested parts
+    for (const part of payload.parts) {
+      const nested = extractBody(part);
+      if (nested) return nested;
+    }
+  }
+
+  return '';
 }

@@ -23,7 +23,7 @@ import { buildCredentialColumnSections } from "@/lib/columnDefinitions";
 import { PROPERTY_RELATIONS, ENTITY_RELATIONS } from "@/lib/relationDefinitions";
 import SpreadsheetEditor from "@/components/SpreadsheetEditor";
 import type { ActiveFilter } from "@/lib/types/filters";
-import FilterPanel from "@/components/FilterPanel";
+
 
 interface GenericMasterTableProps {
   tableName: "properties" | "entities" | "projects";
@@ -155,6 +155,8 @@ function GenericMasterTableInner({
     };
     loadCustomFields();
   }, [tableName]);
+
+  
 
   const { relations: projectRelations } = useTableRelations(
     tableName === 'projects' ? 'projects' : '__skip__'

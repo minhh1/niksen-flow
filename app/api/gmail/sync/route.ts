@@ -1,46 +1,13 @@
 // app/api/gmail/sync/route.ts
-// Fetches all niksen/* labels from Gmail and syncs assignments to project_emails
+// Detects labels applied in Gmail and syncs them to other users + the app
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
-import { APP_URL } from "@/lib/config";
+import { getUserAccessToken, getOrCreateGmailLabel, applyLabelToMessage } from "@/lib/gmail/labelManager";
 
 export async function POST(req: NextRequest) {
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-
-  const { data: tokenRow } = await supabase
-    .from('user_gmail_tokens')
-    .select('*')
-    .eq('user_id', user.id)
-    .single();
-
-  if (!tokenRow) return NextResponse.json({ synced: 0 });
-
-  let accessToken = tokenRow.access_token;
-
-  // Refresh token if needed
-  const expiresAt = new Date(tokenRow.token_expires_at).getTime();
-  if (Date.now() > expiresAt - 5 * 60 * 1000) {
-    const refreshRes = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: process.env.GOOGLE_CLIENT_ID!,
-        client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-        refresh_token: tokenRow.refresh_token,
-        grant_type: 'refresh_token',
-      }),
-    });
-    const refreshed = await refreshRes.json();
-    if (refreshed.access_token) {
-      accessToken = refreshed.access_token;
-      await supabase.from('user_gmail_tokens').update({
-        access_token: refreshed.access_token,
-        token_expires_at: new Date(Date.now() + refreshed.expires_in * 1000).toISOString(),
-      }).eq('user_id', user.id);
-    }
-  }
 
   const { data: prof } = await supabase
     .from('profiles')
@@ -48,21 +15,58 @@ export async function POST(req: NextRequest) {
     .eq('id', user.id)
     .single();
 
-  // Get all labels that look like company labels (contain /)
+  const companyId = prof?.active_company_id;
+  if (!companyId) return NextResponse.json({ synced: 0 });
+
+  const accessToken = await getUserAccessToken(user.id);
+  if (!accessToken) return NextResponse.json({ synced: 0 });
+
+  const { data: company } = await supabase
+    .from('companies')
+    .select('gmail_parent_label')
+    .eq('id', companyId)
+    .single();
+
+  const parentLabel = company?.gmail_parent_label || 'Shared Emails';
+
+  // Get all Gmail labels that start with the parent label
   const labelsRes = await fetch(
     'https://gmail.googleapis.com/gmail/v1/users/me/labels',
     { headers: { Authorization: `Bearer ${accessToken}` } }
   );
   const labelsData = await labelsRes.json();
-  const projectLabels = (labelsData.labels || []).filter((l: any) =>
-    l.name.includes('/') &&
-    !['INBOX', 'SENT', 'DRAFT', 'SPAM', 'TRASH'].includes(l.name)
+  const projectLabels = (labelsData.labels || []).filter(
+    (l: any) => l.name.startsWith(`${parentLabel}/`)
   );
 
   let synced = 0;
-  const syncLog: string[] = [];
+  const logEntries: any[] = [];
 
   for (const label of projectLabels) {
+    const sublabel = label.name.split('/').slice(-1)[0];
+
+    // Find matching project in DB
+    const { data: pgl } = await supabase
+      .from('project_gmail_labels')
+      .select('project_id')
+      .eq('company_id', companyId)
+      .eq('label_sub', sublabel)
+      .single();
+
+    // Also try matching by name directly
+    let projectId = pgl?.project_id;
+    if (!projectId) {
+      const { data: project } = await supabase
+        .from('projects')
+        .select('id')
+        .eq('company_id', companyId)
+        .or(`name.ilike.%${sublabel}%`)
+        .is('deleted_at', null)
+        .limit(1)
+        .single();
+      projectId = project?.id;
+    }
+
     // Get messages with this label
     const msgsRes = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages?labelIds=${label.id}&maxResults=50`,
@@ -71,21 +75,18 @@ export async function POST(req: NextRequest) {
     const msgsData = await msgsRes.json();
     if (!msgsData.messages?.length) continue;
 
-    // Extract project name from label (everything after last /)
-    const labelParts = label.name.split('/');
-    const projectIdentifier = labelParts[labelParts.length - 1].trim();
-
-    // Try to find matching project by name, street_address, or matter number
-    const { data: matchingProjects } = await supabase
-      .from('projects')
-      .select('id, name')
-      .or(`name.ilike.%${projectIdentifier}%`)
-      .is('deleted_at', null)
-      .limit(1);
-
-    const projectId = matchingProjects?.[0]?.id || null;
-
     for (const msg of msgsData.messages) {
+      // Check if this is new (not already in our sync table)
+      const { data: existing } = await supabase
+        .from('user_gmail_label_sync')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('gmail_message_id', msg.id)
+        .eq('project_id', projectId || '')
+        .single();
+
+      if (existing) continue;
+
       // Get message metadata
       const msgRes = await fetch(
         `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
@@ -96,53 +97,92 @@ export async function POST(req: NextRequest) {
       const get = (name: string) =>
         headers.find((h: any) => h.name.toLowerCase() === name.toLowerCase())?.value || '';
 
+      // Save to project_emails
       const fromRaw = get('From');
       const fromMatch = fromRaw.match(/^(.+?)\s*<(.+?)>$/);
 
-      // Check if already in project_emails
-      const { data: existing } = await supabase
-        .from('project_emails')
-        .select('id, project_id')
-        .eq('gmail_message_id', msg.id)
-        .eq('user_id', user.id)
-        .single();
+      await supabase.from('project_emails').upsert({
+        user_id: user.id,
+        company_id: companyId,
+        project_id: projectId || null,
+        gmail_message_id: msg.id,
+        gmail_thread_id: msgData.threadId,
+        subject: get('Subject') || '(no subject)',
+        from_address: fromMatch ? fromMatch[2].trim() : fromRaw,
+        from_name: fromMatch ? fromMatch[1].replace(/^"|"$/g, '').trim() : fromRaw,
+        date: get('Date'),
+        snippet: msgData.snippet || '',
+        gmail_label_applied: true,
+      }, { onConflict: 'user_id,gmail_message_id' });
 
-      if (!existing) {
-        // New assignment — insert
-        await supabase.from('project_emails').insert({
-          user_id: user.id,
-          company_id: prof?.active_company_id,
-          project_id: projectId,
-          gmail_message_id: msg.id,
-          gmail_thread_id: msgData.threadId,
-          subject: get('Subject') || '(no subject)',
-          from_address: fromMatch ? fromMatch[2].trim() : fromRaw,
-          from_name: fromMatch ? fromMatch[1].trim().replace(/^"|"$/g, '') : fromRaw,
-          date: get('Date'),
-          snippet: msgData.snippet || '',
-          gmail_label_applied: true,
-        });
-        syncLog.push(`synced:${msg.id}:${label.name}`);
-        synced++;
-      } else if (existing.project_id !== projectId && projectId) {
-        // Label changed — update project assignment
-        await supabase.from('project_emails')
-          .update({ project_id: projectId })
-          .eq('id', existing.id);
-        syncLog.push(`updated:${msg.id}:${label.name}`);
-        synced++;
+      // Record sync
+      await supabase.from('user_gmail_label_sync').upsert({
+        company_id: companyId,
+        user_id: user.id,
+        project_id: projectId || '',
+        gmail_message_id: msg.id,
+        gmail_label_id: label.id,
+        label_applied_at: new Date().toISOString(),
+        synced_at: new Date().toISOString(),
+      }, { onConflict: 'user_id,project_id,gmail_message_id' });
+
+      logEntries.push({
+        company_id: companyId,
+        triggered_by: user.id,
+        action: 'gmail_label_detected',
+        project_id: projectId || null,
+        gmail_message_id: msg.id,
+        gmail_label_name: label.name,
+        target_user_id: user.id,
+        details: { sublabel, source: 'gmail_sync', subject: get('Subject') },
+      });
+
+      synced++;
+
+      // Now sync to all other company members
+      if (projectId) {
+        const { data: otherMembers } = await supabase
+          .from('company_memberships')
+          .select('user_id')
+          .eq('company_id', companyId)
+          .neq('user_id', user.id);
+
+        for (const member of (otherMembers || [])) {
+          const memberToken = await getUserAccessToken(member.user_id);
+          if (!memberToken) continue;
+
+          const memberLabelId = await getOrCreateGmailLabel(memberToken, label.name);
+          if (!memberLabelId) continue;
+
+          await applyLabelToMessage(memberToken, msg.id, memberLabelId);
+
+          await supabase.from('user_gmail_label_sync').upsert({
+            company_id: companyId,
+            user_id: member.user_id,
+            project_id: projectId,
+            gmail_message_id: msg.id,
+            gmail_label_id: memberLabelId,
+            label_applied_at: new Date().toISOString(),
+            synced_at: new Date().toISOString(),
+          }, { onConflict: 'user_id,project_id,gmail_message_id' });
+
+          logEntries.push({
+            company_id: companyId,
+            triggered_by: user.id,
+            action: 'sync_to_user',
+            project_id: projectId,
+            gmail_message_id: msg.id,
+            gmail_label_name: label.name,
+            target_user_id: member.user_id,
+            details: { sublabel, source: 'cross_user_sync' },
+          });
+        }
       }
     }
   }
 
-  // Log sync activity
-  if (synced > 0) {
-    await supabase.from('email_activity_log').insert({
-      user_id: user.id,
-      company_id: prof?.active_company_id,
-      action: 'gmail_sync',
-      details: { synced, labels: projectLabels.map((l: any) => l.name), log: syncLog },
-    });
+  if (logEntries.length > 0) {
+    await supabase.from('gmail_sync_log').insert(logEntries);
   }
 
   return NextResponse.json({ synced, labels: projectLabels.length });
