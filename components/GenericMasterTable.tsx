@@ -143,6 +143,7 @@ function GenericMasterTableInner({
   const relatedFields = useRelatedFields(tableName);
   const fetchedCategoriesRef = useRef<Set<string>>(new Set());
   const [customFieldCols, setCustomFieldCols] = useState<any[]>([]);
+  const filtersReadyToSave = useRef(false);
 
   useEffect(() => {
     const loadCustomFields = async () => {
@@ -244,6 +245,8 @@ function GenericMasterTableInner({
   useEffect(() => {
     const loadFilters = async () => {
       if (!t.activePreset) return;
+      filtersReadyToSave.current = false;  // ← block saves during load
+
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
       const { data } = await supabase
@@ -254,13 +257,18 @@ function GenericMasterTableInner({
         .eq('preset_name', t.activePreset)
         .eq('is_active', true)
         .single();
+
       setFilters(data?.filters || []);
+      // Only allow saves after state has settled
+      setTimeout(() => { filtersReadyToSave.current = true; }, 100);
     };
     loadFilters();
   }, [t.activePreset, tableName]);
 
   useEffect(() => {
     if (!t.activePreset) return;
+    if (!filtersReadyToSave.current) return;  // ← skip saves during load
+
     const saveFilters = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
@@ -552,18 +560,10 @@ function GenericMasterTableInner({
   }, [t.items, search, t.tableCols, resolveValue, tableName, sort, filters]);
 
   // ── Preset handlers with filter support ────────────────────────────
-
-  const prevPresetRef = useRef<string | undefined>(undefined);
-  
-  useEffect(() => {
-    if (prevPresetRef.current !== undefined && prevPresetRef.current !== t.activePreset) {
-      setFilters([]);
-    }
-    prevPresetRef.current = t.activePreset;
-  }, [t.activePreset]);
-
   const handleSaveAsNewWithFilters = async (name: string) => {
     await (t.handleSaveAsNew as any)(name);
+    // Small delay to let the preset save complete
+    await new Promise(r => setTimeout(r, 200));
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
     await supabase
@@ -573,7 +573,6 @@ function GenericMasterTableInner({
       .eq('table_slug', tableName)
       .eq('preset_name', name);
   };
-
   // ── Early returns ──────────────────────────────────────────────────
 
   if (selectedId && renderDashboard) {

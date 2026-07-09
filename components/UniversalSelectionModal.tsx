@@ -8,7 +8,7 @@ import NewPropertyModal from "@/components/NewPropertyModal";
 interface Props {
   isOpen: boolean;
   onClose: () => void;
-  onSelect: () => void;
+  onSelect: (...args: any[]) => void;
   title: string;
   table: "entities" | "projects" | "properties" | string;
 }
@@ -16,7 +16,9 @@ interface Props {
 // Thin router — delegates to the correct modal based on table type.
 // Custom tables fall through to NewPropertyModal as a generic record creator.
 export default function UniversalSelectionModal({ isOpen, onClose, onSelect, table }: Props) {
-  const handleRefresh = () => { onSelect(); };
+  const handleRefresh = () => {
+    (onSelect as () => void)();
+  };
 
   if (table === 'projects') {
     return <NewProjectModal isOpen={isOpen} onClose={onClose} onRefresh={handleRefresh} />;
