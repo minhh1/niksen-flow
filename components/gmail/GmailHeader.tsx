@@ -19,19 +19,20 @@ interface Props {
   onCompose: () => void;
   onLabelSettings: () => void;
   onToggleActivityLog: () => void;
+  onDisconnect: () => void;
 }
 
 export default function GmailHeader({
   gmailEmail, loading, syncing, lastSynced, activeFilter,
   search, showActivityLog,
   onSearch, onFilter, onRefresh, onSync, onCompose,
-  onLabelSettings, onToggleActivityLog,
+  onLabelSettings, onToggleActivityLog, onDisconnect
 }: Props) {
   return (
     <header className="bg-white border-b border-slate-100 shrink-0 px-8 pt-8 pb-4">
       <div className="flex items-center justify-between mb-5">
         <div className="flex items-center gap-4">
-          <div className="h-10 w-10 rounded-2xl bg-red-50 flex items-center justify-center">
+          <div className="h-10 w-10 rounded-2xl bg-red-50 flex items-center justify-center shrink-0">
             <Mail size={20} className="text-red-500" />
           </div>
           <div>
@@ -39,9 +40,17 @@ export default function GmailHeader({
               Gmail
             </h1>
             {gmailEmail && (
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">
-                {gmailEmail}
-              </p>
+              <div className="flex items-center gap-3 mt-0.5">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                  {gmailEmail}
+                </p>
+                <button
+                  onClick={onDisconnect}
+                  className="text-[9px] font-bold text-slate-300 hover:text-red-500 transition-colors uppercase tracking-widest"
+                >
+                  × Disconnect
+                </button>
+              </div>
             )}
           </div>
         </div>

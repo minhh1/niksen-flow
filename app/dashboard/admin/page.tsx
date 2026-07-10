@@ -6,8 +6,9 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import {
   Loader2, Users, Settings, Shield, Trash2,
-  CheckCircle2, XCircle, Plus, X, Copy, Link, Clock,
+  CheckCircle2, XCircle, Plus, X, Copy, Link, Clock, Mail,
 } from "lucide-react";
+import SourceEmailManager from "@/components/gmail/SourceEmailManager";
 
 interface Member {
   id: string;
@@ -49,7 +50,7 @@ export default function AdminPage() {
   const [company, setCompany] = useState<Company | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [tokens, setTokens] = useState<Token[]>([]);
-  const [activeTab, setActiveTab] = useState<'members' | 'company' | 'invites'>('members');
+  const [activeTab, setActiveTab] = useState<'members' | 'company' | 'invites' | 'gmail'>('members');
   const [saving, setSaving] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -62,6 +63,10 @@ export default function AdminPage() {
   // Token generation
   const [newTokenNote, setNewTokenNote] = useState('');
   const [generatingToken, setGeneratingToken] = useState(false);
+
+  // Source of truth emails
+  const [sourceEmails, setSourceEmails] = useState<string[]>([]);
+  const [connectedEmails, setConnectedEmails] = useState<string[]>([]);
 
   useEffect(() => { load(); }, []);
 
@@ -118,6 +123,9 @@ export default function AdminPage() {
     }
     setTokens(tokenData || []);
 
+    // Load source emails from company
+    setSourceEmails(comp?.gmail_source_emails || []);
+
     // Members — two separate queries to avoid FK join issues
     const { data: memberships } = await supabase
       .from('company_memberships')
@@ -130,6 +138,14 @@ export default function AdminPage() {
         .from('profiles')
         .select('id, full_name, email, is_active')
         .in('id', userIds);
+
+      // Load connected Gmail emails for source-of-truth picker
+      const memberUserIds = memberships.map((m: any) => m.user_id);
+      const { data: gmailTokens } = await supabase
+        .from('user_gmail_tokens')
+        .select('email')
+        .in('user_id', memberUserIds);
+      setConnectedEmails((gmailTokens || []).map((t: any) => t.email).filter(Boolean));
 
       setMembers(memberships.map((m: any) => {
         const prof = profiles?.find((p: any) => p.id === m.user_id);
@@ -198,6 +214,15 @@ export default function AdminPage() {
     setSavingCompany(false);
   };
 
+  const handleSourceEmailsChange = async (emails: string[]) => {
+    setSourceEmails(emails);
+    if (!company) return;
+    await supabase
+      .from('companies')
+      .update({ gmail_source_emails: emails })
+      .eq('id', company.id);
+  };
+
   const handleGenerateToken = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user || !company) return;
@@ -261,6 +286,7 @@ export default function AdminPage() {
   const tabs = [
     { id: 'members' as const,  label: 'Members',      icon: Users },
     { id: 'invites' as const,  label: 'Invite links', icon: Link },
+    { id: 'gmail'   as const,  label: 'Gmail',        icon: Mail },
     { id: 'company' as const,  label: 'Company',      icon: Settings },
   ];
 
@@ -531,6 +557,17 @@ export default function AdminPage() {
                 })
               )}
             </>
+          )}
+
+          {/* ── Gmail source of truth ── */}
+          {activeTab === 'gmail' && (
+            <div className="bg-white border border-slate-200 rounded-[40px] p-8">
+              <SourceEmailManager
+                sourceEmails={sourceEmails}
+                connectedEmails={connectedEmails}
+                onChange={handleSourceEmailsChange}
+              />
+            </div>
           )}
 
           {/* ── Company settings ── */}

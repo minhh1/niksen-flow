@@ -2,313 +2,256 @@
 "use client";
 
 import { useState } from "react";
-import { X, GripVertical, Plus, Trash2, Loader2, Check, AlertTriangle } from "lucide-react";
-import type { LabelFormat } from "@/lib/gmail/types";
+import { X, GripVertical, Info, Tag } from "lucide-react";
 
 interface Props {
   parentLabel: string;
-  format: LabelFormat;
-  labelTokens?: string[];        // ordered list of token keys
-  companyName: string;
-  onSave: (parentLabel: string, format: LabelFormat, tokens: string[]) => void;
+  parentCode: string;
+  sublabelTokens: string[];
+  sublabelSeparator: string;
+  format: string;
+  onSave: (
+    parentLabel: string,
+    parentCode: string,
+    tokens: string[],
+    separator: string
+  ) => void;
   onClose: () => void;
 }
 
-// ── Available token types ──────────────────────────────────────────
-
 const AVAILABLE_TOKENS = [
-  { key: 'company',       label: 'Company Name',   example: 'Huynh Lawyers',          color: 'bg-slate-100 text-slate-700' },
-  { key: 'project_name',  label: 'Project Name',   example: 'Separation Agreement',   color: 'bg-indigo-100 text-indigo-700' },
-  { key: 'matter_number', label: 'Matter Number',  example: 'MN-240204',              color: 'bg-violet-100 text-violet-700' },
-  { key: 'matter_status', label: 'Matter Status',  example: 'Open',                   color: 'bg-emerald-100 text-emerald-700' },
-  { key: 'year',          label: 'Year',           example: '2024',                   color: 'bg-amber-100 text-amber-700' },
+  { id: 'matter_number', label: 'Matter Number', example: '260541' },
+  { id: 'project_name',  label: 'Project Name',  example: '33 Moore Street' },
+  { id: 'year',          label: 'Year',           example: '2026' },
 ];
 
-const DEFAULT_TOKENS = ['company', 'project_name'];
-
-function getTokenMeta(key: string) {
-  return AVAILABLE_TOKENS.find(t => t.key === key) || {
-    key, label: key, example: key, color: 'bg-slate-100 text-slate-700',
-  };
-}
+const SEPARATORS = [
+  { value: ' — ', label: 'Em dash  ( — )' },
+  { value: ' - ', label: 'Hyphen   ( - )' },
+  { value: '/',   label: 'Slash    ( / )' },
+  { value: ' | ', label: 'Pipe     ( | )' },
+  { value: ' ',   label: 'Space' },
+];
 
 export default function LabelSettingsModal({
-  parentLabel, format, labelTokens, companyName, onSave, onClose,
+  parentLabel: initParent,
+  parentCode: initCode,
+  sublabelTokens: initTokens,
+  sublabelSeparator: initSep,
+  onSave,
+  onClose,
 }: Props) {
-  const [draftParent, setDraftParent] = useState(parentLabel);
-  const [tokens, setTokens] = useState<string[]>(
-    labelTokens?.length ? labelTokens : DEFAULT_TOKENS
-  );
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
-  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
-  const [showTokenPicker, setShowTokenPicker] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [parentLabel, setParentLabel] = useState(initParent);
+  const [parentCode, setParentCode]   = useState(initCode);
+  const [tokens, setTokens]           = useState<string[]>(initTokens);
+  const [separator, setSeparator]     = useState(initSep);
+  const [dragIdx, setDragIdx]         = useState<number | null>(null);
 
-  // ── Drag reorder ───────────────────────────────────────────────
+  // Build live preview
+  const parentFull = parentCode.trim()
+    ? `${parentLabel} #${parentCode}`
+    : parentLabel;
 
-  const handleDrop = (targetIdx: number) => {
-    if (dragIdx === null || dragIdx === targetIdx) {
-      setDragIdx(null); setDragOverIdx(null); return;
-    }
+  const sublabelParts = tokens.map(t => {
+    const tok = AVAILABLE_TOKENS.find(a => a.id === t);
+    return tok?.example || t;
+  });
+  const sublabel = sublabelParts.join(separator);
+  const preview = `${parentFull}/${sublabel} [AB12C]`;
+
+  const unusedTokens = AVAILABLE_TOKENS.filter(t => !tokens.includes(t.id));
+
+  const addToken = (id: string) => setTokens(prev => [...prev, id]);
+  const removeToken = (id: string) => setTokens(prev => prev.filter(t => t !== id));
+
+  const handleDragStart = (idx: number) => setDragIdx(idx);
+  const handleDrop = (idx: number) => {
+    if (dragIdx === null || dragIdx === idx) return;
     const next = [...tokens];
     const [moved] = next.splice(dragIdx, 1);
-    next.splice(targetIdx, 0, moved);
+    next.splice(idx, 0, moved);
     setTokens(next);
-    setDragIdx(null); setDragOverIdx(null);
+    setDragIdx(null);
   };
 
-  const removeToken = (idx: number) => {
-    if (tokens.length <= 1) return; // keep at least one
-    setTokens(prev => prev.filter((_, i) => i !== idx));
+  const handleSave = () => {
+    onSave(parentLabel, parentCode, tokens, separator);
+    onClose();
   };
-
-  const addToken = (key: string) => {
-    setTokens(prev => [...prev, key]);
-    setShowTokenPicker(false);
-  };
-
-  // ── Build preview label ────────────────────────────────────────
-
-  const buildPreview = () => {
-    const parts = [draftParent || 'Shared Emails'];
-    tokens.forEach(key => {
-      const meta = getTokenMeta(key);
-      parts.push(meta.example);
-    });
-    return parts.join('/');
-  };
-
-  // ── Derive legacy format for API compat ───────────────────────
-  // Convert token array to LabelFormat for backward compat
-
-  const derivedFormat = (): LabelFormat => {
-    const hasProject = tokens.includes('project_name');
-    const hasMatter = tokens.includes('matter_number');
-    if (hasProject && hasMatter) return 'company_project';
-    if (hasMatter) return 'matter_number';
-    return 'project_name';
-  };
-
-  // Handle Save
-  // In LabelSettingsModal, update handleSave:
-  const handleSave = async () => {
-    // Validate parent label isn't empty
-    if (!draftParent.trim()) {
-      setError('Parent label name is required');
-      return;
-    }
-
-    setSaving(true);
-    setError(null);
-
-    try {
-      // Check Gmail for existing labels with this parent name
-      const checkRes = await fetch('/api/gmail/check-parent-label', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ parentLabel: draftParent.trim() }),
-      });
-      const check = await checkRes.json();
-
-      if (check.conflict) {
-        setError(
-          `A label named "${check.existingName}" already exists in Gmail — ` +
-          `rename it first or use the same name here.`
-        );
-        setSaving(false);
-        return;
-      }
-
-      await onSave(draftParent.trim(), derivedFormat(), tokens);
-      setSaved(true);
-      setTimeout(() => { setSaved(false); onClose(); }, 800);
-    } catch (err) {
-      setError('Failed to save — please try again');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const availableToAdd = AVAILABLE_TOKENS.filter(t => !tokens.includes(t.key));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-md p-6">
-      <div className="bg-white rounded-[40px] p-8 w-full max-w-md shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
+      <div className="bg-white rounded-[40px] shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
 
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-lg font-light uppercase tracking-wide text-slate-900">
-            Label settings
-          </h3>
-          <button onClick={onClose} className="p-2 text-slate-300 hover:text-black">
-            <X size={18} />
+        <div className="flex items-center justify-between px-8 pt-8 pb-4">
+          <div>
+            <h2 className="text-lg font-light uppercase tracking-tight text-slate-800">
+              Label Settings
+            </h2>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              Configure how Gmail labels are structured for this company
+            </p>
+          </div>
+          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-700 rounded-full hover:bg-slate-100">
+            <X size={16} />
           </button>
         </div>
 
-        <div className="space-y-6">
+        <div className="px-8 pb-8 space-y-6 max-h-[70vh] overflow-y-auto">
+
+          {/* How it works */}
+          <div className="flex gap-3 p-4 bg-indigo-50 border border-indigo-100 rounded-2xl">
+            <Info size={14} className="text-indigo-500 shrink-0 mt-0.5" />
+            <div className="text-[11px] text-indigo-700 leading-relaxed space-y-1">
+              <p><strong>How labels work:</strong></p>
+              <p>Each project gets a Gmail label in exactly 2 levels: <strong>Parent / Sublabel [CODE]</strong></p>
+              <p>The <strong>[CODE]</strong> (e.g. <code>[AB12C]</code>) is a unique 5-character ID automatically assigned to each label. It lets the system track and sync labels across all users even if the label is renamed or deleted.</p>
+              <p>When you assign an email to a project, the label is created in Gmail and synced to all company members every 5 minutes.</p>
+            </div>
+          </div>
 
           {/* Parent label */}
-          <div>
-            <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-2">
-              Parent label
-            </label>
+          <div className="space-y-2">
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+              Parent label name
+            </p>
             <input
-              value={draftParent}
-              onChange={e => setDraftParent(e.target.value)}
-              placeholder="Shared Emails"
-              className="w-full bg-slate-50 border border-slate-200 rounded-full py-3 px-5 text-[13px] font-medium outline-none focus:ring-4 focus:ring-indigo-100"
+              value={parentLabel}
+              onChange={e => setParentLabel(e.target.value)}
+              className="w-full px-4 py-3 border border-slate-200 rounded-2xl text-sm font-light focus:outline-none focus:border-indigo-400"
+              placeholder="e.g. Huynh Lawyers"
             />
           </div>
 
-          {/* Token builder */}
-          <div>
-            <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-2">
-              Sub-label parts — drag to reorder
-            </label>
+          {/* Company code */}
+          <div className="space-y-2">
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+              Company code <span className="text-slate-300 font-normal">(optional)</span>
+            </p>
+            <p className="text-[11px] text-slate-400">
+              Appended to parent as <code>#CODE</code>. E.g. <code>HL26</code> → <code>Huynh Lawyers #HL26</code>
+            </p>
+            <input
+              value={parentCode}
+              onChange={e => setParentCode(e.target.value.toUpperCase())}
+              maxLength={6}
+              className="w-full px-4 py-3 border border-slate-200 rounded-2xl text-sm font-light focus:outline-none focus:border-indigo-400 uppercase"
+              placeholder="e.g. HL26"
+            />
+          </div>
 
-            <div className="space-y-2 mb-3">
-              {tokens.map((key, idx) => {
-                const meta = getTokenMeta(key);
-                const isDragOver = dragOverIdx === idx && dragIdx !== idx;
+          {/* Sublabel tokens */}
+          <div className="space-y-3">
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+              Sublabel fields
+            </p>
+            <p className="text-[11px] text-slate-400">
+              Drag to reorder. These fields are joined with the separator below to form the sublabel.
+            </p>
+
+            {/* Active tokens */}
+            <div className="space-y-1.5">
+              {tokens.map((id, idx) => {
+                const tok = AVAILABLE_TOKENS.find(a => a.id === id);
                 return (
                   <div
-                    key={`${key}-${idx}`}
+                    key={id}
                     draggable
-                    onDragStart={() => setDragIdx(idx)}
-                    onDragOver={e => { e.preventDefault(); setDragOverIdx(idx); }}
+                    onDragStart={() => handleDragStart(idx)}
+                    onDragOver={e => e.preventDefault()}
                     onDrop={() => handleDrop(idx)}
-                    onDragEnd={() => { setDragIdx(null); setDragOverIdx(null); }}
-                    className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl border-2 transition-all cursor-grab active:cursor-grabbing ${
-                      isDragOver
-                        ? 'border-indigo-400 bg-indigo-50'
-                        : 'border-slate-100 bg-white hover:border-slate-200'
-                    } ${dragIdx === idx ? 'opacity-40' : ''}`}
+                    className="flex items-center gap-3 px-4 py-3 bg-indigo-50 border border-indigo-100 rounded-2xl cursor-grab active:cursor-grabbing"
                   >
-                    <GripVertical size={14} className="text-slate-300 shrink-0" />
-
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${meta.color}`}>
-                          {meta.label}
-                        </span>
-                        <span className="text-[11px] text-slate-400 truncate">
-                          e.g. {meta.example}
-                        </span>
-                      </div>
+                    <GripVertical size={14} className="text-indigo-300 shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-[12px] font-bold text-indigo-800">{tok?.label || id}</p>
+                      <p className="text-[10px] text-indigo-400">e.g. {tok?.example}</p>
                     </div>
-
                     <button
-                      onClick={() => removeToken(idx)}
-                      disabled={tokens.length <= 1}
-                      className="p-1 text-slate-300 hover:text-red-500 transition-colors disabled:opacity-20 shrink-0"
+                      onClick={() => removeToken(id)}
+                      className="text-indigo-300 hover:text-red-500 transition-colors"
                     >
-                      <Trash2 size={13} />
+                      <X size={13} />
                     </button>
                   </div>
                 );
               })}
             </div>
 
-            {/* Add token */}
-            {availableToAdd.length > 0 && (
-              <div className="relative">
-                <button
-                  onClick={() => setShowTokenPicker(p => !p)}
-                  className="flex items-center gap-2 px-4 py-2 border border-dashed border-slate-300 rounded-full text-[11px] font-bold text-slate-400 hover:border-indigo-400 hover:text-indigo-600 transition-all"
-                >
-                  <Plus size={13} /> Add part
-                </button>
-
-                {showTokenPicker && (
-                  <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl z-20 w-56 overflow-hidden">
-                    {availableToAdd.map(t => (
-                      <button
-                        key={t.key}
-                        onClick={() => addToken(t.key)}
-                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 text-left transition-colors border-b border-slate-50 last:border-0"
-                      >
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 ${t.color}`}>
-                          {t.label}
-                        </span>
-                        <span className="text-[11px] text-slate-400 truncate">
-                          {t.example}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
+            {/* Add tokens */}
+            {unusedTokens.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {unusedTokens.map(tok => (
+                  <button
+                    key={tok.id}
+                    onClick={() => addToken(tok.id)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 border border-dashed border-slate-300 rounded-full text-[11px] text-slate-500 hover:border-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all"
+                  >
+                    + {tok.label}
+                  </button>
+                ))}
               </div>
             )}
           </div>
 
-          {error && (
-            <div className="p-3 bg-red-50 border border-red-100 rounded-2xl flex items-start gap-2">
-              <AlertTriangle size={14} className="text-red-500 shrink-0 mt-0.5" />
-              <p className="text-[11px] text-red-600 font-medium">{error}</p>
+          {/* Separator */}
+          <div className="space-y-2">
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+              Separator between fields
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {SEPARATORS.map(s => (
+                <button
+                  key={s.value}
+                  onClick={() => setSeparator(s.value)}
+                  className={`px-3 py-1.5 rounded-full text-[11px] font-mono border transition-all ${
+                    separator === s.value
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white text-slate-500 border-slate-200 hover:border-indigo-300'
+                  }`}
+                >
+                  {s.label}
+                </button>
+              ))}
             </div>
-          )}
+          </div>
 
           {/* Live preview */}
-          <div className="bg-slate-50 border border-slate-100 rounded-2xl p-4">
-            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2">
-              Preview
+          <div className="space-y-2">
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+              Label preview
             </p>
-            <div className="flex items-center flex-wrap gap-0.5">
-              {/* Parent label */}
-              <span className="px-2 py-1 bg-white border border-slate-200 rounded-lg text-[11px] font-bold text-slate-700">
-                {draftParent || 'Shared Emails'}
-              </span>
-              {tokens.map((key, idx) => {
-                const meta = getTokenMeta(key);
-                return (
-                  <span key={idx} className="flex items-center gap-0.5">
-                    <span className="text-slate-400 text-[11px] font-bold px-0.5">/</span>
-                    <span className={`px-2 py-1 rounded-lg text-[11px] font-bold ${meta.color}`}>
-                      {meta.example}
-                    </span>
-                  </span>
-                );
-              })}
+            <div className="px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl">
+              <div className="flex items-center gap-2">
+                <Tag size={11} className="text-indigo-500 shrink-0" />
+                <code className="text-[12px] text-slate-700 break-all">{preview}</code>
+              </div>
+              <p className="text-[10px] text-slate-400 mt-1.5">
+                <span className="text-indigo-600">{parentFull}</span>
+                {' / '}
+                <span className="text-slate-600">{sublabel}</span>
+                {' '}
+                <span className="text-slate-400">[AB12C] — unique code auto-generated per project</span>
+              </p>
             </div>
-            <p className="text-[9px] text-slate-400 mt-2 font-mono break-all">
-              {buildPreview()}
+          </div>
+
+          {/* Warning about existing labels */}
+          <div className="flex gap-3 p-4 bg-amber-50 border border-amber-100 rounded-2xl">
+            <Info size={13} className="text-amber-500 shrink-0 mt-0.5" />
+            <p className="text-[11px] text-amber-700 leading-relaxed">
+              Changing these settings only affects <strong>new</strong> labels. Existing labels keep their original format — the unique code ensures the system can still track them.
             </p>
           </div>
-        </div>
 
-        {/* Footer */}
-        <div className="flex gap-3 mt-6">
+          {/* Save */}
           <button
-            onClick={onClose}
-            className="flex-1 py-3 bg-slate-50 text-slate-600 rounded-full text-[11px] font-bold"
+            onClick={handleSave}
+            className="w-full py-3.5 bg-slate-900 text-white rounded-[40px] text-[12px] font-bold uppercase tracking-tight hover:bg-slate-700 transition-colors"
           >
-            Cancel
+            Save settings
           </button>
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className={`flex-1 py-3 rounded-full text-[11px] font-bold transition-all flex items-center justify-center gap-2 ${
-            saved
-              ? 'bg-emerald-500 text-white'
-              : 'bg-slate-900 text-white hover:bg-black disabled:opacity-50'
-          }`}
-        >
-          {saving ? (
-            <>
-              <Loader2 size={13} className="animate-spin" />
-              Saving...
-            </>
-          ) : saved ? (
-            <>
-              <Check size={13} />
-              Saved
-            </>
-          ) : (
-            'Save'
-          )}
-        </button>
         </div>
       </div>
     </div>

@@ -1,3 +1,4 @@
+// app/dashboard/gmail/page.tsx
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
@@ -15,7 +16,6 @@ import SyncLog from "@/components/gmail/SyncLog";
 import type {
   GmailMessage, GmailProject, LabelFormat, SearchableField,
 } from "@/lib/gmail/types";
-import { getFirstTwoWords } from "@/lib/gmail/types";
 
 export default function GmailPage() {
 
@@ -28,7 +28,9 @@ export default function GmailPage() {
   const [companyName, setCompanyName] = useState('');
   const [labelFormat, setLabelFormat] = useState<LabelFormat>('project_name');
   const [parentLabel, setParentLabel] = useState('Shared Emails');
-  const [labelTokens, setLabelTokens] = useState<string[]>(['company', 'project_name']);
+  const [parentCode, setParentCode] = useState('');
+  const [labelTokens, setLabelTokens] = useState<string[]>(['matter_number', 'project_name']);
+  const [sublabelSeparator, setSublabelSeparator] = useState(' — ');
 
   // ── Messages
   const [messages, setMessages] = useState<GmailMessage[]>([]);
@@ -141,28 +143,47 @@ export default function GmailPage() {
   const loadCompanyAndProfile = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
+
     const { data: prof } = await supabase
       .from('profiles')
       .select('active_company_id, is_admin, gmail_search_fields')
       .eq('id', user.id)
       .single();
-    setIsAdmin(prof?.is_admin || false);
+
+    // Check admin via membership role
+    if (prof?.active_company_id) {
+      const { data: membership } = await supabase
+        .from('company_memberships')
+        .select('role')
+        .eq('user_id', user.id)
+        .eq('company_id', prof.active_company_id)
+        .single();
+      setIsAdmin(membership?.role === 'company_admin');
+    }
+
     if (prof?.gmail_search_fields) setSearchFields(prof.gmail_search_fields);
     if (!prof?.active_company_id) return;
+
     const { data: company } = await supabase
       .from('companies')
-      .select('name, gmail_label_format, gmail_parent_label, gmail_label_tokens')
+      .select('name, gmail_label_format, gmail_parent_label, gmail_label_tokens, gmail_parent_code, gmail_sublabel_separator')
       .eq('id', prof.active_company_id)
       .single();
+
     if (company?.name) setCompanyName(company.name);
     if (company?.gmail_label_format) setLabelFormat(company.gmail_label_format as LabelFormat);
     if (company?.gmail_parent_label) setParentLabel(company.gmail_parent_label);
+    if (company?.gmail_parent_code) setParentCode(company.gmail_parent_code);
     if (company?.gmail_label_tokens?.length) setLabelTokens(company.gmail_label_tokens);
+    if (company?.gmail_sublabel_separator) setSublabelSeparator(company.gmail_sublabel_separator);
+
+    // Load searchable fields
     const { data: customFields } = await supabase
       .from('company_custom_fields')
       .select('id, field_key, label, field_type')
       .eq('table_name', 'projects')
       .order('display_order');
+
     setSearchableFields([
       { key: 'name',        label: 'Project Name' },
       { key: 'description', label: 'Description' },
@@ -213,31 +234,45 @@ export default function GmailPage() {
 
   // ── Select message
 
-const handleSelectMessage = async (msg: GmailMessage) => {
-  setSelectedMessage(msg);
-  setEmailBody(null);
-  // ← Use niksenLabels directly — already resolved names from message list
-  setSelectedLabelIds(msg.niksenLabels || []);
-  setProjectSearch('');
-  setLoadingBody(true);
-  try {
-    const res = await fetch(`/api/gmail/messages/${msg.id}`);
-    const data = await res.json();
-    setEmailBody(data.body || null);
-    // Update with fresh labels if detail fetch returns them
-    if (data.niksenLabels?.length) setSelectedLabelIds(data.niksenLabels);
-  } catch {
+  const handleSelectMessage = async (msg: GmailMessage) => {
+    console.log('[LABEL STEP 1] Selecting message:', msg.id);
+    console.log('[LABEL STEP 1] niksenLabels from list:', msg.niksenLabels);
+    console.log('[LABEL STEP 1] labelIds from list:', msg.labelIds);
+
+    setSelectedMessage(msg);
     setEmailBody(null);
-  } finally {
-    setLoadingBody(false);
-  }
-};
+    setSelectedLabelIds(msg.niksenLabels || []);
+    setProjectSearch('');
+    setLoadingBody(true);
+    try {
+      const res = await fetch(`/api/gmail/messages/${msg.id}`);
+      const data = await res.json();
+      console.log('[LABEL STEP 2] Detail fetch response niksenLabels:', data.niksenLabels);
+      console.log('[LABEL STEP 2] Detail fetch response labelIds:', data.labelIds);
+      setEmailBody(data.body || null);
+      // Only update if detail returns labels — don't wipe list values
+      if (data.niksenLabels && data.niksenLabels.length > 0) {
+        console.log('[LABEL STEP 2] Updating selectedLabelIds from detail fetch');
+        setSelectedLabelIds(data.niksenLabels);
+      } else {
+        console.log('[LABEL STEP 2] Detail returned no niksenLabels — keeping list values:', msg.niksenLabels);
+      }
+    } catch (err) {
+      console.error('[LABEL STEP 2] Detail fetch error:', err);
+      setEmailBody(null);
+    }
+    finally { setLoadingBody(false); }
+  };
+
   // ── Build label from tokens
+  // Structure: "Parent #CODE/sublabel_token1{sep}sublabel_token2"
+  // Always exactly 2 levels
 
   const buildLabelFromTokens = async (
     projectId: string,
     project: GmailProject
   ): Promise<string> => {
+    console.log('[LABEL STEP 3] Building label — parentLabel:', parentLabel, 'parentCode:', parentCode, 'tokens:', labelTokens, 'separator:', JSON.stringify(sublabelSeparator));
     const { data: cfValues } = await supabase
       .from('company_custom_field_values')
       .select('value_text, field:field_id(label, field_key)')
@@ -252,27 +287,35 @@ const handleSelectMessage = async (msg: GmailMessage) => {
       return match?.value_text || '';
     };
 
-    const parts = [parentLabel];
+    // Build parent: "Name #CODE" or just "Name"
+    const parentFull = parentCode.trim()
+      ? `${parentLabel} #${parentCode}`
+      : parentLabel;
+
+    // Build single sublabel by joining all tokens with separator
+    const sublabelParts: string[] = [];
     for (const token of labelTokens) {
       switch (token) {
-        case 'company':
-          parts.push(getFirstTwoWords(companyName));
-          break;
         case 'project_name':
-          parts.push(project.name);
+          sublabelParts.push(project.name);
           break;
         case 'matter_number':
-          parts.push(getCfValue('matter number') || getCfValue('matter_number'));
+          sublabelParts.push(getCfValue('matter number') || getCfValue('matter_number'));
           break;
         case 'matter_status':
-          parts.push(getCfValue('matter status') || getCfValue('matter_status'));
+          sublabelParts.push(getCfValue('matter status') || getCfValue('matter_status'));
           break;
         case 'year':
-          parts.push(String(new Date().getFullYear()));
+          sublabelParts.push(String(new Date().getFullYear()));
           break;
       }
     }
-    return parts.filter(Boolean).join('/');
+    const sublabel = sublabelParts.filter(Boolean).join(sublabelSeparator);
+
+    // Always exactly 2 levels: Parent/Sublabel
+    const result = `${parentFull}/${sublabel}`;
+    console.log('[LABEL STEP 3] Built label:', result);
+    return result;
   };
 
   // ── Commit assign
@@ -282,9 +325,10 @@ const handleSelectMessage = async (msg: GmailMessage) => {
     projectId: string,
     gmailLabelName: string
   ) => {
+    console.log('[LABEL STEP 4] commitAssign — messageId:', messageId, 'label:', gmailLabelName);
     setAssigning(messageId);
     try {
-      await fetch('/api/gmail/assign', {
+      const res = await fetch('/api/gmail/assign', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -299,11 +343,27 @@ const handleSelectMessage = async (msg: GmailMessage) => {
           snippet: selectedMessage?.snippet,
         }),
       });
+      const data = await res.json();
+      console.log('[LABEL STEP 4] assign response:', res.status, data);
+      if (!res.ok) {
+        console.error('[LABEL STEP 4] assign error:', data.error);
+        return;
+      }
       setAssignedMap(prev => ({ ...prev, [messageId]: projectId }));
       setLabelConflict(null);
+      // Refresh labels on message
       const refreshRes = await fetch(`/api/gmail/messages/${messageId}`);
       const refreshData = await refreshRes.json();
-      if (refreshData.labelIds) setSelectedLabelIds(refreshData.labelIds);
+      console.log('[LABEL STEP 5] Post-assign refresh niksenLabels:', refreshData.niksenLabels);
+      if (refreshData.niksenLabels && refreshData.niksenLabels.length > 0) {
+        setSelectedLabelIds(refreshData.niksenLabels);
+      }
+      // Update message in list
+      setMessages(prev => prev.map(m =>
+        m.id === messageId
+          ? { ...m, niksenLabels: refreshData.niksenLabels || m.niksenLabels }
+          : m
+      ));
     } catch (err) {
       console.error('commitAssign:', err);
     } finally {
@@ -337,7 +397,7 @@ const handleSelectMessage = async (msg: GmailMessage) => {
             messageId: selectedMessage.id,
             threadId: selectedMessage.threadId,
             proposedLabel,
-            parentLabel,
+            parentLabel: parentCode ? `${parentLabel} #${parentCode}` : parentLabel,
           }),
         });
         const check = await checkRes.json();
@@ -363,41 +423,82 @@ const handleSelectMessage = async (msg: GmailMessage) => {
     await commitAssign(selectedMessage.id, projectId, proposedLabel);
   };
 
-  const handleRemoveLabel = async (projectId: string) => {
+  // ── Remove label
+
+  const handleRemoveLabel = async () => {
     if (!selectedMessage) return;
+    console.log('[LABEL STEP 6] handleRemoveLabel — messageId:', selectedMessage.id);
+
     try {
+      // Just send messageId — server resolves project from project_emails
       const res = await fetch('/api/gmail/remove-label', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messageId: selectedMessage.id,
-          projectId,
-        }),
+        body: JSON.stringify({ messageId: selectedMessage.id }),
       });
       const data = await res.json();
+      console.log('[handleRemoveLabel] response:', res.status, data);
       if (data.ok) {
-        // Clear from assigned map
         setAssignedMap(prev => {
           const next = { ...prev };
           delete next[selectedMessage.id];
           return next;
         });
-
-        // Clear label display in detail pane
         setSelectedLabelIds([]);
-
-        // ← Also clear niksenLabels on the message in the list
         setMessages(prev => prev.map(m =>
-          m.id === selectedMessage.id
-            ? { ...m, niksenLabels: [] }
-            : m
+          m.id === selectedMessage.id ? { ...m, niksenLabels: [] } : m
         ));
+      } else {
+        console.error('[handleRemoveLabel] API error:', data.error);
+        alert(`Remove label failed: ${data.error}`);
       }
     } catch (err) {
       console.error('handleRemoveLabel:', err);
+      alert(`Remove label error: ${err}`);
     }
   };
-  
+
+  // ── Disconnect Gmail
+
+  const handleDisconnect = async () => {
+    if (!window.confirm('Disconnect your Gmail account? You can reconnect at any time.')) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    // Get token for revocation
+    const { data: tokenRow } = await supabase
+      .from('user_gmail_tokens')
+      .select('access_token')
+      .eq('user_id', user.id)
+      .single();
+
+    // Revoke with Google
+    if (tokenRow?.access_token) {
+      try {
+        await fetch(
+          `https://oauth2.googleapis.com/revoke?token=${tokenRow.access_token}`,
+          { method: 'POST' }
+        );
+      } catch (err) {
+        console.error('Token revoke error:', err);
+      }
+    }
+
+    // Delete from DB
+    await supabase.from('user_gmail_tokens').delete().eq('user_id', user.id);
+
+    // Reset state
+    setConnected(false);
+    setGmailEmail(null);
+    setMessages([]);
+    setFilteredMessages([]);
+    setSelectedMessage(null);
+    setEmailBody(null);
+    setSelectedLabelIds([]);
+    setAssignedMap({});
+    setLastSynced(null);
+  };
+
   // ── Sync
 
   const handleGmailSync = async () => {
@@ -427,34 +528,25 @@ const handleSelectMessage = async (msg: GmailMessage) => {
 
   const handleLabelFormatChange = async (
     newParent: string,
-    newFormat: LabelFormat,
-    newTokens: string[]
+    newCode: string,
+    newTokens: string[],
+    newSeparator: string,
   ) => {
     setParentLabel(newParent);
-    setLabelFormat(newFormat);
+    setParentCode(newCode);
     setLabelTokens(newTokens);
-
+    setSublabelSeparator(newSeparator);
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { console.error('No user session'); return; }
-
+    if (!user) return;
     const { data: prof } = await supabase
-      .from('profiles')
-      .select('active_company_id')
-      .eq('id', user.id)
-      .single();
-
-    if (!prof?.active_company_id) { console.error('No company id'); return; }
-
-    const { error } = await supabase
-      .from('companies')
-      .update({
-        gmail_label_format: newFormat,
-        gmail_parent_label: newParent,
-        gmail_label_tokens: newTokens,
-      })
-      .eq('id', prof.active_company_id);
-
-    if (error) console.error('Company update error:', error);
+      .from('profiles').select('active_company_id').eq('id', user.id).single();
+    if (!prof?.active_company_id) return;
+    await supabase.from('companies').update({
+      gmail_parent_label: newParent,
+      gmail_parent_code: newCode,
+      gmail_label_tokens: newTokens,
+      gmail_sublabel_separator: newSeparator,
+    }).eq('id', prof.active_company_id);
   };
 
   // ── Search fields save
@@ -551,6 +643,7 @@ const handleSelectMessage = async (msg: GmailMessage) => {
         onCompose={() => setShowCompose(true)}
         onLabelSettings={() => setShowLabelSettings(true)}
         onToggleActivityLog={() => setShowActivityLog(p => !p)}
+        onDisconnect={handleDisconnect}
       />
 
       <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -588,7 +681,23 @@ const handleSelectMessage = async (msg: GmailMessage) => {
                 searchableFields={searchableFields}
                 projectCfValues={projectCfValues}
                 assigning={assigning === selectedMessage.id}
-                labelFormat={labelFormat}
+                labelFormat={
+                  // Show the actual label format preview from settings
+                  (() => {
+                    const parentFull = parentCode.trim()
+                      ? `${parentLabel} #${parentCode}`
+                      : parentLabel;
+                    const tokenLabels: Record<string, string> = {
+                      matter_number: 'matter',
+                      project_name: 'project',
+                      year: 'year',
+                    };
+                    const sublabel = labelTokens
+                      .map(t => tokenLabels[t] || t)
+                      .join(sublabelSeparator);
+                    return `${parentFull}/${sublabel} [CODE]`;
+                  })()
+                }
                 parentLabel={parentLabel}
                 companyName={companyName}
                 isAdmin={isAdmin}
@@ -630,9 +739,10 @@ const handleSelectMessage = async (msg: GmailMessage) => {
       {showLabelSettings && (
         <LabelSettingsModal
           parentLabel={parentLabel}
+          parentCode={parentCode}
           format={labelFormat}
-          labelTokens={labelTokens}
-          companyName={companyName}
+          sublabelTokens={labelTokens}
+          sublabelSeparator={sublabelSeparator}
           onSave={handleLabelFormatChange}
           onClose={() => setShowLabelSettings(false)}
         />

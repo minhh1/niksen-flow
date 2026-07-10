@@ -126,6 +126,81 @@ export async function POST(req: NextRequest) {
     console.log('[assign] Existing labels count:', existingLabels.length);
 
     // ── Step 6: create label hierarchy ────────────────────────
+    // First check if a code version of this label already exists in Gmail
+    // (e.g. "Huynh Lawyers/260541 — 33 Moore Street [61E27]")
+    // If so, use it directly instead of creating a duplicate without the code.
+    const { data: existingPglCheck } = await supabase
+      .from('project_gmail_labels')
+      .select('label_code, gmail_label_name')
+      .eq('company_id', companyId)
+      .eq('project_id', projectId)
+      .single();
+
+    const existingCode = existingPglCheck?.label_code;
+    const existingLabelNameWithCode = existingPglCheck?.gmail_label_name;
+
+    // If we already have a label with code in Gmail, use it directly
+    if (existingCode) {
+      const labelWithCode = existingLabels.find(l =>
+        l.name.includes(`[${existingCode}]`) ||
+        l.name === existingLabelNameWithCode
+      );
+      if (labelWithCode) {
+        console.log(`[assign] Found existing code label in Gmail: "${labelWithCode.name}" → ${labelWithCode.id}`);
+        // Skip hierarchy creation — use the existing code label
+        const sublabel2 = labelWithCode.name.split('/').slice(-1)[0];
+        const { error: pglError2 } = await supabase
+          .from('project_gmail_labels')
+          .upsert({
+            company_id: companyId,
+            project_id: projectId,
+            gmail_label_id: labelWithCode.id,
+            gmail_label_name: labelWithCode.name,
+            label_code: existingCode,
+            label_sub: sublabel2,
+            removed_at: null,
+            created_by: user.id,
+          }, { onConflict: 'company_id,project_id' });
+        if (pglError2) {
+          return NextResponse.json({ error: `DB error: ${pglError2.message}` }, { status: 500 });
+        }
+        const { error: peError2 } = await supabase
+          .from('project_emails')
+          .upsert({
+            user_id: user.id,
+            company_id: companyId,
+            project_id: projectId,
+            gmail_message_id: messageId,
+            gmail_thread_id: threadId || null,
+            subject: subject || '(no subject)',
+            from_address: fromAddr || '',
+            from_name: fromName || '',
+            date: date || null,
+            snippet: snippet || '',
+            gmail_label_applied: true,
+          }, { onConflict: 'user_id,gmail_message_id' });
+        if (peError2) {
+          return NextResponse.json({ error: `DB error: ${peError2.message}` }, { status: 500 });
+        }
+        // Apply the existing label to the message
+        await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`,
+          {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ addLabelIds: [labelWithCode.id] }),
+          }
+        );
+        console.log('[assign] Re-applied existing code label — done');
+        return NextResponse.json({
+          ok: true,
+          labelName: labelWithCode.name,
+          labelId: labelWithCode.id,
+          syncedToUsers: 0,
+        });
+      }
+    }
+
     const labelParts = gmailLabelName.split('/');
     console.log('[assign] Creating label hierarchy:', labelParts);
     let createdLabelId: string | null = null;
@@ -175,44 +250,48 @@ export async function POST(req: NextRequest) {
       throw new Error('Could not get or create label');
     }
 
-    // ── Step 7: apply label to message ────────────────────────
-    console.log('[assign] Applying label', createdLabelId, 'to message', messageId);
-    const applyRes = await fetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ addLabelIds: [createdLabelId] }),
-      }
-    );
-
-    if (!applyRes.ok) {
-      const err = await applyRes.json();
-      console.error('[assign] Failed to apply label:', err);
-      throw new Error(
-        `Failed to apply label: ${err.error?.message || JSON.stringify(err)}`
-      );
-    }
-    console.log('[assign] Label applied successfully');
-
     const sublabel = labelParts[labelParts.length - 1];
 
-    // ── Step 8: persist to DB ──────────────────────────────────
+    // ── Steps 7+8: DB first, then Gmail (atomic) ──────────────
+    // Save to DB BEFORE Gmail — if DB fails, abort before touching Gmail.
+    // If Gmail fails after DB save, roll back DB rows.
+
+    const { data: existingPgl } = await supabase
+      .from('project_gmail_labels')
+      .select('label_code, gmail_label_name')
+      .eq('company_id', companyId)
+      .eq('project_id', projectId)
+      .single();
+
+    const labelCode = existingPgl?.label_code ||
+      Math.random().toString(36).substring(2, 7).toUpperCase();
+
+    const labelNameWithCode = gmailLabelName.includes(`[${labelCode}]`)
+      ? gmailLabelName
+      : `${gmailLabelName} [${labelCode}]`;
+
+    console.log('[assign] labelCode:', labelCode, 'labelNameWithCode:', labelNameWithCode);
+
+    // 1. Save project_gmail_labels
     const { error: pglError } = await supabase
       .from('project_gmail_labels')
       .upsert({
         company_id: companyId,
         project_id: projectId,
         gmail_label_id: createdLabelId,
-        gmail_label_name: gmailLabelName,
+        gmail_label_name: labelNameWithCode,
+        label_code: labelCode,
         label_sub: sublabel,
+        removed_at: null,
         created_by: user.id,
       }, { onConflict: 'company_id,project_id' });
-    console.log('[assign] project_gmail_labels upsert error:', pglError?.message);
 
+    if (pglError) {
+      console.error('[assign] project_gmail_labels FAILED:', pglError.message);
+      return NextResponse.json({ error: `DB error saving label: ${pglError.message}` }, { status: 500 });
+    }
+
+    // 2. Save project_emails
     const { error: peError } = await supabase
       .from('project_emails')
       .upsert({
@@ -228,7 +307,57 @@ export async function POST(req: NextRequest) {
         snippet: snippet || '',
         gmail_label_applied: true,
       }, { onConflict: 'user_id,gmail_message_id' });
-    console.log('[assign] project_emails upsert error:', peError?.message);
+
+    if (peError) {
+      console.error('[assign] project_emails FAILED:', peError.message);
+      // Roll back project_gmail_labels if it was newly created
+      if (!existingPgl) {
+        await supabase.from('project_gmail_labels')
+          .delete().eq('company_id', companyId).eq('project_id', projectId);
+      }
+      return NextResponse.json({ error: `DB error saving email: ${peError.message}` }, { status: 500 });
+    }
+
+    console.log('[assign] DB saved — applying label in Gmail');
+
+    // 3. Rename label in Gmail to include code
+    if (labelNameWithCode !== gmailLabelName && createdLabelId) {
+      const patchRes = await fetch(
+        `https://gmail.googleapis.com/gmail/v1/users/me/labels/${createdLabelId}`,
+        {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: labelNameWithCode }),
+        }
+      );
+      console.log('[assign] Rename label result:', patchRes.ok ? 'ok' : 'failed');
+    }
+
+    // 4. Apply label to message
+    console.log('[assign] Applying label', createdLabelId, 'to message', messageId);
+    const applyRes = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ addLabelIds: [createdLabelId] }),
+      }
+    );
+
+    if (!applyRes.ok) {
+      const err = await applyRes.json();
+      console.error('[assign] Failed to apply label in Gmail — rolling back DB', err);
+      // Roll back both DB rows
+      await supabase.from('project_emails')
+        .delete().eq('user_id', user.id).eq('gmail_message_id', messageId);
+      if (!existingPgl) {
+        await supabase.from('project_gmail_labels')
+          .delete().eq('company_id', companyId).eq('project_id', projectId);
+      }
+      throw new Error(`Failed to apply Gmail label: ${err.error?.message || JSON.stringify(err)}`);
+    }
+
+    console.log('[assign] Label applied successfully');
 
     // ── Also write to user_gmail_label_sync for current user ───
     await supabase

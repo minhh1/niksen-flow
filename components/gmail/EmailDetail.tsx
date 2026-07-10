@@ -5,7 +5,7 @@ import { useState } from "react";
 import { Loader2, Reply, X, Tag, Plus } from "lucide-react";
 import ProjectSearch from "./ProjectSearch";
 import type {
-  GmailMessage, GmailProject, LabelFormat, SearchableField,
+  GmailMessage, GmailProject, SearchableField,
 } from "@/lib/gmail/types";
 
 interface Props {
@@ -21,7 +21,7 @@ interface Props {
   searchableFields: SearchableField[];
   projectCfValues: Record<string, Record<string, string>>;
   assigning: boolean;
-  labelFormat: LabelFormat;
+  labelFormat: string;
   parentLabel: string;
   companyName: string;
   isAdmin: boolean;
@@ -30,7 +30,7 @@ interface Props {
   onSearchChange: (val: string) => void;
   onAssign: (projectId: string) => void;
   onUnassign: () => void;
-  onRemoveLabel: (projectId: string) => void;
+  onRemoveLabel: () => void;
   onSearchFieldsChange: (fields: string[]) => void;
   onLabelSettings: () => void;
 }
@@ -71,7 +71,7 @@ export default function EmailDetail({
   message, emailBody, loadingBody, selectedLabelIds,
   assignedMap, projects, filteredProjects,
   projectSearch, searchFields, searchableFields, projectCfValues,
-  assigning, labelFormat, parentLabel, companyName, isAdmin,
+  assigning, parentLabel, labelFormat, companyName, isAdmin,
   onClose, onReply, onSearchChange, onAssign, onUnassign,
   onRemoveLabel, onSearchFieldsChange, onLabelSettings,
 }: Props) {
@@ -82,8 +82,9 @@ export default function EmailDetail({
   const hasLabels = selectedLabelIds.length > 0;
 
   const handleRemoveLabel = async (label: string) => {
+    console.log('[LABEL STEP 6] X clicked for label:', label);
     setRemovingLabel(label);
-    await onRemoveLabel(assignedProjectId || '');
+    await onRemoveLabel();
     setRemovingLabel(null);
   };
 
@@ -195,23 +196,18 @@ export default function EmailDetail({
           )}
 
           {/* Label format hint */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <p className="text-[10px] text-slate-400">
               Label format:
               <span className="font-bold text-slate-600 ml-1">
-                {parentLabel}/
-                {labelFormat === 'matter_number'
-                  ? 'matter number'
-                  : labelFormat === 'company_project'
-                  ? 'project/matter'
-                  : 'project name'}
+                {labelFormat}
               </span>
             </p>
             <button
               onClick={onLabelSettings}
-              className="text-[10px] text-indigo-600 font-bold hover:underline"
+              className="text-[10px] text-indigo-500 hover:text-indigo-700 hover:underline"
             >
-              Change
+              View label settings
             </button>
           </div>
         </div>

@@ -1,4 +1,6 @@
 // app/api/gmail/messages/[id]/route.ts
+// Label detection: check project_emails table — no Gmail label ID mapping needed.
+
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 
@@ -45,26 +47,33 @@ export async function GET(
       }
     }
 
-    // Get parent label for this company
-    const { data: prof } = await supabase
-      .from('profiles').select('active_company_id').eq('id', user.id).single();
-    let parentLabel = 'Shared Emails';
-    if (prof?.active_company_id) {
-      const { data: company } = await supabase
-        .from('companies').select('gmail_parent_label').eq('id', prof.active_company_id).single();
-      if (company?.gmail_parent_label) parentLabel = company.gmail_parent_label;
+    // ── Check project_emails — simple DB lookup ────────────────────
+    const { data: pe } = await supabase
+      .from('project_emails')
+      .select('project_id')
+      .eq('gmail_message_id', id)
+      .eq('user_id', user.id)
+      .single();
+
+    let niksenLabels: string[] = [];
+    let niksenProjectIds: string[] = [];
+
+    if (pe?.project_id) {
+      // Get label name from project_gmail_labels
+      const { data: pgl } = await supabase
+        .from('project_gmail_labels')
+        .select('gmail_label_name')
+        .eq('project_id', pe.project_id)
+        .single();
+
+      const labelName = pgl?.gmail_label_name || pe.project_id;
+      niksenLabels = [labelName];
+      niksenProjectIds = [pe.project_id];
     }
 
-    // Get all labels to resolve IDs → names
-    const allLabelsRes = await fetch(
-      'https://gmail.googleapis.com/gmail/v1/users/me/labels',
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    const allLabelsData = await allLabelsRes.json();
-    const labelIdToName = new Map<string, string>();
-    (allLabelsData.labels || []).forEach((l: any) => labelIdToName.set(l.id, l.name));
+    console.log('[LABEL STEP 2 - API] message:', id, 'project_emails found:', !!pe, 'niksenLabels:', niksenLabels);
 
-    // Get full message
+    // Get full message body
     const msgRes = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=full`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -74,26 +83,14 @@ export async function GET(
       return NextResponse.json({ error: err.error?.message }, { status: msgRes.status });
     }
     const msgData = await msgRes.json();
-
-    // Decode body
     const body = extractBody(msgData.payload);
-
-    const labelIds: string[] = msgData.labelIds || [];
-    const SYSTEM_PREFIXES = ['INBOX','UNREAD','IMPORTANT','SENT','DRAFT','SPAM','TRASH','STARRED','CATEGORY_'];
-
-    const niksenLabels = labelIds
-      .map(id => labelIdToName.get(id))
-      .filter((name): name is string =>
-        !!name &&
-        !SYSTEM_PREFIXES.some(p => name.startsWith(p)) &&
-        name.startsWith(`${parentLabel}/`)
-      );
 
     return NextResponse.json({
       id: msgData.id,
       body,
-      labelIds,
-      niksenLabels,   // ← resolved names for display
+      labelIds: msgData.labelIds || [],
+      niksenLabels,
+      niksenProjectIds,
     });
 
   } catch (err: any) {
@@ -104,13 +101,9 @@ export async function GET(
 
 function extractBody(payload: any): string {
   if (!payload) return '';
-
-  // Direct body
   if (payload.body?.data) {
     return Buffer.from(payload.body.data, 'base64').toString('utf-8');
   }
-
-  // Multipart — prefer text/html then text/plain
   if (payload.parts) {
     const htmlPart = payload.parts.find((p: any) => p.mimeType === 'text/html');
     if (htmlPart?.body?.data) {
@@ -119,14 +112,12 @@ function extractBody(payload: any): string {
     const textPart = payload.parts.find((p: any) => p.mimeType === 'text/plain');
     if (textPart?.body?.data) {
       const text = Buffer.from(textPart.body.data, 'base64').toString('utf-8');
-      return `<pre style="font-family: sans-serif; white-space: pre-wrap;">${text}</pre>`;
+      return `<pre style="font-family:sans-serif;white-space:pre-wrap">${text}</pre>`;
     }
-    // Recurse into nested parts
     for (const part of payload.parts) {
       const nested = extractBody(part);
       if (nested) return nested;
     }
   }
-
   return '';
 }

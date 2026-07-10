@@ -1,4 +1,6 @@
 // app/api/gmail/messages/route.ts
+// Label detection: check project_emails table — no Gmail label ID mapping needed.
+
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 
@@ -42,40 +44,44 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Get company's parent label so we can identify niksen labels
-    const { data: prof } = await supabase
-      .from('profiles')
-      .select('active_company_id')
-      .eq('id', user.id)
-      .single();
+    // ── Simple label detection: check project_emails table ────────
+    // No Gmail label ID mapping. Just: is this message in project_emails?
+    const { data: projectEmails } = await supabase
+      .from('project_emails')
+      .select('gmail_message_id, project_id, project:project_id(name)')
+      .eq('user_id', user.id);
 
-    let parentLabel = 'Shared Emails';
-    if (prof?.active_company_id) {
-      const { data: company } = await supabase
-        .from('companies')
-        .select('gmail_parent_label')
-        .eq('id', prof.active_company_id)
-        .single();
-      if (company?.gmail_parent_label) parentLabel = company.gmail_parent_label;
-    }
+    const emailProjectMap = new Map<string, { projectId: string; labelName: string }>();
+    (projectEmails || []).forEach((pe: any) => {
+      // Use stored label name from project_gmail_labels if available
+      emailProjectMap.set(pe.gmail_message_id, {
+        projectId: pe.project_id,
+        labelName: pe.project?.name || pe.project_id,
+      });
+    });
 
-    // Get all user's Gmail labels upfront — needed to resolve IDs to names
-    const allLabelsRes = await fetch(
-      'https://gmail.googleapis.com/gmail/v1/users/me/labels',
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    const allLabelsData = await allLabelsRes.json();
-    const allLabels: { id: string; name: string }[] = allLabelsData.labels || [];
+    // Also get label names from project_gmail_labels for display
+    const { data: projectLabels } = await supabase
+      .from('project_gmail_labels')
+      .select('project_id, gmail_label_name');
 
-    // Build a map of label ID → name for fast lookup
-    const labelIdToName = new Map<string, string>();
-    allLabels.forEach(l => labelIdToName.set(l.id, l.name));
+    const projectLabelMap = new Map<string, string>();
+    (projectLabels || []).forEach((pl: any) => {
+      projectLabelMap.set(pl.project_id, pl.gmail_label_name);
+    });
 
-    // Get search query from URL params
+    // Enrich emailProjectMap with label names
+    emailProjectMap.forEach((val, key) => {
+      const labelName = projectLabelMap.get(val.projectId);
+      if (labelName) val.labelName = labelName;
+    });
+
+    console.log('[LABEL STEP 1 - API] project_emails count:', emailProjectMap.size);
+
+    // Fetch message list
     const { searchParams } = new URL(req.url);
     const q = searchParams.get('q') || 'in:inbox';
 
-    // Fetch message list
     const listRes = await fetch(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${encodeURIComponent(q)}&maxResults=50`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -91,35 +97,25 @@ export async function GET(req: NextRequest) {
 
     const listData = await listRes.json();
     const messageIds: string[] = (listData.messages || []).map((m: any) => m.id);
+    if (!messageIds.length) return NextResponse.json({ messages: [] });
 
-    if (!messageIds.length) {
-      return NextResponse.json({ messages: [] });
-    }
-
-    // Fetch message details in parallel (batches of 10)
+    // Fetch message details in batches
     const BATCH_SIZE = 10;
     const messages = [];
-
     for (let i = 0; i < messageIds.length; i += BATCH_SIZE) {
       const batch = messageIds.slice(i, i + BATCH_SIZE);
-      const batchResults = await Promise.all(
+      const results = await Promise.all(
         batch.map(async (id) => {
-          const msgRes = await fetch(
+          const res = await fetch(
             `https://gmail.googleapis.com/gmail/v1/users/me/messages/${id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`,
             { headers: { Authorization: `Bearer ${accessToken}` } }
           );
-          if (!msgRes.ok) return null;
-          return msgRes.json();
+          if (!res.ok) return null;
+          return res.json();
         })
       );
-      messages.push(...batchResults.filter(Boolean));
+      messages.push(...results.filter(Boolean));
     }
-
-    // Parse messages
-    const SYSTEM_LABEL_PREFIXES = [
-      'INBOX', 'UNREAD', 'IMPORTANT', 'SENT', 'DRAFT',
-      'SPAM', 'TRASH', 'STARRED', 'CATEGORY_',
-    ];
 
     const parsed = messages.map((msg: any) => {
       const headers = msg.payload?.headers || [];
@@ -128,25 +124,14 @@ export async function GET(req: NextRequest) {
 
       const fromRaw = get('From');
       const fromMatch = fromRaw.match(/^(.+?)\s*<(.+?)>$/);
-      const fromName = fromMatch
-        ? fromMatch[1].trim().replace(/^"|"$/g, '')
-        : fromRaw;
+      const fromName = fromMatch ? fromMatch[1].trim().replace(/^"|"$/g, '') : fromRaw;
       const fromAddr = fromMatch ? fromMatch[2].trim() : fromRaw;
-
       const labelIds: string[] = msg.labelIds || [];
 
-      // Resolve label IDs to names and filter out system labels
-      const resolvedLabels = labelIds
-        .map(id => labelIdToName.get(id))
-        .filter((name): name is string => {
-          if (!name) return false;
-          return !SYSTEM_LABEL_PREFIXES.some(prefix => name.startsWith(prefix));
-        });
-
-      // Identify niksen/project labels — those starting with our parent label
-      const niksenLabels = resolvedLabels.filter(name =>
-        name.startsWith(`${parentLabel}/`)
-      );
+      // ── Check project_emails — simple DB lookup ────────────────
+      const assignment = emailProjectMap.get(msg.id);
+      const niksenLabels = assignment ? [assignment.labelName] : [];
+      const niksenProjectIds = assignment ? [assignment.projectId] : [];
 
       return {
         id: msg.id,
@@ -160,10 +145,14 @@ export async function GET(req: NextRequest) {
         hasAttachments: (msg.payload?.parts || []).some(
           (p: any) => p.filename && p.filename.length > 0
         ),
-        labelIds,                  // raw IDs — used internally
-        niksenLabels,              // resolved names for project labels
+        labelIds,
+        niksenLabels,
+        niksenProjectIds,
       };
     });
+
+    const labelled = parsed.filter(m => m.niksenLabels.length > 0);
+    console.log('[LABEL STEP 1 - API] labelled messages:', labelled.length, 'of', parsed.length);
 
     return NextResponse.json({ messages: parsed });
 
