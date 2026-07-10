@@ -111,14 +111,26 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Delete all DB records for this project's label/emails
-  await db.from('project_emails').delete().eq('project_id', projectId);
-  await db.from('project_gmail_labels').delete().eq('project_id', projectId);
-  await db.from('user_gmail_label_sync').delete().eq('project_id', projectId);
+  const now = new Date().toISOString();
 
-  // Note: we do NOT delete the project itself — just remove the label.
-  // Project remains in the app but is unlinked from Gmail.
-  // To fully delete the project, use the app UI.
+  // Soft delete — set deleted_at, never hard delete
+  // Records remain recoverable from the app
+  await db.from('projects')
+    .update({ deleted_at: now })
+    .eq('id', projectId)
+    .eq('company_id', companyId);
+
+  await db.from('project_gmail_labels')
+    .update({ deleted_at: now, removed_at: now })
+    .eq('project_id', projectId);
+
+  await db.from('project_emails')
+    .delete()
+    .eq('project_id', projectId);
+
+  await db.from('user_gmail_label_sync')
+    .update({ label_removed_at: now })
+    .eq('project_id', projectId);
 
   return NextResponse.json({ ok: true });
 }

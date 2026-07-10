@@ -13,17 +13,29 @@ export async function GET(req: NextRequest) {
     { auth: { autoRefreshToken: false, persistSession: false } }
   );
 
-  const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo',
-    { headers: { Authorization: `Bearer ${accessToken}` } });
-  if (!userRes.ok) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
-  const userInfo = await userRes.json();
+  // Resolve email — prefer header, fall back to token
+  let email: string | null = req.headers.get('X-User-Email');
+  if (!email) {
+    const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo',
+      { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (userRes.ok) email = (await userRes.json()).email || null;
+  }
+  if (!email) return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
 
+  let userId: string | null = null;
   const { data: tokenRow } = await db
-    .from('user_gmail_tokens').select('user_id').eq('email', userInfo.email).single();
-  if (!tokenRow?.user_id) return NextResponse.json({ error: 'User not found' }, { status: 404 });
+    .from('user_gmail_tokens').select('user_id').eq('email', email).single();
+  if (tokenRow?.user_id) {
+    userId = userId;
+  } else {
+    const { data: pr } = await db.from('profiles').select('id').eq('email', email).single();
+    if (pr?.id) userId = pr.id;
+  }
+  if (!userId) return NextResponse.json({ error: 'User not found' }, { status: 404 });
+  const tokenRow2 = { user_id: userId };
 
   const { data: prof } = await db
-    .from('profiles').select('active_company_id').eq('id', tokenRow.user_id).single();
+    .from('profiles').select('active_company_id').eq('id', userId).single();
   if (!prof?.active_company_id) return NextResponse.json({ error: 'No company' }, { status: 404 });
 
   // Search projects by name or matter number
