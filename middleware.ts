@@ -6,6 +6,11 @@ export async function middleware(request: NextRequest) {
     request: { headers: request.headers },
   })
 
+  const { pathname } = request.nextUrl;
+
+  if (pathname.startsWith('/google')) return NextResponse.next();
+
+
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -36,8 +41,9 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
 
   // Protect dashboard routes
+  const BASE = 'https://niksen-flow.vercel.app';
   if (!user && request.nextUrl.pathname.startsWith('/dashboard')) {
-    return NextResponse.redirect(new URL('/login', request.url))
+    return NextResponse.redirect(new URL('${BASE}/login', request.url))
   }
 
   return response
