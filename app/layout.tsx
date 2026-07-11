@@ -9,7 +9,8 @@ export const metadata = {
   icons: {
     icon: '/favicon.svg',
     apple:'/favicon.svg',
-  }
+  },
+  google: "a9Xz9Q_dR3_MIzA_Dgsp01YgxVIEu-CdTKFViW4oBMg",
 };
 
 export default function RootLayout({
