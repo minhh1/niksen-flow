@@ -9,6 +9,7 @@ import {
   CheckCircle2, XCircle, Plus, X, Copy, Link, Clock, Mail,
 } from "lucide-react";
 import SourceEmailManager from "@/components/gmail/SourceEmailManager";
+import AdminTeamsTab from "@/components/admin/AdminTeamsTab";
 
 interface Member {
   id: string;
@@ -50,7 +51,7 @@ export default function AdminPage() {
   const [company, setCompany] = useState<Company | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [tokens, setTokens] = useState<Token[]>([]);
-  const [activeTab, setActiveTab] = useState<'members' | 'company' | 'invites' | 'gmail'>('members');
+  const [activeTab, setActiveTab] = useState<'members' | 'teams' | 'company' | 'invites' | 'gmail'>('members');
   const [saving, setSaving] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -67,6 +68,10 @@ export default function AdminPage() {
   // Source of truth emails
   const [sourceEmails, setSourceEmails] = useState<string[]>([]);
   const [connectedEmails, setConnectedEmails] = useState<string[]>([]);
+
+  // Invite token default team
+  const [newTokenTeamId, setNewTokenTeamId] = useState<string>('');
+  const [allTeams, setAllTeams] = useState<{ id: string; team_name: string }[]>([]);
 
   useEffect(() => { load(); }, []);
 
@@ -122,6 +127,14 @@ export default function AdminPage() {
       setCompanyAcn(comp.acn || '');
     }
     setTokens(tokenData || []);
+
+    // Load teams for invite default team selector
+    const { data: teamsData } = await supabase
+      .from('teams')
+      .select('id, team_name')
+      .eq('is_active', true)
+      .order('team_name');
+    setAllTeams(teamsData || []);
 
     // Load source emails from company
     setSourceEmails(comp?.gmail_source_emails || []);
@@ -233,13 +246,27 @@ export default function AdminPage() {
         created_by: user.id,
         company_id: company.id,
         note: newTokenNote.trim() || null,
+        default_team_id: newTokenTeamId || null,
         expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
       })
       .select()
       .single();
     setNewTokenNote('');
+    setNewTokenTeamId('');
     setGeneratingToken(false);
     if (data) setTokens(prev => [data, ...prev]);
+  };
+
+  const handleAssignTeam = async (memberId: string, teamId: string | null) => {
+    if (teamId) {
+      await supabase.from('team_members').upsert(
+        { team_id: teamId, profile_id: memberId },
+        { onConflict: 'team_id,profile_id' }
+      );
+    } else {
+      // Remove from all teams
+      await supabase.from('team_members').delete().eq('profile_id', memberId);
+    }
   };
 
   const handleRevokeToken = async (tokenId: string) => {
@@ -285,6 +312,7 @@ export default function AdminPage() {
 
   const tabs = [
     { id: 'members' as const,  label: 'Members',      icon: Users },
+    { id: 'teams'   as const,  label: 'Teams',        icon: Users },
     { id: 'invites' as const,  label: 'Invite links', icon: Link },
     { id: 'gmail'   as const,  label: 'Gmail',        icon: Mail },
     { id: 'company' as const,  label: 'Company',      icon: Settings },
@@ -390,6 +418,18 @@ export default function AdminPage() {
                       <p className="text-[11px] text-slate-400 truncate mt-0.5">
                         {member.email}
                       </p>
+                      {allTeams.length > 0 && (
+                        <select
+                          onChange={e => handleAssignTeam(member.id, e.target.value || null)}
+                          className="mt-1.5 text-[11px] text-slate-500 border border-slate-200 rounded-full px-3 py-1 outline-none bg-white hover:border-indigo-300 cursor-pointer"
+                          defaultValue=""
+                        >
+                          <option value="">Assign to team...</option>
+                          {allTeams.map(t => (
+                            <option key={t.id} value={t.id}>{t.team_name}</option>
+                          ))}
+                        </select>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
@@ -469,6 +509,34 @@ export default function AdminPage() {
                     Generate
                   </button>
                 </div>
+                {allTeams.length > 0 && (
+                  <div>
+                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2">
+                      Assign to team on join <span className="font-normal text-slate-300">(optional)</span>
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        onClick={() => setNewTokenTeamId('')}
+                        className={`px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all ${
+                          !newTokenTeamId ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
+                        }`}
+                      >
+                        No team
+                      </button>
+                      {allTeams.map(t => (
+                        <button
+                          key={t.id}
+                          onClick={() => setNewTokenTeamId(t.id)}
+                          className={`px-3 py-1.5 rounded-full text-[11px] font-medium border transition-all ${
+                            newTokenTeamId === t.id ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-500 border-slate-200 hover:border-indigo-300'
+                          }`}
+                        >
+                          {t.team_name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {tokens.length === 0 ? (
@@ -500,6 +568,11 @@ export default function AdminPage() {
                       <div className="flex-1 min-w-0">
                         {token.note && (
                           <p className="text-[13px] font-bold text-slate-700 mb-1">{token.note}</p>
+                        )}
+                        {(token as any).default_team_id && (
+                          <p className="text-[10px] text-indigo-500 font-medium mb-1">
+                            Team: {allTeams.find(t => t.id === (token as any).default_team_id)?.team_name || 'Unknown'}
+                          </p>
                         )}
                         <p className="text-[10px] font-mono text-slate-400 truncate">{link}</p>
                         <div className="flex items-center gap-3 mt-2 flex-wrap">
@@ -559,6 +632,11 @@ export default function AdminPage() {
             </>
           )}
 
+          {/* ── Teams ── */}
+          {activeTab === 'teams' && company?.id && (
+            <AdminTeamsTab companyId={company.id} />
+          )}
+
           {/* ── Gmail source of truth ── */}
           {activeTab === 'gmail' && (
             <div className="bg-white border border-slate-200 rounded-[40px] p-8">
@@ -567,6 +645,51 @@ export default function AdminPage() {
                 connectedEmails={connectedEmails}
                 onChange={handleSourceEmailsChange}
               />
+            </div>
+          )}
+
+          {/* ── Team access defaults ── */}
+          {activeTab === 'company' && (
+            <div className="bg-white border border-slate-200 rounded-[40px] p-8 mb-4">
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-4">
+                Default project access
+              </p>
+              <p className="text-[11px] text-slate-500 mb-4">
+                When a new project is created, who can see it by default?
+              </p>
+              <div className="space-y-2">
+                {([
+                  { value: 'all_members',      label: 'All company members' },
+                  { value: 'specific_teams',   label: 'Specific teams only' },
+                  { value: 'specific_members', label: 'Specific members only' },
+                ] as { value: string; label: string }[]).map(opt => (
+                  <button
+                    key={opt.value}
+                    onClick={async () => {
+                      if (!company) return;
+                      await supabase.from('companies')
+                        .update({ project_default_access: opt.value })
+                        .eq('id', company.id);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl border text-left transition-all ${
+                      (company as any)?.project_default_access === opt.value
+                        ? 'bg-indigo-50 border-indigo-200'
+                        : 'bg-white border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    <div className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
+                      (company as any)?.project_default_access === opt.value ? 'border-indigo-500' : 'border-slate-300'
+                    }`}>
+                      {(company as any)?.project_default_access === opt.value && (
+                        <div className="w-2 h-2 rounded-full bg-indigo-500" />
+                      )}
+                    </div>
+                    <span className={`text-[12px] font-bold ${
+                      (company as any)?.project_default_access === opt.value ? 'text-indigo-800' : 'text-slate-700'
+                    }`}>{opt.label}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 

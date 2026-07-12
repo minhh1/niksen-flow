@@ -1,7 +1,7 @@
 // components/Sidebar.tsx
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   MapPin, Building2, Plus, LogOut, LayoutGrid,
   Settings, Shield, ChevronsUpDown, Loader2, Mail,
@@ -15,6 +15,8 @@ import NewProjectModal from "./NewProjectModal";
 import NewEntityModal from "./NewEntityModal";
 import { useCustomTables } from "@/lib/hooks/useCustomTables";
 import type { ActiveFilter } from "@/lib/types/filters";
+import { useTableRows, useInvalidateRows } from "@/lib/hooks/useTableRows";
+import { useProfile } from "@/lib/hooks/useProfile";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -511,12 +513,8 @@ export default function Sidebar() {
   const router = useRouter();
   const currentId = searchParams.get("id");
 
-  const [profile, setProfile] = useState<any>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [memberships, setMemberships] = useState<any[]>([]);
   const [showCompanySwitcher, setShowCompanySwitcher] = useState(false);
   const [switchingCompany, setSwitchingCompany] = useState(false);
-  const [items, setItems] = useState<any[]>([]);
   const [isProjOpen, setIsProjOpen] = useState(false);
   const [isEntOpen, setIsEntOpen] = useState(false);
   const [visibleTables, setVisibleTables] = useState<string[]>([]);
@@ -529,6 +527,63 @@ export default function Sidebar() {
   const mode = pathname.includes("projects") ? "projects"
     : pathname.includes("properties") ? "properties"
     : "entities";
+
+  // ── TanStack Query — shared cache across sidebar + master table ──
+  const { data: profileData } = useProfile();
+  const profile = profileData ?? null;
+  const isAdmin = profileData?.isAdmin ?? false;
+  const memberships = profileData?.memberships ?? [];
+  const invalidateRows = useInvalidateRows();
+
+  const { data: rowsData = [] } = useTableRows(mode as 'projects' | 'properties' | 'entities');
+
+  // Apply tree config (sort + filter) to rowsData in memory — no extra DB fetch
+  const items = useMemo(() => {
+    let result = [...rowsData];
+    const config = treeConfig;
+
+    // Apply base filters
+    config.filters
+      .filter(f => !f.fieldId.startsWith('cf:'))
+      .forEach(filter => {
+        if (!filter.value && !['is_empty', 'is_not_empty', 'is_true', 'is_false'].includes(filter.operator)) return;
+        result = result.filter((item: any) => {
+          const val = String(item[filter.fieldId] ?? '').toLowerCase();
+          const fval = filter.value.toLowerCase();
+          switch (filter.operator) {
+            case 'equals':       return val === fval;
+            case 'not_equals':   return val !== fval;
+            case 'contains':     return val.includes(fval);
+            case 'not_contains': return !val.includes(fval);
+            case 'starts_with':  return val.startsWith(fval);
+            case 'is_empty':     return val === '';
+            case 'is_not_empty': return val !== '';
+            default:             return true;
+          }
+        });
+      });
+
+    // Sort in memory
+    if (config.sortField && !config.sortField.startsWith('cf:')) {
+      result.sort((a: any, b: any) => {
+        const va = String(a[config.sortField] ?? '');
+        const vb = String(b[config.sortField] ?? '');
+        const cmp = va.localeCompare(vb, undefined, { numeric: true, sensitivity: 'base' });
+        return config.sortDirection === 'asc' ? cmp : -cmp;
+      });
+    }
+
+    return result;
+  }, [rowsData, treeConfig]);
+
+  // Apply visible tables from profile
+  useEffect(() => {
+    if (profileData?.sidebar_visible_tables?.length) {
+      setVisibleTables(profileData.sidebar_visible_tables);
+    } else if (profileData) {
+      setVisibleTables(ALL_SYSTEM_TABLES.map(t => t.slug));
+    }
+  }, [profileData?.sidebar_visible_tables]);
 
   // ── Load tree config from DB when mode changes ─────────────────
   useEffect(() => {
@@ -552,13 +607,8 @@ export default function Sidebar() {
     loadCF();
   }, [mode]);
 
-  useEffect(() => {
-    fetchTreeData();
-  }, [mode, treeConfig]);
-
-  useEffect(() => {
-    fetchProfile();
-  }, []);
+  // items loaded via useTableRows hook (shared cache with master table)
+  // fetchTreeData still used for config-filtered views
 
   useEffect(() => {
     if (!showCompanySwitcher) return;
@@ -567,69 +617,7 @@ export default function Sidebar() {
     return () => document.removeEventListener('click', handleClick);
   }, [showCompanySwitcher]);
 
-  // ── Profile + visibility ───────────────────────────────────────
-  const fetchProfile = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-
-    // Try with sidebar_visible_tables first, fall back if column doesn't exist
-    let prof: any = null;
-    let visibleTablesData: any = null;
-
-    const { data: profFull, error } = await supabase
-      .from("profiles")
-      .select("id, full_name, is_admin, active_company_id, sidebar_visible_tables")
-      .eq("id", user.id)
-      .single();
-
-    if (error) {
-      // Column might not exist yet — fetch without it
-      const { data: profBasic } = await supabase
-        .from("profiles")
-        .select("id, full_name, is_admin, active_company_id")
-        .eq("id", user.id)
-        .single();
-      prof = profBasic;
-    } else {
-      prof = profFull;
-      visibleTablesData = profFull?.sidebar_visible_tables;
-    }
-
-    if (!prof) return;
-
-    // Get company
-    let company = null;
-    if (prof.active_company_id) {
-      const { data: comp } = await supabase
-        .from("companies")
-        .select("id, name, status")
-        .eq("id", prof.active_company_id)
-        .single();
-      company = comp;
-    }
-
-    setProfile({ ...prof, company });
-    const { data: membership } = await supabase
-      .from('company_memberships')
-      .select('role')
-      .eq('user_id', user.id)
-      .eq('company_id', prof?.active_company_id)
-      .single();
-    setIsAdmin(membership?.role === 'company_admin');
-    // Set visible tables
-    if (visibleTablesData) {
-      setVisibleTables(visibleTablesData);
-    } else {
-      setVisibleTables(ALL_SYSTEM_TABLES.map(t => t.slug));
-    }
-
-    // Get memberships
-    const { data: ms } = await supabase
-      .from("company_memberships")
-      .select("company_id, role, company:company_id(id, name, status)")
-      .eq("user_id", user.id);
-    setMemberships(ms || []);
-  };
+  // fetchProfile removed — data comes from useProfile() TanStack Query hook
 
   // ── Tree data fetch ────────────────────────────────────────────
   const fetchTreeData = async () => {
@@ -727,7 +715,7 @@ export default function Sidebar() {
         });
     }
 
-    setItems(items);
+    // items derived from useMemo on rowsData — no setItems needed
   };
 
   // ── Resolve display label ──────────────────────────────────────
@@ -1064,13 +1052,13 @@ export default function Sidebar() {
                     <div className={`h-7 w-7 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${
                       isActive ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-500'
                     }`}>
-                      {m.company?.name?.substring(0, 2)?.toUpperCase() || '??'}
+                      {(m.company as any)?.name?.substring(0, 2)?.toUpperCase() || '??'}
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className={`text-[12px] font-bold truncate ${
                         isActive ? 'text-slate-900' : 'text-slate-600'
                       }`}>
-                        {m.company?.name || 'Unknown'}
+                        {(m.company as any)?.name || 'Unknown'}
                       </p>
                       <p className="text-[9px] text-slate-400 uppercase font-medium">
                         {m.role?.replace('_', ' ')}
@@ -1104,12 +1092,12 @@ export default function Sidebar() {
       <NewProjectModal
         isOpen={isProjOpen}
         onClose={() => setIsProjOpen(false)}
-        onRefresh={fetchTreeData}
+        onRefresh={() => invalidateRows(mode as any)}
       />
       <NewEntityModal
         isOpen={isEntOpen}
         onClose={() => setIsEntOpen(false)}
-        onRefresh={fetchTreeData}
+        onRefresh={() => invalidateRows(mode as any)}
       />
     </div>
   );

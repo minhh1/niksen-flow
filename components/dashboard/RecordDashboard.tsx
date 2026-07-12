@@ -5,7 +5,7 @@ import { useState, useEffect, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import {
   Loader2, AlertCircle, ArrowLeft, Trash2,
-  Pencil, FolderKanban, Plus, X
+  Pencil, FolderKanban, Plus, X, ShieldCheck
 } from "lucide-react";
 import TabBar, { type RecordTab } from "./TabBar";
 import AddTabModal from "./AddTabModal";
@@ -16,6 +16,7 @@ import CalendarTab from "./tabs/CalendarTab";
 import EmailsTab from "./tabs/EmailsTab";
 import { useCustomTables } from "@/lib/hooks/useCustomTables";
 import { getCompanyId } from "@/lib/services/schemaService";
+import ProjectAccessPanel from "@/components/projects/ProjectAccessPanel";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -55,6 +56,7 @@ export default function RecordDashboard({
   const [subProjectHeight, setSubProjectHeight] = useState(400);
   const resizingRef = useRef<{ startY: number; startH: number } | null>(null);
   const [linkedEntityNames, setLinkedEntityNames] = useState<Record<string, string>>({});
+  const [isAdmin, setIsAdmin] = useState(false);
 
 
   const recordTable = systemTable || tableId || '';
@@ -89,6 +91,17 @@ export default function RecordDashboard({
     const cid = await getCompanyId();
     if (!cid) { setLoading(false); return; }
     setCompanyId(cid);
+    // Check admin status
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      const { data: mem } = await supabase
+        .from('company_memberships')
+        .select('role')
+        .eq('user_id', user.id)
+        .eq('company_id', cid)
+        .single();
+      setIsAdmin(mem?.role === 'company_admin');
+    }
     await Promise.all([loadRecord(cid), loadTabs(cid), loadFields(cid), loadSubProjects(), loadParent()]);
     setLoading(false);
   };
@@ -630,6 +643,13 @@ export default function RecordDashboard({
           Custom table view — coming soon
         </div>
       )}
+      {activeTabId === '__access__' && systemTable === 'projects' && (
+        <ProjectAccessPanel
+          projectId={recordId}
+          companyId={companyId}
+          isAdmin={isAdmin}
+        />
+      )}
       {!activeTab && tabs.length === 0 && (
         <div
           className="flex flex-col items-center justify-center py-20 gap-4 cursor-pointer"
@@ -898,7 +918,7 @@ export default function RecordDashboard({
         {/* Tab bar */}
         <TabBar
           tabs={tabs}
-          activeTabId={activeTabId}
+          activeTabId={activeTabId === '__access__' ? null : activeTabId}
           onSelect={setActiveTabId}
           onAdd={() => setShowAddTab(true)}
           onRename={handleRenameTab}
@@ -906,6 +926,8 @@ export default function RecordDashboard({
           onReorder={handleReorderTabs}
           isEditing={isEditingTabs}
           onToggleEdit={() => setIsEditingTabs(p => !p)}
+          extraTabs={systemTable === 'projects' && isAdmin ? [{ id: '__access__', label: 'Access', icon: ShieldCheck }] : []}
+          onSelectExtra={setActiveTabId}
         />
       </header>
 

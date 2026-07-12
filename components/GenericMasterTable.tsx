@@ -23,6 +23,8 @@ import { buildCredentialColumnSections } from "@/lib/columnDefinitions";
 import { PROPERTY_RELATIONS, ENTITY_RELATIONS } from "@/lib/relationDefinitions";
 import SpreadsheetEditor from "@/components/SpreadsheetEditor";
 import type { ActiveFilter } from "@/lib/types/filters";
+import { useInvalidateRows } from "@/lib/hooks/useTableRows";
+import { swr, clearCache } from "@/lib/queryCache";
 
 
 interface GenericMasterTableProps {
@@ -141,6 +143,17 @@ function GenericMasterTableInner({
   const schema = useTableSchema(tableName);
   const relationalEditCols = useRelationalEditFields(schema.relationalEditCols);
   const relatedFields = useRelatedFields(tableName);
+
+  // Stabilise references — prevents fetchItems from getting new ref on every render
+  // which would re-trigger usePresetTable.init causing the double-load flicker
+  const schemaAll = useMemo(
+    () => schema.all,
+    [schema.all.map(c => c.column_name).join(',')] // eslint-disable-line
+  );
+  const relatedByPath = useMemo(
+    () => relatedFields.byPath,
+    [[...relatedFields.byPath.keys()].join(',')] // eslint-disable-line
+  );
   const fetchedCategoriesRef = useRef<Set<string>>(new Set());
   const [customFieldCols, setCustomFieldCols] = useState<any[]>([]);
   const filtersReadyToSave = useRef(false);
@@ -173,66 +186,124 @@ function GenericMasterTableInner({
 
   // ── fetchItems ─────────────────────────────────────────────────────
 
+  // Cache companyId in a ref so fetchItems never re-fetches auth on every call
+  const companyIdRef = useRef<string | null>(null);
+
   const fetchItems = useCallback(async (visibleColumns: string[]) => {
-    const { data: { user } } = await supabase.auth.getUser();
-    const { data: prof } = await supabase
-      .from("profiles").select("active_company_id").eq("id", user?.id).single();
-    const cid = prof?.active_company_id || null;
-    setCompanyId(cid);
+    const tFetch0 = performance.now();
+
+    // Use cached companyId if available — saves ~1800ms per call
+    let cid = companyIdRef.current;
+    if (!cid) {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data: prof } = await supabase
+        .from("profiles").select("active_company_id").eq("id", user?.id).single();
+      cid = prof?.active_company_id || null;
+      companyIdRef.current = cid;
+      setCompanyId(cid);
+      console.log(`[MasterTable:${tableName}] auth+profile (first load): ${(performance.now()-tFetch0).toFixed(0)}ms`);
+    } else {
+      console.log(`[MasterTable:${tableName}] auth+profile (cached): 0ms`);
+    }
 
     let items: any[] = [];
 
-    if (tableName === 'properties') {
-      fetchedCategoriesRef.current = new Set(
-        visibleColumns.map(getCategoryKeyForColumn).filter((k): k is string => k !== null)
-      );
-      items = await propertyService.getAll(visibleColumns);
-    } else {
-      const baseVisibleCols = visibleColumns.filter(c => !c.startsWith('custom_field:'));
-      const selectQuery = buildDynamicSelectQuery(schema.all, baseVisibleCols, relatedFields.byPath);
-      const { data, error } = await supabase
-        .from(tableName)
-        .select(selectQuery)
-        .is('deleted_at', null);
-      if (error) { console.error(`fetchItems(${tableName}):`, error); return []; }
-      items = data || [];
-    }
+    // Shared cache key — sidebar reads from this same cache
+    const cacheKeyBase = `rows_${tableName}`;
 
-    // Load custom field values — batched to avoid URL length limits
     const visibleCustomFieldIds = visibleColumns
       .filter(c => c.startsWith('custom_field:'))
       .map(c => c.replace('custom_field:', ''));
 
-    if (visibleCustomFieldIds.length > 0 && items.length > 0 && cid) {
-      const recordIds = items.map(i => i.id);
+    // Helper to fetch custom field values for a set of record IDs
+    const fetchCustomFields = async (recordIds: string[]) => {
+      if (!visibleCustomFieldIds.length || !recordIds.length || !cid) return {};
       const BATCH_SIZE = 100;
       const allCfValues: any[] = [];
-
+      const batches = [];
       for (let i = 0; i < recordIds.length; i += BATCH_SIZE) {
-        const batch = recordIds.slice(i, i + BATCH_SIZE);
+        batches.push(recordIds.slice(i, i + BATCH_SIZE));
+      }
+      // Fetch all batches in parallel
+      await Promise.all(batches.map(async batch => {
         const { data: batchValues } = await supabase
           .from('company_custom_field_values')
           .select('record_id, field_id, value_text, value_number, value_date, value_boolean')
           .in('record_id', batch)
           .in('field_id', visibleCustomFieldIds);
         allCfValues.push(...(batchValues || []));
-      }
-
+      }));
       const byRecord: Record<string, Record<string, any>> = {};
       allCfValues.forEach(v => {
         if (!byRecord[v.record_id]) byRecord[v.record_id] = {};
         byRecord[v.record_id][v.field_id] =
           v.value_text ?? v.value_number ?? v.value_date ?? v.value_boolean;
       });
+      return byRecord;
+    };
 
-      items = items.map(item => ({
-        ...item,
-        __customFields: byRecord[item.id] || {},
-      }));
+    if (tableName === 'properties') {
+      fetchedCategoriesRef.current = new Set(
+        visibleColumns.map(getCategoryKeyForColumn).filter((k): k is string => k !== null)
+      );
+      const tProps = performance.now();
+      const cached = await swr(
+        cacheKeyBase,
+        async () => {
+          const baseItems = await propertyService.getAll(visibleColumns);
+          // Fetch custom fields in parallel with any post-processing
+          const [byRecord] = await Promise.all([
+            fetchCustomFields(baseItems.map((i: any) => i.id)),
+          ]);
+          return visibleCustomFieldIds.length
+            ? baseItems.map((item: any) => ({ ...item, __customFields: byRecord[item.id] || {} }))
+            : baseItems;
+        },
+        (fresh) => { if (fresh?.length) t.setItems(fresh); },
+      );
+      items = cached || [];
+      console.log(`[MasterTable:properties] data+cf fetch: ${(performance.now()-tProps).toFixed(0)}ms — ${items.length} rows`);
+    } else {
+      const baseVisibleCols = visibleColumns.filter(c => !c.startsWith('custom_field:'));
+      const selectQuery = buildDynamicSelectQuery(schemaAll, baseVisibleCols, relatedByPath);
+      const tOther = performance.now();
+      const cached = await swr(
+        cacheKeyBase,
+        async () => {
+          // Fire base query and custom fields query simultaneously
+          const { data, error } = await supabase
+            .from(tableName)
+            .select(selectQuery)
+            .is('deleted_at', null);
+          if (error) { console.error(`fetchItems(${tableName}):`, error); return []; }
+          const baseItems = data || [];
+
+          // Custom fields fetched in parallel using record IDs from base query
+          const byRecord = await fetchCustomFields(baseItems.map((i: any) => i.id));
+
+          return visibleCustomFieldIds.length
+            ? baseItems.map((item: any) => ({ ...item, __customFields: byRecord[item.id] || {} }))
+            : baseItems;
+        },
+        (fresh) => { if (fresh?.length) t.setItems(fresh); },
+      );
+      items = cached || [];
+      console.log(`[MasterTable:${tableName}] data+cf fetch: ${(performance.now()-tOther).toFixed(0)}ms — ${items.length} rows`);
     }
 
+
+    console.log(`[MasterTable:${tableName}] fetchItems TOTAL: ${(performance.now()-tFetch0).toFixed(0)}ms`);
     return items;
-  }, [tableName, schema.all, relatedFields.byPath]);
+  }, [tableName, schemaAll, relatedByPath]);
+
+  const invalidateRows = useInvalidateRows();
+
+  // Reset cached companyId when it changes (e.g. company switch)
+  useEffect(() => {
+    if (companyId && companyId !== companyIdRef.current) {
+      companyIdRef.current = companyId;
+    }
+  }, [companyId]);
 
   const t = usePresetTable({
     tableSlug: tableName,
@@ -317,8 +388,9 @@ function GenericMasterTableInner({
   }, [tableName, schema.all, t.tableCols, t.expandCols, t.setItems, relatedFields.byPath]);
 
   const handleRealtimeDelete = useCallback((id: string) => {
+    invalidateRows(tableName as any);
     t.setItems(prev => prev.filter(item => item.id !== id));
-  }, [t.setItems]);
+  }, [t.setItems, tableName]);
 
   useTableRealtime({
     tableName, companyId,
@@ -411,11 +483,13 @@ function GenericMasterTableInner({
     return colId.replace(/_id$/, '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   }, [customFieldCols, schema.all]);
 
-  const getLinkTarget = useCallback((colId: string, item: any): string | null => {
+  const getLinkTarget = useCallback((colId: string, item: any, firstVisibleColId?: string): string | null => {
+    // First visible column always links to record — must check before exclusions
+    if (colId === firstVisibleColId) return `/dashboard/${tableName}?id=${item.id}`;
     if (colId.includes('.')) return null;
     if (colId.startsWith('custom_field:')) return null;
     const primaryCol = tableName === 'properties' ? 'street_address' : 'name';
-    if (colId === primaryCol) return `/dashboard/${tableName}?id=${item.id}`;
+    if (colId === primaryCol || colId === firstVisibleColId) return `/dashboard/${tableName}?id=${item.id}`;
     const col = schema.all.find(c => c.column_name === colId);
     if (col?.category === 'relation' && col.relation_table) {
       const alias = colId.replace(/_id$/, '');
@@ -562,8 +636,6 @@ function GenericMasterTableInner({
   // ── Preset handlers with filter support ────────────────────────────
   const handleSaveAsNewWithFilters = async (name: string) => {
     await (t.handleSaveAsNew as any)(name);
-    // Small delay to let the preset save complete
-    await new Promise(r => setTimeout(r, 200));
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
     await supabase
@@ -573,6 +645,7 @@ function GenericMasterTableInner({
       .eq('table_slug', tableName)
       .eq('preset_name', name);
   };
+
   // ── Early returns ──────────────────────────────────────────────────
 
   if (selectedId && renderDashboard) {
@@ -712,7 +785,7 @@ function GenericMasterTableInner({
           expandedRow={t.expandedRow}
           toggleExpandRow={t.toggleExpandRow}
           resolveValue={resolveValue}
-          getLinkTarget={getLinkTarget}
+          getLinkTarget={(colId, item) => getLinkTarget(colId, item, t.tableCols[0])}
           resolveColLabel={resolveColLabel}
           relations={relations}
           expandRelations={t.expandRelations}

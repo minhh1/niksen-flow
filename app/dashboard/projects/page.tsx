@@ -2,7 +2,7 @@
 import GenericMasterTable from "@/components/GenericMasterTable";
 import RecordDashboard from "@/components/dashboard/RecordDashboard";
 
-export default function PropertiesPage() {
+export default function ProjectsPage() {
   return (
     <GenericMasterTable
       tableName="projects"

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import {
   Plus, Pencil, Trash2, GripVertical, Check, X,
-  FileText, ListChecks, Calendar, Mail, FolderKanban, Table2
+  FileText, ListChecks, Calendar, Mail, FolderKanban, Table2, ShieldCheck
 } from "lucide-react";
 import * as LucideIcons from "lucide-react";
 
@@ -25,6 +25,12 @@ const TAB_TYPE_ICONS: Record<string, React.ElementType> = {
   custom_table: Table2,
 };
 
+interface ExtraTab {
+  id: string;
+  label: string;
+  icon?: React.ElementType;
+}
+
 interface Props {
   tabs: RecordTab[];
   activeTabId: string | null;
@@ -35,12 +41,15 @@ interface Props {
   onReorder: (tabs: RecordTab[]) => void;
   isEditing: boolean;
   onToggleEdit: () => void;
+  extraTabs?: ExtraTab[];
+  onSelectExtra?: (tabId: string) => void;
 }
 
 export default function TabBar({
   tabs, activeTabId, onSelect, onAdd,
   onRename, onDelete, onReorder,
   isEditing, onToggleEdit,
+  extraTabs = [], onSelectExtra,
 }: Props) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
@@ -150,6 +159,26 @@ export default function TabBar({
         <Plus size={14} />
         <span className="text-[12px] font-medium">Add tab</span>
       </button>
+
+      {/* Fixed extra tabs (e.g. Access) — non-removable, always at end */}
+      {extraTabs.map(et => {
+        const isActive = activeTabId === et.id;
+        const EtIcon = et.icon;
+        return (
+          <div
+            key={et.id}
+            onClick={() => onSelectExtra?.(et.id)}
+            className={`flex items-center gap-2 px-4 py-3.5 border-b-2 transition-all shrink-0 cursor-pointer ${
+              isActive
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
+          >
+            {EtIcon && <EtIcon size={14} className="shrink-0" />}
+            <span className="text-[12px] font-medium whitespace-nowrap">{et.label}</span>
+          </div>
+        );
+      })}
 
       {/* Edit toggle */}
       {tabs.length > 0 && (

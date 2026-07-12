@@ -1,7 +1,7 @@
 // lib/hooks/usePresetTable.ts
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { preferenceService } from "@/lib/services/preferenceService";
 
@@ -38,8 +38,30 @@ export function usePresetTable({
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
 
+  // Guard against re-running init when fetchItems ref changes due to
+  // upstream dependency array instability
+  const initRanRef = useRef(false);
+  const fetchItemsRef = useRef(fetchItems);
+  fetchItemsRef.current = fetchItems; // always latest without being a dep
+
   const init = useCallback(async () => {
     setLoading(true);
+
+    // ── Step 1: show cache immediately ────────────────────────────
+    let hasCachedData = false;
+    try {
+      const raw = localStorage.getItem(`nk_cache_rows_${tableSlug}`);
+      if (raw) {
+        const entry = JSON.parse(raw);
+        if (entry?.data?.length) {
+          setItems(entry.data);
+          setLoading(false);
+          hasCachedData = true;
+        }
+      }
+    } catch {}
+
+    // ── Step 2: load preferences (columns/presets) ────────────────
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { setLoading(false); return; }
 
@@ -50,7 +72,7 @@ export function usePresetTable({
 
     if (saved?.length) {
       setPresets(saved);
-      const active = saved.find(p => p.is_active) || saved[0];
+      const active = saved.find((p: any) => p.is_active) || saved[0];
       resolvedTableCols = active.columns || defaultCols;
       resolvedExpandCols = active.expansion_columns || defaultExpandCols;
       setTableCols(resolvedTableCols);
@@ -62,10 +84,19 @@ export function usePresetTable({
       setPresets([]);
     }
 
-    const data = await fetchItems([...resolvedTableCols, ...resolvedExpandCols]);
-    setItems(data);
-    setLoading(false);
-  }, [tableSlug, fetchItems]); // eslint-disable-line react-hooks/exhaustive-deps
+    // ── Step 3: fetch fresh data ──────────────────────────────────
+    // If we had cached data, fetch in background and only update if changed
+    if (hasCachedData) {
+      fetchItemsRef.current([...resolvedTableCols, ...resolvedExpandCols])
+        .then(fresh => { if (fresh?.length) setItems(fresh); })
+        .catch(() => {});
+    } else {
+      // No cache — must wait
+      const data = await fetchItemsRef.current([...resolvedTableCols, ...resolvedExpandCols]);
+      if (data?.length) setItems(data);
+      setLoading(false);
+    }
+  }, [tableSlug]); // fetchItems accessed via ref — stable dep array
 
   useEffect(() => { init(); }, [init]);
 
@@ -92,13 +123,26 @@ export function usePresetTable({
     const { data: { user } } = await supabase.auth.getUser();
     if (user) await preferenceService.setActive(user.id, tableSlug, p.preset_name);
 
-    // Switching presets can introduce columns whose data was never
-    // fetched (e.g. a category this preset shows that the previous one
-    // didn't) — re-fetch with the newly selected preset's full column
-    // list so nothing renders blank.
-    const data = await fetchItems([...(p.columns || []), ...(p.expansion_columns || [])]);
-    setItems(data);
+    // Show cached data immediately — no blank flash while switching presets
+    try {
+      const cacheKey = `nk_cache_rows_${tableSlug}`;
+      const raw = localStorage.getItem(cacheKey);
+      if (raw) {
+        const entry = JSON.parse(raw);
+        if (entry?.data?.length) {
+          setItems(entry.data);
+          setIsBusy(false);
+          // Refetch in background to get any new columns this preset needs
+          fetchItemsRef.current([...(p.columns || []), ...(p.expansion_columns || [])])
+            .then(fresh => { if (fresh?.length) setItems(fresh); });
+          return;
+        }
+      }
+    } catch {}
 
+    // No cache — must wait for fresh data
+    const data = await fetchItemsRef.current([...(p.columns || []), ...(p.expansion_columns || [])]);
+    if (data?.length) setItems(data);
     setIsBusy(false);
   };
 
@@ -148,8 +192,17 @@ export function usePresetTable({
       setExpandRelations(fallback.expand_relations || []);
       setActivePreset(fallback.preset_name);
 
-      const data = await fetchItems([...(fallback.columns || []), ...(fallback.expansion_columns || [])]);
-      setItems(data);
+      // Show cached data immediately then refetch in background
+      try {
+        const cacheKey = `nk_cache_rows_${tableSlug}`;
+        const raw = localStorage.getItem(cacheKey);
+        if (raw) {
+          const entry = JSON.parse(raw);
+          if (entry?.data?.length) setItems(entry.data);
+        }
+      } catch {}
+      fetchItemsRef.current([...(fallback.columns || []), ...(fallback.expansion_columns || [])])
+        .then(fresh => { if (fresh?.length) setItems(fresh); });
     }
 
     setIsBusy(false);

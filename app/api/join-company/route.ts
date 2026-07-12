@@ -14,7 +14,6 @@ export async function POST(req: NextRequest) {
   const { token } = body;
   if (!token) return NextResponse.json({ error: 'Token required' }, { status: 400 });
 
-  // ── Create admin client INSIDE the handler (not at module level) ──
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -27,15 +26,14 @@ export async function POST(req: NextRequest) {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  // Get current user from session
   const supabase = await createSupabaseServerClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
-  // Look up token
+  // Look up token — include default_team_id
   const { data: tokenData, error: tokenError } = await supabaseAdmin
     .from('registration_tokens')
-    .select('id, company_id, used_at, expires_at, company:company_id(id, name)')
+    .select('id, company_id, used_at, expires_at, default_team_id, company:company_id(id, name)')
     .eq('token', token)
     .single();
 
@@ -56,7 +54,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Token has no company associated' }, { status: 400 });
   }
 
-  // Upsert membership as operator (never carry over role from other companies)
+  // Upsert membership as operator
   const { error: memberError } = await supabaseAdmin
     .from('company_memberships')
     .upsert({
@@ -79,6 +77,21 @@ export async function POST(req: NextRequest) {
   if (profileError) {
     console.error('[join-company] profile update error:', profileError);
     return NextResponse.json({ error: profileError.message }, { status: 500 });
+  }
+
+  // Assign to default team if specified on the token
+  if (tokenData.default_team_id) {
+    const { error: teamError } = await supabaseAdmin
+      .from('team_members')
+      .upsert({
+        team_id: tokenData.default_team_id,
+        profile_id: user.id,
+      }, { onConflict: 'team_id,profile_id' });
+    if (teamError) {
+      console.error('[join-company] team assignment error:', teamError.message);
+    } else {
+      console.log('[join-company] assigned to team', tokenData.default_team_id);
+    }
   }
 
   // Mark token used

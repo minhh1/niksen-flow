@@ -8,7 +8,6 @@ import * as LucideIcons from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useCustomTable } from "@/lib/hooks/useCustomTable";
 import { createRecord, deleteRecord } from "@/lib/services/customTableService";
-import GenericRecordDashboard from "@/components/GenericRecordDashboard";
 import SpreadsheetEditor from "@/components/SpreadsheetEditor";
 import type { CustomTable } from "@/lib/hooks/useCustomTables";
 import type { CustomTableField, CustomTableRecord } from "@/lib/hooks/useCustomTable";
