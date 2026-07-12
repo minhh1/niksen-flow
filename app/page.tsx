@@ -1,11 +1,6 @@
 // app/page.tsx
 import Link from "next/link";
 
-export const metadata = {
-  title: "Flow — Management Central",
-  description: "Property and legal matter management for modern law firms.",
-};
-
 const features = [
   {
     icon: "◈",
@@ -42,13 +37,11 @@ const features = [
 export default function HomePage() {
   return (
     <div className="min-h-screen bg-white text-slate-900 antialiased">
-      <meta name="google-site-verification" content="a9Xz9Q_dR3_MIzA_Dgsp01YgxVIEu-CdTKFViW4oBMg" />
 
       {/* Nav */}
       <nav className="fixed top-0 inset-x-0 z-50 bg-white/80 backdrop-blur border-b border-slate-100">
         <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            {/* Logo mark */}
             <svg width="28" height="28" viewBox="0 0 140 140" fill="none" xmlns="http://www.w3.org/2000/svg">
               <rect x="0" y="14" width="110" height="110" rx="24" fill="#818cf8" fillOpacity="0.4"/>
               <rect x="14" y="0" width="110" height="110" rx="24" fill="#4f46e5"/>
@@ -58,10 +51,7 @@ export default function HomePage() {
           <div className="flex items-center gap-6">
             <Link href="/privacy" className="text-[12px] text-slate-400 hover:text-slate-700 transition-colors">Privacy</Link>
             <Link href="/terms" className="text-[12px] text-slate-400 hover:text-slate-700 transition-colors">Terms</Link>
-            <Link
-              href="/login"
-              className="px-4 py-2 bg-indigo-600 text-white text-[12px] font-medium rounded-full hover:bg-indigo-700 transition-colors"
-            >
+            <Link href="/login" className="px-4 py-2 bg-indigo-600 text-white text-[12px] font-medium rounded-full hover:bg-indigo-700 transition-colors">
               Sign in
             </Link>
           </div>
@@ -84,32 +74,18 @@ export default function HomePage() {
             Assign emails to matters, sync labels across your team, and keep everyone on the same page.
           </p>
           <div className="flex items-center justify-center gap-4">
-            <Link
-              href="/login"
-              className="px-7 py-3.5 bg-indigo-600 text-white text-sm font-medium rounded-full hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-200"
-            >
+            <Link href="/login" className="px-7 py-3.5 bg-indigo-600 text-white text-sm font-medium rounded-full hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-200">
               Get started
             </Link>
-            <Link
-              href="/privacy"
-              className="px-7 py-3.5 text-slate-500 text-sm hover:text-slate-800 transition-colors"
-            >
+            <Link href="/privacy" className="px-7 py-3.5 text-slate-500 text-sm hover:text-slate-800 transition-colors">
               Learn more →
             </Link>
           </div>
         </div>
       </section>
 
-      {/* Logo mark large */}
-      <section className="pb-20 flex justify-center">
-        <svg width="100" height="100" viewBox="0 0 140 140" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="0" y="14" width="110" height="110" rx="24" fill="#818cf8" fillOpacity="0.2"/>
-          <rect x="14" y="0" width="110" height="110" rx="24" fill="#4f46e5" fillOpacity="0.15"/>
-        </svg>
-      </section>
-
       {/* Features */}
-      <section className="pb-28 px-6 bg-slate-50 py-24">
+      <section className="bg-slate-50 py-24 px-6">
         <div className="max-w-5xl mx-auto">
           <p className="text-center text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-12">
             Everything your firm needs
@@ -129,18 +105,12 @@ export default function HomePage() {
       {/* Gmail add-on callout */}
       <section className="py-24 px-6">
         <div className="max-w-3xl mx-auto bg-indigo-600 rounded-[40px] px-12 py-16 text-center">
-          <h2 className="text-3xl font-light text-white tracking-tight mb-4">
-            Works right inside Gmail
-          </h2>
+          <h2 className="text-3xl font-light text-white tracking-tight mb-4">Works right inside Gmail</h2>
           <p className="text-indigo-200 text-base leading-relaxed mb-8 max-w-lg mx-auto">
             The Flow Gmail Add-on lets you create projects, assign emails, and manage labels without ever leaving your inbox.
           </p>
-          <a
-            href="https://workspace.google.com/marketplace"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 px-7 py-3.5 bg-white text-indigo-600 text-sm font-medium rounded-full hover:bg-indigo-50 transition-colors"
-          >
+          <a href="https://workspace.google.com/marketplace" target="_blank" rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-7 py-3.5 bg-white text-indigo-600 text-sm font-medium rounded-full hover:bg-indigo-50 transition-colors">
             Install Gmail Add-on →
           </a>
         </div>

@@ -27,6 +27,7 @@ interface Company {
   acn: string | null;
   status: string;
   created_at: string;
+  project_default_access: 'all_members' | 'specific_teams' | 'specific_members';
 }
 
 interface Token {
@@ -670,22 +671,23 @@ export default function AdminPage() {
                       await supabase.from('companies')
                         .update({ project_default_access: opt.value })
                         .eq('id', company.id);
+                      setCompany({ ...company, project_default_access: opt.value as Company["project_default_access"] });
                     }}
                     className={`w-full flex items-center gap-3 px-4 py-3 rounded-2xl border text-left transition-all ${
-                      (company as any)?.project_default_access === opt.value
+                      company?.project_default_access === opt.value
                         ? 'bg-indigo-50 border-indigo-200'
                         : 'bg-white border-slate-200 hover:border-slate-300'
                     }`}
                   >
                     <div className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
-                      (company as any)?.project_default_access === opt.value ? 'border-indigo-500' : 'border-slate-300'
+                      company?.project_default_access === opt.value ? 'border-indigo-500' : 'border-slate-300'
                     }`}>
-                      {(company as any)?.project_default_access === opt.value && (
+                      {company?.project_default_access === opt.value && (
                         <div className="w-2 h-2 rounded-full bg-indigo-500" />
                       )}
                     </div>
                     <span className={`text-[12px] font-bold ${
-                      (company as any)?.project_default_access === opt.value ? 'text-indigo-800' : 'text-slate-700'
+                      company?.project_default_access === opt.value ? 'text-indigo-800' : 'text-slate-700'
                     }`}>{opt.label}</span>
                   </button>
                 ))}

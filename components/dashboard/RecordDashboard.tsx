@@ -7,6 +7,7 @@ import {
   Loader2, AlertCircle, ArrowLeft, Trash2,
   Pencil, FolderKanban, Plus, X, ShieldCheck
 } from "lucide-react";
+import ProjectAccessPanel from "@/components/projects/ProjectAccessPanel";
 import TabBar, { type RecordTab } from "./TabBar";
 import AddTabModal from "./AddTabModal";
 import FieldLayoutEditor, { type FieldLayout } from "./FieldLayoutEditor";
@@ -16,7 +17,6 @@ import CalendarTab from "./tabs/CalendarTab";
 import EmailsTab from "./tabs/EmailsTab";
 import { useCustomTables } from "@/lib/hooks/useCustomTables";
 import { getCompanyId } from "@/lib/services/schemaService";
-import ProjectAccessPanel from "@/components/projects/ProjectAccessPanel";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -28,22 +28,23 @@ interface Props {
   recordId: string;
   onBack: () => void;
   embedded?: boolean;
+  initialRecord?: any; // pre-fetched row from master table — skips first loadRecord fetch
 }
 
 // ── Main component ─────────────────────────────────────────────────
 
 export default function RecordDashboard({
   systemTable, tableId, tableName,
-  recordId, onBack, embedded = false,
+  recordId, onBack, embedded = false, initialRecord,
 }: Props) {
   const { tables: customTables } = useCustomTables();
 
-  const [record, setRecord] = useState<Record<string, any> | null>(null);
+  const [record, setRecord] = useState<Record<string, any> | null>(initialRecord ?? null);
   const [fields, setFields] = useState<FieldLayout[]>([]);
   const [tabs, setTabs] = useState<RecordTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [tabFieldLayouts, setTabFieldLayouts] = useState<Record<string, FieldLayout[]>>({});
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialRecord); // skip spinner if we have initial data
   const [isEditingTabs, setIsEditingTabs] = useState(false);
   const [isEditingLayout, setIsEditingLayout] = useState(false);
   const [showAddTab, setShowAddTab] = useState(false);
@@ -55,7 +56,7 @@ export default function RecordDashboard({
   const [fieldPickerTabId, setFieldPickerTabId] = useState<string | null>(null);
   const [subProjectHeight, setSubProjectHeight] = useState(400);
   const resizingRef = useRef<{ startY: number; startH: number } | null>(null);
-  const [linkedEntityNames, setLinkedEntityNames] = useState<Record<string, string>>({});
+  const [linkedItems, setLinkedItems] = useState<Record<string, { id: string; name: string }[]>>({});
   const [isAdmin, setIsAdmin] = useState(false);
 
 
@@ -95,20 +96,19 @@ export default function RecordDashboard({
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
       const { data: mem } = await supabase
-        .from('company_memberships')
-        .select('role')
-        .eq('user_id', user.id)
-        .eq('company_id', cid)
-        .single();
+        .from('company_memberships').select('role')
+        .eq('user_id', user.id).eq('company_id', cid).single();
       setIsAdmin(mem?.role === 'company_admin');
     }
-    await Promise.all([loadRecord(cid), loadTabs(cid), loadFields(cid), loadSubProjects(), loadParent()]);
+    const [rec, , flds] = await Promise.all([loadRecord(cid), loadTabs(cid), loadFields(cid), loadSubProjects(), loadParent()]);
+    await resolveLinkedItems(rec, flds);
     setLoading(false);
   };
 
   const loadRecord = async (cid: string) => {
     if (systemTable) {
-      // Load base record
+      // Skip fetch if we already have initial data from master table
+      // Still fetch to get custom field values merged in
       const { data } = await supabase
         .from(systemTable)
         .select('*')
@@ -131,7 +131,9 @@ export default function RecordDashboard({
           v.value_text ?? v.value_number ?? v.value_date ?? v.value_boolean;
       });
 
-      setRecord({ ...data, ...customValues });
+      const merged = { ...data, ...customValues };
+      setRecord(merged);
+      return merged;
     } else if (tableId) {
       const { data: rec } = await supabase
         .from('company_table_records')
@@ -145,46 +147,53 @@ export default function RecordDashboard({
           values[v.field_id] =
             v.value_text ?? v.value_number ?? v.value_date ?? v.value_boolean;
         });
-        setRecord({ id: rec.id, created_at: rec.created_at, ...values });
+        const merged2 = { id: rec.id, created_at: rec.created_at, ...values };
+        setRecord(merged2);
+        return merged2;
       }
     }
+    return null;
   };
 
-  // After loadRecord, resolve entity/property names for display:
-  const resolveLinkedNames = async (rec: Record<string, any>) => {
-    const entityFields = fields.filter(f =>
-      f.field_source === 'custom' &&
-      (f.fieldType === 'entity' || f.fieldType === 'property')
+  // Load linked items — custom fields from linked_values table, base relation fields from record directly
+  // Accepts rec and flds directly to avoid stale state after Promise.all
+  const resolveLinkedItems = async (rec?: Record<string, any> | null, flds?: FieldLayout[]) => {
+    const currentRecord = rec ?? record;
+    const currentFields = flds ?? fields;
+    const map: Record<string, { id: string; name: string }[]> = {};
+
+    // ── Custom linked fields (entity/property) ──────────────────
+    const customLinkedFields = currentFields.filter(f =>
+      f.field_source === 'custom' && ['entity', 'property'].includes(f.fieldType)
     );
-
-    const names: Record<string, string> = {};
-
-    await Promise.all(entityFields.map(async f => {
-      const storedValue = rec[f.id];
-      if (!storedValue) return;
-
-      // Check if it looks like a UUID — if so resolve the name
-      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-/.test(String(storedValue));
-      if (!isUUID) { names[f.id] = storedValue; return; }
-
-      if (f.fieldType === 'entity') {
-        const { data } = await supabase
-          .from('entities')
-          .select('name')
-          .eq('id', storedValue)
-          .single();
-        if (data?.name) names[f.id] = data.name;
-      } else if (f.fieldType === 'property') {
-        const { data } = await supabase
-          .from('properties')
-          .select('street_address')
-          .eq('id', storedValue)
-          .single();
-        if (data?.street_address) names[f.id] = data.street_address;
+    if (customLinkedFields.length) {
+      const { data } = await supabase
+        .from('company_custom_field_linked_values')
+        .select('field_id, linked_record_id, linked_record_name')
+        .eq('record_id', recordId)
+        .in('field_id', customLinkedFields.map(f => f.id));
+      for (const row of (data || [])) {
+        if (!map[row.field_id]) map[row.field_id] = [];
+        map[row.field_id].push({ id: row.linked_record_id, name: row.linked_record_name || row.linked_record_id });
       }
+    }
+
+    // ── Base relation fields (e.g. parent_property_id) ──────────
+    const baseRelationFields = currentFields.filter(f =>
+      f.field_source === 'base' && f.fieldType === 'relation'
+    );
+    await Promise.all(baseRelationFields.map(async f => {
+      const storedId = currentRecord?.[f.field_key];
+      if (!storedId) return;
+      const table = f.relationTable;
+      const nameCol = f.relationDisplayColumn || 'name';
+      if (!table) return;
+      const { data } = await supabase
+        .from(table).select(`id, ${nameCol}`).eq('id', storedId).single();
+      if (data) map[f.field_key] = [{ id: storedId, name: (data as any)[nameCol] || storedId }];
     }));
 
-    setLinkedEntityNames(names);
+    setLinkedItems(map);
   };
   const loadFields = async (cid: string) => {
     if (systemTable) {
@@ -198,18 +207,22 @@ export default function RecordDashboard({
         .eq('table_name', systemTable)
         .order('display_order');
 
+      const HIDDEN_COLS = ['access_mode', 'deleted_at', 'company_id'];
       const baseFields: FieldLayout[] = (schemaCols || [])
-        .filter((c: any) => ['data', 'relation'].includes(c.category) && !c.is_hidden)
+        .filter((c: any) => ['data', 'relation'].includes(c.category) && !c.is_hidden && !HIDDEN_COLS.includes(c.column_name))
         .map((c: any, i: number) => ({
           id: c.column_name,
           field_key: c.column_name,
           field_source: 'base' as const,
           label: c.label || c.column_name.replace(/_/g, ' '),
           fieldType:
-            c.data_type === 'boolean' ? 'boolean'
+            c.category === 'relation' ? 'relation'
+            : c.data_type === 'boolean' ? 'boolean'
             : c.data_type?.includes('timestamp') ? 'date'
             : ['numeric', 'integer'].includes(c.data_type) ? 'number'
             : 'text',
+          relationTable: c.relation_table || undefined,
+          relationDisplayColumn: c.relation_display_column || undefined,
           col_start: 1,
           col_span: 6,
           row_order: i,
@@ -221,12 +234,15 @@ export default function RecordDashboard({
         field_source: 'custom' as const,
         label: cf.label,
         fieldType: cf.field_type,
+        selectOptions: cf.select_options || undefined,
         col_start: 1,
         col_span: 6,
         row_order: baseFields.length + i,
       }));
 
-      setFields([...baseFields, ...cfFields]);
+      const allFields = [...baseFields, ...cfFields];
+      setFields(allFields);
+      return allFields;
     } else if (tableId) {
       const { data: tableFields } = await supabase
         .from('company_table_fields')
@@ -234,16 +250,19 @@ export default function RecordDashboard({
         .eq('table_id', tableId)
         .order('display_order');
 
-      setFields((tableFields || []).map((f: any, i: number) => ({
+      const mappedFields = (tableFields || []).map((f: any, i: number) => ({
         id: f.id,
         field_key: f.id,
         field_source: 'custom' as const,
         label: f.label,
         fieldType: f.field_type,
+        selectOptions: f.select_options || undefined,
         col_start: 1,
         col_span: 6,
         row_order: i,
-      })));
+      }));
+      setFields(mappedFields);
+      return mappedFields;
     }
   };
 
@@ -256,8 +275,20 @@ export default function RecordDashboard({
       .order('display_order');
 
     if (tabData && tabData.length > 0) {
-      setTabs(tabData);
-      setActiveTabId(tabData[0].id);
+      // Deduplicate — keep only first tab of each title
+      const seen = new Set<string>();
+      const uniqueTabs = tabData.filter(t => {
+        if (seen.has(t.title)) return false;
+        seen.add(t.title);
+        return true;
+      });
+      // Delete duplicate tabs from DB
+      const dupeIds = tabData.filter(t => !uniqueTabs.find(u => u.id === t.id)).map(t => t.id);
+      if (dupeIds.length > 0) {
+        await supabase.from('record_tabs').delete().in('id', dupeIds);
+      }
+      setTabs(uniqueTabs);
+      setActiveTabId(uniqueTabs[0].id);
 
       const fieldTabIds = tabData
         .filter(t => t.tab_type === 'fields')
@@ -278,23 +309,33 @@ export default function RecordDashboard({
         setTabFieldLayouts(byTab);
       }
     } else {
-      const { data: newTab } = await supabase
+      const { data: newTabs } = await supabase
         .from('record_tabs')
-        .insert({
-          company_id: cid,
-          record_id: recordId,
-          record_table: recordTable,
-          title: 'Details',
-          icon: 'FileText',
-          tab_type: 'fields',
-          display_order: 0,
-        })
-        .select()
-        .single();
+        .insert([
+          {
+            company_id: cid,
+            record_id: recordId,
+            record_table: recordTable,
+            title: 'Details',
+            icon: 'FileText',
+            tab_type: 'fields',
+            display_order: 0,
+          },
+          {
+            company_id: cid,
+            record_id: recordId,
+            record_table: recordTable,
+            title: 'Checklist',
+            icon: 'CheckSquare',
+            tab_type: 'checklist',
+            display_order: 1,
+          },
+        ])
+        .select();
 
-      if (newTab) {
-        setTabs([newTab]);
-        setActiveTabId(newTab.id);
+      if (newTabs?.length) {
+        setTabs(newTabs);
+        setActiveTabId(newTabs[0].id);
       }
     }
   };
@@ -383,6 +424,74 @@ export default function RecordDashboard({
 
   // ── Field save ─────────────────────────────────────────────────
 
+  const isLinkedField = (fieldType: string) => ['entity', 'property'].includes(fieldType);
+
+  const handleAddLinked = async (fieldId: string, item: { id: string; name: string }) => {
+    const field = fields.find(f => f.id === fieldId || f.field_key === fieldId);
+    if (!field) return;
+
+    // Base relation fields — save UUID directly to the record column
+    if (field.field_source === 'base' && field.fieldType === 'relation') {
+      await supabase.from(systemTable!).update({ [field.field_key]: item.id }).eq('id', recordId);
+      setRecord(prev => prev ? { ...prev, [field.field_key]: item.id } : prev);
+      setLinkedItems(prev => ({ ...prev, [field.field_key]: [item] }));
+      return;
+    }
+
+    // If id starts with __new__ — create the record first
+    let resolvedId = item.id;
+    let resolvedName = item.name;
+
+    if (item.id.startsWith('__new__')) {
+      const newName = item.name;
+      const table = field.fieldType === 'entity' ? 'entities' : 'properties';
+      const nameCol = field.fieldType === 'entity' ? 'name' : 'street_address';
+      const insertData: any = field.fieldType === 'entity'
+        ? { company_id: companyId, name: newName, entity_type: 'Person' }
+        : { company_id: companyId, street_address: newName };
+      const { data: created } = await supabase.from(table).insert(insertData).select('id').single();
+      resolvedId = created?.id || newName;
+      resolvedName = newName;
+    }
+
+    await supabase.from('company_custom_field_linked_values').insert({
+      company_id: companyId,
+      field_id: fieldId,
+      record_id: recordId,
+      table_name: systemTable || '',
+      linked_record_id: resolvedId,
+      linked_record_name: resolvedName,
+    });
+
+    // Update local state
+    setLinkedItems(prev => ({
+      ...prev,
+      [fieldId]: [...(prev[fieldId] || []), { id: resolvedId, name: resolvedName }],
+    }));
+  };
+
+  const handleRemoveLinked = async (fieldId: string, linkedRecordId: string) => {
+    const field = fields.find(f => f.id === fieldId || f.field_key === fieldId);
+
+    if (field?.field_source === 'base' && field.fieldType === 'relation') {
+      await supabase.from(systemTable!).update({ [field.field_key]: null }).eq('id', recordId);
+      setRecord(prev => prev ? { ...prev, [field.field_key]: null } : prev);
+      setLinkedItems(prev => ({ ...prev, [fieldId]: [] }));
+      return;
+    }
+
+    await supabase.from('company_custom_field_linked_values')
+      .delete()
+      .eq('field_id', fieldId)
+      .eq('record_id', recordId)
+      .eq('linked_record_id', linkedRecordId);
+
+    setLinkedItems(prev => ({
+      ...prev,
+      [fieldId]: (prev[fieldId] || []).filter(i => i.id !== linkedRecordId),
+    }));
+  };
+
   const handleFieldSave = async (fieldKey: string, value: any) => {
   if (!record) return;
 
@@ -393,58 +502,9 @@ export default function RecordDashboard({
     if (isCustom && field) {
       let saveValue = value;
 
-      // ── Entity type — find or create entity, store ID ──────────
-      if (field.fieldType === 'entity' && value) {
-        const { data: existing } = await supabase
-          .from('entities')
-          .select('id')
-          .eq('company_id', companyId)
-          .ilike('name', value.trim())
-          .is('deleted_at', null)
-          .limit(1)
-          .single();
-
-        if (existing) {
-          saveValue = existing.id;
-        } else {
-          const { data: newEnt } = await supabase
-            .from('entities')
-            .insert({
-              company_id: companyId,
-              name: value.trim(),
-              entity_type: 'Person', // default — user can change in entity record
-            })
-            .select('id')
-            .single();
-          saveValue = newEnt?.id || value;
-        }
-      }
-
-      // ── Property type — find or create property, store ID ──────
-      if (field.fieldType === 'property' && value) {
-        const { data: existing } = await supabase
-          .from('properties')
-          .select('id')
-          .eq('company_id', companyId)
-          .ilike('street_address', value.trim())
-          .is('deleted_at', null)
-          .limit(1)
-          .single();
-
-        if (existing) {
-          saveValue = existing.id;
-        } else {
-          const { data: newProp } = await supabase
-            .from('properties')
-            .insert({
-              company_id: companyId,
-              street_address: value.trim(),
-            })
-            .select('id')
-            .single();
-          saveValue = newProp?.id || value;
-        }
-      }
+      // ── Linked fields (entity/property) handled separately via handleAddLinked/handleRemoveLinked
+      // This branch handles non-linked custom fields only
+      if (['entity', 'property'].includes(field.fieldType)) return;
 
       // Save to custom_field_values
       const fieldType = field.fieldType;
@@ -591,7 +651,7 @@ export default function RecordDashboard({
 
   useEffect(() => {
     if (record && fields.length > 0) {
-      resolveLinkedNames(record);
+      resolveLinkedItems();
     }
   }, [record, fields]);
 
@@ -613,9 +673,11 @@ export default function RecordDashboard({
         <FieldLayoutEditor
           fields={getTabFieldLayout(activeTab.id)}
           recordValues={record || {}}
+          linkedItems={linkedItems}
           isEditing={isEditingLayout}
           onSave={handleFieldSave}
-          linkedNames={linkedEntityNames}
+          onAddLinked={handleAddLinked}
+          onRemoveLinked={handleRemoveLinked}
           onLayoutChange={layout => {
             handleLayoutChange(activeTab.id, layout);
             saveTabFieldLayout(activeTab.id, layout);
@@ -650,6 +712,7 @@ export default function RecordDashboard({
           isAdmin={isAdmin}
         />
       )}
+
       {!activeTab && tabs.length === 0 && (
         <div
           className="flex flex-col items-center justify-center py-20 gap-4 cursor-pointer"

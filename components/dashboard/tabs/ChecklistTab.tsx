@@ -1,185 +1,879 @@
 // components/dashboard/tabs/ChecklistTab.tsx
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
-import { Plus, Check, Trash2, Loader2, ListChecks } from "lucide-react";
+import {
+  Plus, Check, ChevronDown, ChevronRight, Trash2, Calendar,
+  User, Users, DollarSign, AlertCircle, Pencil, X, BookTemplate,
+  Copy, ArrowLeft, Clock, CheckSquare,
+} from "lucide-react";
 
-interface ChecklistItem {
+// ── Types ──────────────────────────────────────────────────────────
+
+interface Task {
   id: string;
-  title: string;
-  is_done: boolean;
+  project_id: string;
+  name: string;
+  is_completed: boolean;
   due_date: string | null;
-  assigned_to: string | null;
-  created_at: string;
+  due_time: string | null;
+  assignee_id: string | null;
+  assigned_team_id: string | null;
+  status_id: string | null;
+  is_monetary: boolean;
+  estimated_cost: number;
+  reminder_settings: any;
+  parent_task_id: string | null;
+  display_order: number;
+  date_entered: string | null;
+  company_id: string;
 }
 
-export default function ChecklistTab({ recordId, companyId }: { recordId: string; companyId: string }) {
-  const [items, setItems] = useState<ChecklistItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [newTitle, setNewTitle] = useState('');
-  const [adding, setAdding] = useState(false);
-  const [showInput, setShowInput] = useState(false);
+interface Profile { id: string; full_name: string | null; email: string | null; }
+interface Team { id: string; team_name: string; }
+interface Status { id: string; label: string; color_hex: string; }
 
-  useEffect(() => { loadItems(); }, [recordId]);
+interface TemplateItem {
+  id: string;
+  template_id: string;
+  parent_item_id: string | null;
+  title: string;
+  priority: string;
+  assigned_team_id: string | null;
+  assignee_id: string | null;
+  is_monetary: boolean;
+  estimated_cost: number;
+  due_offset_days: number | null;
+  due_anchor: string;
+  display_order: number;
+}
 
-  const loadItems = async () => {
-    // Use company_table_records + company_table_values if checklist table exists
-    // Otherwise use a simple project_checklist_items table
-    const { data } = await supabase
-      .from('project_checklist_items')
-      .select('*')
-      .eq('project_id', recordId)
-      .is('deleted_at', null)
-      .order('created_at');
-    setItems(data || []);
+interface Template {
+  id: string;
+  name: string;
+  items: TemplateItem[];
+}
+
+interface Props {
+  recordId: string;
+  companyId: string;
+}
+
+// ── TaskRow ────────────────────────────────────────────────────────
+
+interface TaskRowProps {
+  task: Task;
+  subtasks: Task[];
+  allTasks: Task[];
+  profiles: Profile[];
+  teams: Team[];
+  statuses: Status[];
+  depth: number;
+  onUpdate: (id: string, patch: Partial<Task>) => void;
+  onDelete: (id: string) => void;
+  onAddSubtask: (parentId: string) => void;
+  onEdit: (task: Task) => void;
+}
+
+function TaskRow({ task, subtasks, allTasks, profiles, teams, statuses, depth, onUpdate, onDelete, onAddSubtask, onEdit }: TaskRowProps) {
+  const [expanded, setExpanded] = useState(true);
+  const assignee = profiles.find(p => p.id === task.assignee_id);
+  const team = teams.find(t => t.id === task.assigned_team_id);
+  const status = statuses.find(s => s.id === task.status_id);
+
+  const completedSubtasks = subtasks.filter(s => s.is_completed).length;
+
+  return (
+    <div className={depth > 0 ? 'ml-6 border-l-2 border-slate-100 pl-4' : ''}>
+      <div className={`group flex items-start gap-3 py-2.5 px-3 rounded-2xl transition-all hover:bg-slate-50 ${task.is_completed ? 'opacity-60' : ''}`}>
+
+        {/* Expand toggle for subtasks */}
+        <button
+          onClick={() => subtasks.length && setExpanded(p => !p)}
+          className="mt-0.5 shrink-0 w-4"
+        >
+          {subtasks.length > 0 ? (
+            expanded ? <ChevronDown size={14} className="text-slate-400" /> : <ChevronRight size={14} className="text-slate-400" />
+          ) : <span className="w-4" />}
+        </button>
+
+        {/* Checkbox */}
+        <button
+          onClick={() => onUpdate(task.id, { is_completed: !task.is_completed })}
+          className={`mt-0.5 w-5 h-5 rounded-full border-2 shrink-0 flex items-center justify-center transition-all ${
+            task.is_completed ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300 hover:border-indigo-400'
+          }`}
+        >
+          {task.is_completed && <Check size={11} className="text-white" />}
+        </button>
+
+        {/* Content */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className={`text-[13px] font-medium ${task.is_completed ? 'line-through text-slate-400' : 'text-slate-800'}`}>
+              {task.name}
+            </span>
+
+            {/* Status badge */}
+            {status && (
+              <span className="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase"
+                style={{ background: status.color_hex + '20', color: status.color_hex }}>
+                {status.label}
+              </span>
+            )}
+
+            {/* Subtask progress */}
+            {subtasks.length > 0 && (
+              <span className="text-[10px] text-slate-400 font-medium">
+                {completedSubtasks}/{subtasks.length}
+              </span>
+            )}
+          </div>
+
+          {/* Meta row */}
+          <div className="flex items-center gap-3 mt-1 flex-wrap">
+            {task.due_date && (
+              <span className={`flex items-center gap-1 text-[10px] font-medium ${
+                !task.is_completed && new Date(task.due_date) < new Date()
+                  ? 'text-red-500' : 'text-slate-400'
+              }`}>
+                <Calendar size={10} />
+                {new Date(task.due_date).toLocaleDateString('en-AU')}
+                {task.due_time && ` ${task.due_time.slice(0,5)}`}
+              </span>
+            )}
+            {assignee && (
+              <span className="flex items-center gap-1 text-[10px] text-slate-400">
+                <User size={10} />
+                {assignee.full_name || assignee.email}
+              </span>
+            )}
+            {team && (
+              <span className="flex items-center gap-1 text-[10px] text-slate-400">
+                <Users size={10} />
+                {team.team_name}
+              </span>
+            )}
+            {task.is_monetary && task.estimated_cost > 0 && (
+              <span className="flex items-center gap-1 text-[10px] text-slate-400">
+                <DollarSign size={10} />
+                ${Number(task.estimated_cost).toLocaleString()}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+          <button onClick={() => onAddSubtask(task.id)} title="Add subtask"
+            className="p-1.5 text-slate-300 hover:text-indigo-600 transition-colors">
+            <Plus size={12} />
+          </button>
+          <button onClick={() => onEdit(task)} title="Edit"
+            className="p-1.5 text-slate-300 hover:text-indigo-600 transition-colors">
+            <Pencil size={12} />
+          </button>
+          <button onClick={() => onDelete(task.id)} title="Delete"
+            className="p-1.5 text-slate-300 hover:text-red-500 transition-colors">
+            <Trash2 size={12} />
+          </button>
+        </div>
+      </div>
+
+      {/* Subtasks */}
+      {expanded && subtasks.length > 0 && (
+        <div className="mt-1">
+          {subtasks.map(sub => (
+            <TaskRow
+              key={sub.id}
+              task={sub}
+              subtasks={allTasks.filter(t => t.parent_task_id === sub.id)}
+              allTasks={allTasks}
+              profiles={profiles}
+              teams={teams}
+              statuses={statuses}
+              depth={depth + 1}
+              onUpdate={onUpdate}
+              onDelete={onDelete}
+              onAddSubtask={onAddSubtask}
+              onEdit={onEdit}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── TaskEditModal ─────────────────────────────────────────────────
+
+interface TaskEditModalProps {
+  task: Partial<Task>;
+  profiles: Profile[];
+  teams: Team[];
+  statuses: Status[];
+  companyId: string;
+  projectId: string;
+  onSave: (task: Partial<Task>) => Promise<void>;
+  onClose: () => void;
+}
+
+function TaskEditModal({ task, profiles, teams, statuses, companyId, projectId, onSave, onClose }: TaskEditModalProps) {
+  const [draft, setDraft] = useState<Partial<Task>>({ ...task });
+  const [saving, setSaving] = useState(false);
+
+  const set = (patch: Partial<Task>) => setDraft(p => ({ ...p, ...patch }));
+
+  const handleSave = async () => {
+    setSaving(true);
+    await onSave(draft);
+    setSaving(false);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-t-[40px] sm:rounded-[40px] shadow-2xl w-full max-w-xl mx-0 sm:mx-4 max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-8 pt-8 pb-4 border-b border-slate-100 shrink-0">
+          <h3 className="text-[14px] font-bold text-slate-800 uppercase tracking-wide">
+            {task.id ? 'Edit task' : 'New task'}
+          </h3>
+          <button onClick={onClose} className="p-2 text-slate-300 hover:text-slate-700"><X size={16} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-8 py-6 space-y-5">
+
+          {/* Name */}
+          <div>
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Task name *</p>
+            <input value={draft.name || ''} onChange={e => set({ name: e.target.value })}
+              placeholder="Enter task name..."
+              className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none focus:border-indigo-400" />
+          </div>
+
+          {/* Status */}
+          <div>
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Status</p>
+            <select value={draft.status_id || ''} onChange={e => set({ status_id: e.target.value || null })}
+              className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none focus:border-indigo-400 bg-white">
+              <option value="">— No status —</option>
+              {statuses.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+            </select>
+          </div>
+
+          {/* Due date + time */}
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Due date</p>
+              <input type="date" value={draft.due_date ? String(draft.due_date).slice(0,10) : ''}
+                onChange={e => set({ due_date: e.target.value || null })}
+                className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none focus:border-indigo-400" />
+            </div>
+            <div>
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Due time</p>
+              <input type="time" value={draft.due_time || ''}
+                onChange={e => set({ due_time: e.target.value || null })}
+                className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none focus:border-indigo-400" />
+            </div>
+          </div>
+
+          {/* Assignee */}
+          <div>
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Assignee</p>
+            <select value={draft.assignee_id || ''} onChange={e => set({ assignee_id: e.target.value || null })}
+              className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none focus:border-indigo-400 bg-white">
+              <option value="">— Unassigned —</option>
+              {profiles.map(p => <option key={p.id} value={p.id}>{p.full_name || p.email}</option>)}
+            </select>
+          </div>
+
+          {/* Team */}
+          <div>
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Assigned team</p>
+            <select value={draft.assigned_team_id || ''} onChange={e => set({ assigned_team_id: e.target.value || null })}
+              className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none focus:border-indigo-400 bg-white">
+              <option value="">— No team —</option>
+              {teams.map(t => <option key={t.id} value={t.id}>{t.team_name}</option>)}
+            </select>
+          </div>
+
+          {/* Monetary */}
+          <div>
+            <label className="flex items-center gap-3 cursor-pointer">
+              <div onClick={() => set({ is_monetary: !draft.is_monetary })}
+                className={`w-10 h-6 rounded-full transition-colors ${draft.is_monetary ? 'bg-indigo-600' : 'bg-slate-200'}`}>
+                <div className={`w-5 h-5 bg-white rounded-full shadow mt-0.5 transition-transform ${draft.is_monetary ? 'translate-x-4' : 'translate-x-0.5'}`} />
+              </div>
+              <span className="text-[12px] text-slate-700 font-medium">Monetary task</span>
+            </label>
+            {draft.is_monetary && (
+              <div className="mt-3">
+                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Estimated cost</p>
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-400 text-[13px]">$</span>
+                  <input type="number" value={draft.estimated_cost || 0}
+                    onChange={e => set({ estimated_cost: parseFloat(e.target.value) || 0 })}
+                    className="flex-1 px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none focus:border-indigo-400" />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Reminder */}
+          <div>
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Reminder</p>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <p className="text-[10px] text-slate-400 mb-1">Days before</p>
+                <input type="number" min="0"
+                  value={draft.reminder_settings?.days ?? 0}
+                  onChange={e => set({ reminder_settings: { ...draft.reminder_settings, days: parseInt(e.target.value) || 0 } })}
+                  className="w-full px-4 py-2 border border-slate-200 rounded-full text-[12px] outline-none" />
+              </div>
+              <div>
+                <p className="text-[10px] text-slate-400 mb-1">At time</p>
+                <input type="time"
+                  value={draft.reminder_settings?.time ?? '09:00'}
+                  onChange={e => set({ reminder_settings: { ...draft.reminder_settings, time: e.target.value } })}
+                  className="w-full px-4 py-2 border border-slate-200 rounded-full text-[12px] outline-none" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-8 py-5 border-t border-slate-100 shrink-0">
+          <button onClick={handleSave} disabled={saving || !draft.name?.trim()}
+            className="w-full py-3 bg-indigo-600 text-white text-[12px] font-bold rounded-full hover:bg-indigo-700 disabled:opacity-40 transition-colors">
+            {saving ? 'Saving...' : task.id ? 'Save changes' : 'Add task'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── TemplateModal ─────────────────────────────────────────────────
+
+interface TemplateModalProps {
+  templates: Template[];
+  profiles: Profile[];
+  teams: Team[];
+  companyId: string;
+  projectId: string;
+  projectCreatedAt: string;
+  projectDueDate: string | null;
+  tasks: Task[];
+  onApply: (tasks: Partial<Task>[]) => Promise<void>;
+  onSaveNew: (name: string, items: Partial<TemplateItem>[]) => Promise<void>;
+  onClose: () => void;
+}
+
+function TemplateModal({ templates, profiles, teams, companyId, projectId, projectCreatedAt, projectDueDate, tasks, onApply, onSaveNew, onClose }: TemplateModalProps) {
+  type View = 'list' | 'apply' | 'create';
+  const [view, setView] = useState<View>('list');
+  const [selected, setSelected] = useState<Template | null>(null);
+  const [newName, setNewName] = useState('');
+  const [newItems, setNewItems] = useState<Partial<TemplateItem>[]>([
+    { title: '', due_offset_days: 0, due_anchor: 'record_created', display_order: 0 }
+  ]);
+  const [saving, setSaving] = useState(false);
+
+  const resolveDate = (item: TemplateItem): string | null => {
+    if (item.due_offset_days === null) return null;
+    let anchor: Date;
+    if (item.due_anchor === 'record_created') {
+      anchor = new Date(projectCreatedAt);
+    } else if (item.due_anchor === 'record_due' && projectDueDate) {
+      anchor = new Date(projectDueDate);
+    } else if (item.due_anchor?.startsWith('task:')) {
+      // offset from sibling template item — resolve in order
+      return null; // handled at apply time
+    } else {
+      anchor = new Date();
+    }
+    anchor.setDate(anchor.getDate() + (item.due_offset_days || 0));
+    return anchor.toISOString().split('T')[0];
+  };
+
+  const handleApply = async () => {
+    if (!selected) return;
+    setSaving(true);
+    const tasksToCreate: Partial<Task>[] = selected.items
+      .filter(i => !i.parent_item_id)
+      .sort((a, b) => a.display_order - b.display_order)
+      .map(item => ({
+        project_id: projectId,
+        company_id: companyId,
+        name: item.title,
+        assignee_id: item.assignee_id,
+        assigned_team_id: item.assigned_team_id,
+        is_monetary: item.is_monetary,
+        estimated_cost: item.estimated_cost,
+        due_date: resolveDate(item),
+        is_completed: false,
+      }));
+    await onApply(tasksToCreate);
+    setSaving(false);
+    onClose();
+  };
+
+  const handleSaveNew = async () => {
+    if (!newName.trim()) return;
+    setSaving(true);
+    await onSaveNew(newName, newItems.filter(i => i.title?.trim()));
+    setSaving(false);
+    onClose();
+  };
+
+  const ANCHORS = [
+    { value: 'record_created', label: 'Project created' },
+    { value: 'record_due', label: 'Project due date' },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30 backdrop-blur-sm"
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-t-[40px] sm:rounded-[40px] shadow-2xl w-full max-w-2xl mx-0 sm:mx-4 max-h-[90vh] flex flex-col overflow-hidden">
+
+        {/* Header */}
+        <div className="flex items-center gap-3 px-8 pt-8 pb-4 border-b border-slate-100 shrink-0">
+          {view !== 'list' && (
+            <button onClick={() => { setView('list'); setSelected(null); }}
+              className="p-1.5 text-slate-400 hover:text-slate-700 transition-colors">
+              <ArrowLeft size={16} />
+            </button>
+          )}
+          <h3 className="text-[14px] font-bold text-slate-800 uppercase tracking-wide flex-1">
+            {view === 'list' ? 'Checklist templates'
+              : view === 'apply' ? `Apply: ${selected?.name}`
+              : 'Create template'}
+          </h3>
+          <button onClick={onClose} className="p-2 text-slate-300 hover:text-slate-700"><X size={16} /></button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-8 py-6">
+
+          {/* List view */}
+          {view === 'list' && (
+            <div className="space-y-3">
+              <button onClick={() => setView('create')}
+                className="w-full flex items-center gap-3 px-4 py-3 border-2 border-dashed border-indigo-300 text-indigo-600 rounded-2xl hover:bg-indigo-50 transition-colors">
+                <Plus size={14} /> Create new template
+              </button>
+              {templates.length === 0 && (
+                <p className="text-center text-[11px] text-slate-300 italic py-8">No templates yet</p>
+              )}
+              {templates.map(t => (
+                <button key={t.id} onClick={() => { setSelected(t); setView('apply'); }}
+                  className="w-full flex items-center justify-between px-5 py-4 bg-slate-50 hover:bg-indigo-50 rounded-2xl text-left transition-colors">
+                  <div>
+                    <p className="text-[13px] font-bold text-slate-800">{t.name}</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">{t.items.length} task{t.items.length !== 1 ? 's' : ''}</p>
+                  </div>
+                  <Copy size={14} className="text-slate-400" />
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Apply view */}
+          {view === 'apply' && selected && (
+            <div className="space-y-3">
+              <p className="text-[11px] text-slate-500 mb-4">
+                The following tasks will be created with dates calculated from the project.
+              </p>
+              {selected.items.filter(i => !i.parent_item_id).map(item => (
+                <div key={item.id} className="flex items-start gap-3 px-4 py-3 bg-slate-50 rounded-2xl">
+                  <CheckSquare size={14} className="text-indigo-400 mt-0.5 shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-[12px] font-medium text-slate-800">{item.title}</p>
+                    <div className="flex items-center gap-3 mt-1 flex-wrap">
+                      {item.due_offset_days !== null && (
+                        <span className="text-[10px] text-slate-400 flex items-center gap-1">
+                          <Calendar size={9} />
+                          {item.due_offset_days === 0 ? 'On ' : item.due_offset_days > 0 ? `+${item.due_offset_days}d from ` : `${item.due_offset_days}d from `}
+                          {ANCHORS.find(a => a.value === item.due_anchor)?.label || item.due_anchor}
+                          {' → '}
+                          <span className="font-medium text-indigo-600">{resolveDate(item) || '—'}</span>
+                        </span>
+                      )}
+                      {item.assignee_id && (
+                        <span className="text-[10px] text-slate-400">
+                          {profiles.find(p => p.id === item.assignee_id)?.full_name || ''}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Create view */}
+          {view === 'create' && (
+            <div className="space-y-6">
+              <div>
+                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Template name</p>
+                <input value={newName} onChange={e => setNewName(e.target.value)}
+                  placeholder="e.g. Property Settlement"
+                  className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none focus:border-indigo-400" />
+              </div>
+
+              <div>
+                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-3">Tasks</p>
+                <div className="space-y-3">
+                  {newItems.map((item, idx) => (
+                    <div key={idx} className="bg-slate-50 rounded-2xl p-4 space-y-3">
+                      <div className="flex items-center gap-2">
+                        <input value={item.title || ''} onChange={e => {
+                          const next = [...newItems];
+                          next[idx] = { ...next[idx], title: e.target.value };
+                          setNewItems(next);
+                        }}
+                          placeholder={`Task ${idx + 1} name...`}
+                          className="flex-1 px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400 bg-white" />
+                        <button onClick={() => setNewItems(newItems.filter((_, i) => i !== idx))}
+                          className="p-1.5 text-slate-300 hover:text-red-500 transition-colors">
+                          <X size={12} />
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <p className="text-[9px] text-slate-400 mb-1">Offset days</p>
+                          <input type="number" value={item.due_offset_days ?? 0}
+                            onChange={e => {
+                              const next = [...newItems];
+                              next[idx] = { ...next[idx], due_offset_days: parseInt(e.target.value) || 0 };
+                              setNewItems(next);
+                            }}
+                            className="w-full px-3 py-1.5 border border-slate-200 rounded-full text-[11px] outline-none bg-white" />
+                        </div>
+                        <div className="col-span-2">
+                          <p className="text-[9px] text-slate-400 mb-1">From</p>
+                          <select value={item.due_anchor || 'record_created'}
+                            onChange={e => {
+                              const next = [...newItems];
+                              next[idx] = { ...next[idx], due_anchor: e.target.value };
+                              setNewItems(next);
+                            }}
+                            className="w-full px-3 py-1.5 border border-slate-200 rounded-full text-[11px] outline-none bg-white">
+                            {ANCHORS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+                            {newItems.slice(0, idx).filter(i => i.title).map((i, prevIdx) => (
+                              <option key={`task_${prevIdx}`} value={`task_${prevIdx}`}>
+                                After: {i.title || `Task ${prevIdx + 1}`}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <p className="text-[9px] text-slate-400 mb-1">Assignee</p>
+                          <select value={item.assignee_id || ''}
+                            onChange={e => {
+                              const next = [...newItems];
+                              next[idx] = { ...next[idx], assignee_id: e.target.value || null };
+                              setNewItems(next);
+                            }}
+                            className="w-full px-3 py-1.5 border border-slate-200 rounded-full text-[11px] outline-none bg-white">
+                            <option value="">Unassigned</option>
+                            {profiles.map(p => <option key={p.id} value={p.id}>{p.full_name || p.email}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <p className="text-[9px] text-slate-400 mb-1">Team</p>
+                          <select value={item.assigned_team_id || ''}
+                            onChange={e => {
+                              const next = [...newItems];
+                              next[idx] = { ...next[idx], assigned_team_id: e.target.value || null };
+                              setNewItems(next);
+                            }}
+                            className="w-full px-3 py-1.5 border border-slate-200 rounded-full text-[11px] outline-none bg-white">
+                            <option value="">No team</option>
+                            {teams.map(t => <option key={t.id} value={t.id}>{t.team_name}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+
+                  <button onClick={() => setNewItems([...newItems, {
+                    title: '', due_offset_days: 0, due_anchor: 'record_created',
+                    display_order: newItems.length
+                  }])}
+                    className="w-full flex items-center gap-2 justify-center py-2.5 border border-dashed border-slate-300 text-slate-400 rounded-2xl hover:border-indigo-300 hover:text-indigo-600 transition-colors text-[12px]">
+                    <Plus size={13} /> Add task
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="px-8 py-5 border-t border-slate-100 shrink-0">
+          {view === 'apply' && (
+            <button onClick={handleApply} disabled={saving}
+              className="w-full py-3 bg-indigo-600 text-white text-[12px] font-bold rounded-full hover:bg-indigo-700 disabled:opacity-40 transition-colors">
+              {saving ? 'Creating tasks...' : 'Apply template'}
+            </button>
+          )}
+          {view === 'create' && (
+            <button onClick={handleSaveNew} disabled={saving || !newName.trim()}
+              className="w-full py-3 bg-indigo-600 text-white text-[12px] font-bold rounded-full hover:bg-indigo-700 disabled:opacity-40 transition-colors">
+              {saving ? 'Saving...' : 'Save template'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── ChecklistTab (main) ────────────────────────────────────────────
+
+export default function ChecklistTab({ recordId, companyId }: Props) {
+  const [tasks, setTasks]           = useState<Task[]>([]);
+  const [profiles, setProfiles]     = useState<Profile[]>([]);
+  const [teams, setTeams]           = useState<Team[]>([]);
+  const [statuses, setStatuses]     = useState<Status[]>([]);
+  const [templates, setTemplates]   = useState<Template[]>([]);
+  const [project, setProject]       = useState<any>(null);
+  const [loading, setLoading]       = useState(true);
+  const [editingTask, setEditingTask] = useState<Partial<Task> | null>(null);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const [
+      { data: taskData },
+      { data: profileData },
+      { data: teamData },
+      { data: statusData },
+      { data: templateData },
+      { data: projectData },
+    ] = await Promise.all([
+      supabase.from('tasks').select('*')
+        .eq('project_id', recordId).is('deleted_at', null).order('date_entered'),
+      supabase.from('profiles').select('id, full_name, email').eq('is_active', true),
+      supabase.from('teams').select('id, team_name').eq('is_active', true),
+      supabase.from('task_statuses').select('*').eq('is_active', true),
+      supabase.from('checklist_templates').select('*, items:checklist_template_items(*)')
+        .eq('company_id', companyId).order('created_at'),
+      supabase.from('projects').select('created_at, estimated_completion_date').eq('id', recordId).single(),
+    ]);
+
+    setTasks(taskData || []);
+    setProfiles(profileData || []);
+    setTeams(teamData || []);
+    setStatuses(statusData || []);
+    setProject(projectData);
+
+    // Sort template items
+    const tpls = (templateData || []).map((t: any) => ({
+      ...t,
+      items: (t.items || []).sort((a: any, b: any) => a.display_order - b.display_order),
+    }));
+    setTemplates(tpls);
     setLoading(false);
+  }, [recordId, companyId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleAddTask = (parentId?: string) => {
+    setEditingTask({
+      project_id: recordId,
+      company_id: companyId,
+      parent_task_id: parentId || null,
+      is_completed: false,
+      is_monetary: false,
+      estimated_cost: 0,
+      reminder_settings: { days: 0, time: '09:00' },
+    });
   };
 
-  const handleAdd = async () => {
-    if (!newTitle.trim()) return;
-    setAdding(true);
-    const { data } = await supabase
-      .from('project_checklist_items')
-      .insert({ project_id: recordId, company_id: companyId, title: newTitle.trim() })
-      .select()
-      .single();
-    if (data) setItems(prev => [...prev, data]);
-    setNewTitle('');
-    setAdding(false);
-    setShowInput(false);
+  const handleSaveTask = async (draft: Partial<Task>) => {
+    if (draft.id) {
+      // Update
+      const { id, ...rest } = draft;
+      await supabase.from('tasks').update(rest).eq('id', id);
+      setTasks(prev => prev.map(t => t.id === id ? { ...t, ...rest } : t));
+    } else {
+      // Insert
+      const { data } = await supabase.from('tasks').insert({
+        ...draft,
+        date_entered: new Date().toISOString().split('T')[0],
+      }).select().single();
+      if (data) setTasks(prev => [...prev, data]);
+    }
   };
 
-  const handleToggle = async (item: ChecklistItem) => {
-    await supabase
-      .from('project_checklist_items')
-      .update({ is_done: !item.is_done })
-      .eq('id', item.id);
-    setItems(prev => prev.map(i =>
-      i.id === item.id ? { ...i, is_done: !i.is_done } : i
-    ));
+  const handleUpdate = async (id: string, patch: Partial<Task>) => {
+    await supabase.from('tasks').update(patch).eq('id', id);
+    setTasks(prev => prev.map(t => t.id === id ? { ...t, ...patch } : t));
   };
 
   const handleDelete = async (id: string) => {
-    await supabase
-      .from('project_checklist_items')
-      .update({ deleted_at: new Date().toISOString() })
-      .eq('id', id);
-    setItems(prev => prev.filter(i => i.id !== id));
+    if (!window.confirm('Delete this task?')) return;
+    await supabase.from('tasks').update({ deleted_at: new Date().toISOString() }).eq('id', id);
+    setTasks(prev => prev.filter(t => t.id !== id));
   };
 
-  const done = items.filter(i => i.is_done).length;
-  const total = items.length;
+  const handleApplyTemplate = async (tasksToCreate: Partial<Task>[]) => {
+    const { data } = await supabase.from('tasks').insert(
+      tasksToCreate.map((t, i) => ({ ...t, date_entered: new Date().toISOString().split('T')[0], display_order: tasks.length + i }))
+    ).select();
+    if (data) setTasks(prev => [...prev, ...data]);
+  };
 
-  if (loading) return (
-    <div className="flex justify-center py-20">
-      <Loader2 className="animate-spin text-slate-300" size={20} />
-    </div>
-  );
+  const handleSaveTemplate = async (name: string, items: Partial<TemplateItem>[]) => {
+    const { data: tpl } = await supabase.from('checklist_templates').insert({
+      company_id: companyId, name, record_table: 'projects',
+    }).select().single();
+    if (!tpl) return;
+    await supabase.from('checklist_template_items').insert(
+      items.map((item, i) => ({ ...item, template_id: tpl.id, display_order: i }))
+    );
+    load();
+  };
+
+  // Organise tasks
+  const rootTasks = tasks.filter(t => !t.parent_task_id);
+  const activeTasks = rootTasks.filter(t => !t.is_completed);
+  const completedTasks = rootTasks.filter(t => t.is_completed);
+  const totalCost = tasks.filter(t => t.is_monetary).reduce((s, t) => s + (t.estimated_cost || 0), 0);
+  const completedCount = tasks.filter(t => t.is_completed).length;
+  const progress = tasks.length ? Math.round(completedCount / tasks.length * 100) : 0;
+
+  if (loading) return <p className="text-[11px] text-slate-400 text-center py-8">Loading checklist...</p>;
 
   return (
-    <div>
-      {/* Progress bar */}
-      {total > 0 && (
-        <div className="mb-6">
-          <div className="flex items-center justify-between mb-2">
-            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">
-              Progress
-            </p>
-            <p className="text-[11px] font-bold text-slate-600">
-              {done} / {total}
-            </p>
+    <div className="space-y-6">
+
+      {/* Header bar */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div>
+            <p className="text-[11px] font-bold text-slate-700">{completedCount}/{tasks.length} tasks</p>
+            {/* Progress bar */}
+            <div className="mt-1 w-32 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+              <div className="h-full bg-indigo-500 rounded-full transition-all" style={{ width: `${progress}%` }} />
+            </div>
           </div>
-          <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-emerald-500 rounded-full transition-all"
-              style={{ width: `${total > 0 ? (done / total) * 100 : 0}%` }}
-            />
-          </div>
+          {totalCost > 0 && (
+            <div className="text-[11px] text-slate-500">
+              <DollarSign size={11} className="inline" />
+              {totalCost.toLocaleString()} est.
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowTemplates(true)}
+            className="flex items-center gap-1.5 px-3 py-2 text-[11px] text-slate-500 font-medium border border-slate-200 rounded-full hover:border-indigo-300 hover:text-indigo-600 transition-colors">
+            <Copy size={12} /> Templates
+          </button>
+          <button onClick={() => handleAddTask()}
+            className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white text-[11px] font-bold rounded-full hover:bg-indigo-700 transition-colors">
+            <Plus size={13} /> Add task
+          </button>
+        </div>
+      </div>
+
+      {/* Active tasks */}
+      {activeTasks.length === 0 && completedTasks.length === 0 && (
+        <div className="text-center py-16">
+          <CheckSquare size={32} className="text-slate-200 mx-auto mb-3" />
+          <p className="text-[11px] text-slate-300 font-bold uppercase tracking-widest mb-3">No tasks yet</p>
+          <button onClick={() => handleAddTask()}
+            className="px-5 py-2.5 bg-indigo-600 text-white rounded-full text-[11px] font-bold hover:bg-indigo-700 transition-colors">
+            Add first task
+          </button>
         </div>
       )}
 
-      {/* Items */}
-      <div className="space-y-2 mb-4">
-        {items.length === 0 && !showInput ? (
-          <div className="flex flex-col items-center justify-center py-16 gap-3">
-            <ListChecks size={32} className="text-slate-200" />
-            <p className="text-[11px] text-slate-300 font-bold uppercase tracking-widest">
-              No checklist items
-            </p>
-          </div>
-        ) : (
-          items.map(item => (
-            <div
-              key={item.id}
-              className="flex items-center gap-3 p-3 bg-white border border-slate-100 rounded-2xl group hover:border-slate-200 transition-all"
-            >
-              <button
-                onClick={() => handleToggle(item)}
-                className={`h-5 w-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${
-                  item.is_done
-                    ? 'bg-emerald-500 border-emerald-500'
-                    : 'border-slate-300 hover:border-emerald-400'
-                }`}
-              >
-                {item.is_done && <Check size={11} className="text-white" />}
-              </button>
-              <span className={`flex-1 text-[13px] font-medium ${
-                item.is_done ? 'line-through text-slate-400' : 'text-slate-700'
-              }`}>
-                {item.title}
-              </span>
-              {item.due_date && (
-                <span className="text-[10px] text-slate-400 shrink-0">
-                  {new Date(item.due_date).toLocaleDateString('en-AU')}
-                </span>
-              )}
-              <button
-                onClick={() => handleDelete(item.id)}
-                className="p-1 text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all shrink-0"
-              >
-                <Trash2 size={13} />
-              </button>
-            </div>
-          ))
-        )}
-      </div>
-
-      {/* Add item */}
-      {showInput ? (
-        <div className="flex items-center gap-2">
-          <input
-            autoFocus
-            value={newTitle}
-            onChange={e => setNewTitle(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') handleAdd();
-              if (e.key === 'Escape') { setShowInput(false); setNewTitle(''); }
-            }}
-            placeholder="Task title..."
-            className="flex-1 bg-slate-50 border border-slate-200 rounded-full py-2.5 px-4 text-[13px] font-medium outline-none focus:ring-2 focus:ring-indigo-100"
-          />
-          <button
-            onClick={handleAdd}
-            disabled={adding || !newTitle.trim()}
-            className="px-4 py-2.5 bg-slate-900 text-white rounded-full text-[11px] font-bold disabled:opacity-40"
-          >
-            {adding ? '...' : 'Add'}
-          </button>
-          <button
-            onClick={() => { setShowInput(false); setNewTitle(''); }}
-            className="px-4 py-2.5 bg-slate-50 text-slate-500 rounded-full text-[11px] font-bold"
-          >
-            Cancel
-          </button>
+      {activeTasks.length > 0 && (
+        <div className="space-y-1">
+          {activeTasks.map(task => (
+            <TaskRow
+              key={task.id}
+              task={task}
+              subtasks={tasks.filter(t => t.parent_task_id === task.id)}
+              allTasks={tasks}
+              profiles={profiles}
+              teams={teams}
+              statuses={statuses}
+              depth={0}
+              onUpdate={handleUpdate}
+              onDelete={handleDelete}
+              onAddSubtask={handleAddTask}
+              onEdit={t => setEditingTask(t)}
+            />
+          ))}
         </div>
-      ) : (
-        <button
-          onClick={() => setShowInput(true)}
-          className="flex items-center gap-2 px-4 py-2.5 text-[11px] font-bold text-slate-400 hover:text-indigo-600 transition-colors"
-        >
-          <Plus size={14} /> Add item
-        </button>
+      )}
+
+      {/* Completed section */}
+      {completedTasks.length > 0 && (
+        <div>
+          <button onClick={() => setShowCompleted(p => !p)}
+            className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">
+            {showCompleted ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            Completed ({completedTasks.length})
+          </button>
+          {showCompleted && (
+            <div className="space-y-1 opacity-70">
+              {completedTasks.map(task => (
+                <TaskRow
+                  key={task.id}
+                  task={task}
+                  subtasks={tasks.filter(t => t.parent_task_id === task.id)}
+                  allTasks={tasks}
+                  profiles={profiles}
+                  teams={teams}
+                  statuses={statuses}
+                  depth={0}
+                  onUpdate={handleUpdate}
+                  onDelete={handleDelete}
+                  onAddSubtask={handleAddTask}
+                  onEdit={t => setEditingTask(t)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Modals */}
+      {editingTask && (
+        <TaskEditModal
+          task={editingTask}
+          profiles={profiles}
+          teams={teams}
+          statuses={statuses}
+          companyId={companyId}
+          projectId={recordId}
+          onSave={handleSaveTask}
+          onClose={() => setEditingTask(null)}
+        />
+      )}
+
+      {showTemplates && (
+        <TemplateModal
+          templates={templates}
+          profiles={profiles}
+          teams={teams}
+          companyId={companyId}
+          projectId={recordId}
+          projectCreatedAt={project?.created_at || new Date().toISOString()}
+          projectDueDate={project?.estimated_completion_date || null}
+          tasks={tasks}
+          onApply={handleApplyTemplate}
+          onSaveNew={handleSaveTemplate}
+          onClose={() => setShowTemplates(false)}
+        />
       )}
     </div>
   );

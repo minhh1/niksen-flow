@@ -524,9 +524,9 @@ export default function Sidebar() {
   const [customFieldCols, setCustomFieldCols] = useState<any[]>([]);
   const { tables: customTables } = useCustomTables();
 
-  const mode = pathname.includes("projects") ? "projects"
-    : pathname.includes("properties") ? "properties"
-    : "entities";
+  const mode = pathname.includes("properties") ? "properties"
+    : pathname.includes("entities") ? "entities"
+    : "projects"; // default to projects for admin, settings, and all other pages
 
   // ── TanStack Query — shared cache across sidebar + master table ──
   const { data: profileData } = useProfile();
@@ -536,10 +536,12 @@ export default function Sidebar() {
   const invalidateRows = useInvalidateRows();
 
   const { data: rowsData = [] } = useTableRows(mode as 'projects' | 'properties' | 'entities');
+  const [enhancedItems, setEnhancedItems] = useState<any[] | null>(null);
 
   // Apply tree config (sort + filter) to rowsData in memory — no extra DB fetch
+  // Use enhancedItems when custom fields are needed, otherwise use rowsData
   const items = useMemo(() => {
-    let result = [...rowsData];
+    let result = [...(enhancedItems ?? rowsData)];
     const config = treeConfig;
 
     // Apply base filters
@@ -574,7 +576,12 @@ export default function Sidebar() {
     }
 
     return result;
-  }, [rowsData, treeConfig]);
+  }, [rowsData, enhancedItems, treeConfig]);
+
+  // Reset enhancedItems when mode changes so we don't show stale custom field data
+  useEffect(() => {
+    setEnhancedItems(null);
+  }, [mode]);
 
   // Apply visible tables from profile
   useEffect(() => {
@@ -608,7 +615,10 @@ export default function Sidebar() {
   }, [mode]);
 
   // items loaded via useTableRows hook (shared cache with master table)
-  // fetchTreeData still used for config-filtered views
+  // fetchTreeData called for custom fields and config-specific filters
+  useEffect(() => {
+    if (treeConfig) fetchTreeData();
+  }, [mode, treeConfig]);
 
   useEffect(() => {
     if (!showCompanySwitcher) return;
@@ -715,7 +725,8 @@ export default function Sidebar() {
         });
     }
 
-    // items derived from useMemo on rowsData — no setItems needed
+    // Write results to enhancedItems so useMemo picks them up
+    setEnhancedItems(items);
   };
 
   // ── Resolve display label ──────────────────────────────────────
@@ -746,6 +757,8 @@ export default function Sidebar() {
   const handleTreeConfigChange = async (config: TreeConfig) => {
     setTreeConfig(config);
     await saveTreeConfigToDB(mode, config);
+    // Re-fetch with new config so custom fields / filters apply
+    fetchTreeData();
   };
 
   const handleVisibilityChange = async (slugs: string[]) => {

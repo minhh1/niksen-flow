@@ -8,8 +8,8 @@ export default function ProjectsPage() {
       tableName="projects"
       pageTitle="Projects"
       newButtonLabel="+ New Projects"
-      renderDashboard={(id, onBack) => (
-        <RecordDashboard systemTable="projects" recordId={id} onBack={onBack} />
+      renderDashboard={(id, onBack, initialRecord) => (
+        <RecordDashboard systemTable="projects" recordId={id} onBack={onBack} initialRecord={initialRecord} />
       )}
     />
   );

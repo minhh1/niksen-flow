@@ -31,7 +31,7 @@ interface GenericMasterTableProps {
   tableName: "properties" | "entities" | "projects";
   pageTitle: string;
   newButtonLabel: string;
-  renderDashboard?: (id: string, onBack: () => void) => React.ReactNode;
+  renderDashboard?: (id: string, onBack: () => void, initialRecord?: any) => React.ReactNode;
 }
 
 type SortDirection = 'asc' | 'desc';
@@ -189,6 +189,23 @@ function GenericMasterTableInner({
   // Cache companyId in a ref so fetchItems never re-fetches auth on every call
   const companyIdRef = useRef<string | null>(null);
 
+  // Pre-populate from localStorage profile cache immediately
+  useEffect(() => {
+    if (companyIdRef.current) return;
+    try {
+      // Try profile cache first
+      const keys = Object.keys(localStorage).filter(k => k.startsWith('nk_cache_profile_'));
+      for (const key of keys) {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const entry = JSON.parse(raw);
+          const cid = entry?.data?.active_company_id;
+          if (cid) { companyIdRef.current = cid; break; }
+        }
+      }
+    } catch {}
+  }, []);
+
   const fetchItems = useCallback(async (visibleColumns: string[]) => {
     const tFetch0 = performance.now();
 
@@ -343,13 +360,20 @@ function GenericMasterTableInner({
     const saveFilters = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
-      await supabase
+      // Use update only — upsert would create duplicate preset rows
+      // First check the row exists
+      const { data: existing } = await supabase
         .from('user_column_preferences')
-        .update({ filters })
+        .select('id')
         .eq('user_id', user.id)
         .eq('table_slug', tableName)
         .eq('preset_name', t.activePreset)
-        .eq('is_active', true);
+        .single();
+      if (!existing) return; // no preset row yet — filters will save on next preset save
+      await supabase
+        .from('user_column_preferences')
+        .update({ filters })
+        .eq('id', existing.id);
     };
     saveFilters();
   }, [filters, t.activePreset, tableName]);
@@ -484,13 +508,13 @@ function GenericMasterTableInner({
   }, [customFieldCols, schema.all]);
 
   const getLinkTarget = useCallback((colId: string, item: any, firstVisibleColId?: string): string | null => {
-    // First visible column always links to record — must check before exclusions
-    if (colId === firstVisibleColId) return `/dashboard/${tableName}?id=${item.id}`;
-    if (colId.includes('.')) return null;
-    if (colId.startsWith('custom_field:')) return null;
     const primaryCol = tableName === 'properties' ? 'street_address' : 'name';
-    if (colId === primaryCol || colId === firstVisibleColId) return `/dashboard/${tableName}?id=${item.id}`;
-    const col = schema.all.find(c => c.column_name === colId);
+    // Primary col, first visible col, and all custom fields link to the record
+    if (colId === primaryCol || colId === firstVisibleColId || colId.startsWith('custom_field:')) {
+      return `/dashboard/${tableName}?id=${item.id}`;
+    }
+    if (colId.includes('.')) return null;
+    const col = schemaAll.find(c => c.column_name === colId);
     if (col?.category === 'relation' && col.relation_table) {
       const alias = colId.replace(/_id$/, '');
       const linkedId = item[alias]?.id || item[colId];
@@ -649,10 +673,12 @@ function GenericMasterTableInner({
   // ── Early returns ──────────────────────────────────────────────────
 
   if (selectedId && renderDashboard) {
+    // Pass pre-fetched row so RecordDashboard doesn't need to re-fetch it
+    const initialRecord = t.items.find(item => item.id === selectedId);
     return <>{renderDashboard(selectedId, () => {
       t.refresh();
       router.push(`/dashboard/${tableName}`);
-    })}</>;
+    }, initialRecord)}</>;
   }
 
   if (schema.loading) {
@@ -785,7 +811,12 @@ function GenericMasterTableInner({
           expandedRow={t.expandedRow}
           toggleExpandRow={t.toggleExpandRow}
           resolveValue={resolveValue}
-          getLinkTarget={(colId, item) => getLinkTarget(colId, item, t.tableCols[0])}
+          getLinkTarget={(colId, item) => getLinkTarget(
+            colId,
+            item,
+            // Use first visible col from prefs, fall back to primary col immediately
+            t.tableCols[0] ?? (tableName === 'properties' ? 'street_address' : 'name')
+          )}
           resolveColLabel={resolveColLabel}
           relations={relations}
           expandRelations={t.expandRelations}
