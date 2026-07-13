@@ -3,7 +3,7 @@
 // - On first call: returns null (no cache), fetches fresh
 // - On subsequent calls: returns cached instantly, fetches fresh in background, updates if changed
 
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2'; // bumped to clear stale cross-company cached data
 const TTL_MS = 5 * 60 * 1000; // 5 minutes — after this, cache is considered stale
 
 interface CacheEntry<T> {
@@ -41,6 +41,21 @@ export function writeCache<T>(key: string, data: T): void {
   } catch {
     // localStorage full or unavailable — silently ignore
   }
+}
+
+// Call this once on app startup to remove stale cross-company cached data
+export function clearStaleCrossCompanyCache(): void {
+  if (typeof window === 'undefined') return;
+  // Remove all non-scoped row caches (old format without company ID)
+  Object.keys(localStorage)
+    .filter(k => {
+      if (!k.startsWith('nk_cache_rows_')) return false;
+      // New format: nk_cache_rows_<companyId>_<table> — companyId is a UUID
+      const rest = k.replace('nk_cache_rows_', '');
+      const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}/.test(rest);
+      return !isUUID; // remove old non-UUID-prefixed keys
+    })
+    .forEach(k => localStorage.removeItem(k));
 }
 
 export function clearCache(keyPrefix?: string): void {

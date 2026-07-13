@@ -1,4 +1,7 @@
 // lib/gmail/client.ts
+// Gmail client for the niksen-flow app.
+// Label management always goes through project_gmail_labels (DB source of truth).
+// Never generates label codes client-side — codes are created by the Edge Function.
 
 export interface GmailMessage {
   id: string;
@@ -13,10 +16,9 @@ export interface GmailMessage {
   body?: string;
 }
 
-async function refreshTokenIfNeeded(
-  userId: string,
-  supabase: any
-): Promise<string> {
+// ── Token management ───────────────────────────────────────────────
+
+async function refreshTokenIfNeeded(userId: string, supabase: any): Promise<string> {
   const { data: tokenRow } = await supabase
     .from('user_gmail_tokens')
     .select('*')
@@ -45,9 +47,7 @@ async function refreshTokenIfNeeded(
         .from('user_gmail_tokens')
         .update({
           access_token: refreshed.access_token,
-          token_expires_at: new Date(
-            Date.now() + refreshed.expires_in * 1000
-          ).toISOString(),
+          token_expires_at: new Date(Date.now() + refreshed.expires_in * 1000).toISOString(),
         })
         .eq('user_id', userId);
       return refreshed.access_token;
@@ -56,6 +56,8 @@ async function refreshTokenIfNeeded(
 
   return tokenRow.access_token;
 }
+
+// ── Fetch emails ───────────────────────────────────────────────────
 
 export async function fetchEmails(
   userId: string,
@@ -88,10 +90,8 @@ export async function fetchEmails(
       const headers: { name: string; value: string }[] = msg.payload?.headers || [];
       const get = (name: string) =>
         headers.find(h => h.name.toLowerCase() === name.toLowerCase())?.value || '';
-
       const fromRaw = get('From');
       const fromMatch = fromRaw.match(/^(.+?)\s*<(.+?)>$/);
-
       return {
         id: msg.id,
         threadId: msg.threadId,
@@ -110,6 +110,8 @@ export async function fetchEmails(
     });
 }
 
+// ── Fetch email body ───────────────────────────────────────────────
+
 export async function fetchEmailBody(
   messageId: string,
   userId: string,
@@ -125,101 +127,149 @@ export async function fetchEmailBody(
 
   const extractBody = (payload: any): string => {
     if (!payload) return '';
-
     if (payload.body?.data) {
-      // Replace + and / back from URL-safe base64, then decode
-      const base64 = payload.body.data
-        .replace(/-/g, '+')
-        .replace(/_/g, '/');
-      try {
-        return atob(base64);
-      } catch {
-        return '';
-      }
+      const base64 = payload.body.data.replace(/-/g, '+').replace(/_/g, '/');
+      try { return atob(base64); } catch { return ''; }
     }
-
     if (payload.parts?.length) {
       const htmlPart = payload.parts.find((p: any) => p.mimeType === 'text/html');
       const textPart = payload.parts.find((p: any) => p.mimeType === 'text/plain');
       const preferred = htmlPart || textPart;
-
       if (preferred?.body?.data) {
-        const base64 = preferred.body.data
-          .replace(/-/g, '+')
-          .replace(/_/g, '/');
-        try {
-          return atob(base64);
-        } catch {
-          return '';
-        }
+        const base64 = preferred.body.data.replace(/-/g, '+').replace(/_/g, '/');
+        try { return atob(base64); } catch { return ''; }
       }
-
-      // Recurse into nested multipart
       for (const part of payload.parts) {
         const body = extractBody(part);
         if (body) return body;
       }
     }
-
     return '';
   };
 
   return extractBody(msg.payload);
 }
 
+// ── Apply project label ────────────────────────────────────────────
+// Uses project_gmail_labels as source of truth.
+// Never generates label names — always reads from DB.
+
 export async function applyProjectLabel(
-  threadId: string,
-  projectName: string,
+  messageId: string,
+  projectId: string,
   userId: string,
   supabase: any
-): Promise<void> {
-  const token = await refreshTokenIfNeeded(userId, supabase);
-  const labelName = `Shared Labels/${projectName}`;
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const token = await refreshTokenIfNeeded(userId, supabase);
 
-  // List existing labels
-  const labelsRes = await fetch(
+    // Look up the label from DB — single source of truth
+    const { data: labelRow } = await supabase
+      .from('project_gmail_labels')
+      .select('gmail_label_name, label_code')
+      .eq('project_id', projectId)
+      .is('removed_at', null)
+      .maybeSingle();
+
+    if (!labelRow) {
+      return { ok: false, error: 'No label found for this project. Create one first via the Gmail addon.' };
+    }
+
+    const labelName = labelRow.gmail_label_name;
+
+    // Find label in user's Gmail by code (most reliable) or name
+    const labelsRes = await fetch(
+      'https://gmail.googleapis.com/gmail/v1/users/me/labels',
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const labelsData = await labelsRes.json();
+    const allLabels: any[] = labelsData.labels || [];
+
+    let gmailLabel = labelRow.label_code
+      ? allLabels.find(l => l.name.includes(`[${labelRow.label_code}]`))
+      : allLabels.find(l => l.name === labelName);
+
+    // Create label hierarchy if it doesn't exist
+    if (!gmailLabel) {
+      gmailLabel = await createLabelHierarchy(token, labelName);
+    }
+
+    if (!gmailLabel?.id) {
+      return { ok: false, error: `Could not find or create Gmail label: ${labelName}` };
+    }
+
+    // Apply label to message
+    const applyRes = await fetch(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ addLabelIds: [gmailLabel.id] }),
+      }
+    );
+
+    if (!applyRes.ok) {
+      const err = await applyRes.json();
+      return { ok: false, error: err.error?.message || 'Failed to apply label' };
+    }
+
+    // Record in project_emails
+    await supabase.from('project_emails').upsert({
+      project_id: projectId,
+      user_id: userId,
+      gmail_message_id: messageId,
+      gmail_label_applied: true,
+      last_synced_at: new Date().toISOString(),
+    }, { onConflict: 'project_id,user_id,gmail_message_id' });
+
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err.message };
+  }
+}
+
+// ── Create label hierarchy ─────────────────────────────────────────
+// Creates parent/child labels in Gmail. e.g. "Huynh Lawyers/260547 — Smith [ABC12]"
+
+async function createLabelHierarchy(token: string, labelName: string): Promise<any> {
+  const parts = labelName.split('/');
+
+  const existingRes = await fetch(
     'https://gmail.googleapis.com/gmail/v1/users/me/labels',
     { headers: { Authorization: `Bearer ${token}` } }
   );
-  const labelsData = await labelsRes.json();
-  let label = labelsData.labels?.find((l: any) => l.name === labelName);
+  const existing: any[] = existingRes.ok ? (await existingRes.json()).labels || [] : [];
 
-  // Create if it doesn't exist
-  if (!label) {
+  let lastLabel: any = null;
+
+  for (let i = 1; i <= parts.length; i++) {
+    const partial = parts.slice(0, i).join('/');
+    const found = existing.find(l => l.name === partial);
+    if (found) { lastLabel = found; continue; }
+
+    const isLeaf = i === parts.length;
     const createRes = await fetch(
       'https://gmail.googleapis.com/gmail/v1/users/me/labels',
       {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: labelName,
+          name: partial,
           labelListVisibility: 'labelShow',
-          messageListVisibility: 'show',
-          color: { backgroundColor: '#4a86e8', textColor: '#ffffff' },
+          messageListVisibility: isLeaf ? 'show' : 'hide',
         }),
       }
     );
-    label = await createRes.json();
+    if (createRes.ok) {
+      lastLabel = await createRes.json();
+      existing.push(lastLabel);
+    }
   }
 
-  if (!label?.id) return;
-
-  // Apply label to thread
-  await fetch(
-    `https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}/modify`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ addLabelIds: [label.id] }),
-    }
-  );
+  return lastLabel;
 }
+
+// ── Send email ─────────────────────────────────────────────────────
 
 export async function sendEmail(
   to: string,
@@ -239,17 +289,14 @@ export async function sendEmail(
     body,
   ];
 
-const raw = btoa(unescape(encodeURIComponent(emailLines.join('\r\n'))))
-  .replace(/\+/g, '-')
-  .replace(/\//g, '_')
-  .replace(/=+$/, '');
-  
+  const raw = btoa(unescape(encodeURIComponent(emailLines.join('\r\n'))))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
   await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       raw,
       ...(threadId ? { threadId } : {}),

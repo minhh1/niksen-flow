@@ -5,7 +5,10 @@ import { NextResponse, type NextRequest } from 'next/server'
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url)
   const code = searchParams.get('code')
+  // Token can come from query param (email flow) or cookie (Google OAuth flow)
   const inviteToken = searchParams.get('token')
+    || request.cookies.get('invite_token')?.value
+    || null
 
   if (code) {
     const response = NextResponse.redirect(`${origin}/dashboard/projects`)
@@ -81,6 +84,9 @@ export async function GET(request: NextRequest) {
           await supabase.from('registration_tokens')
             .update({ used_at: new Date().toISOString(), used_by: user.id })
             .eq('token', inviteToken)
+
+          // Clear the invite cookie
+          response.cookies.set('invite_token', '', { maxAge: 0, path: '/' })
         }
       }
     }

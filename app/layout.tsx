@@ -1,16 +1,14 @@
+// app/layout.tsx
+import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import AppLoader from "@/components/AppLoader";
 
 const inter = Inter({ subsets: ["latin"] });
 
-export const metadata = {
-  title: "niksen-flow | Investment Management",
-  description: "Enterprise Portfolio & Task Tracking",
-  icons: {
-    icon: '/favicon.svg',
-    apple:'/favicon.svg',
-  },
-  google: "a9Xz9Q_dR3_MIzA_Dgsp01YgxVIEu-CdTKFViW4oBMg",
+export const metadata: Metadata = {
+  title: "niksen-flow",
+  description: "Property & legal ERP",
 };
 
 export default function RootLayout({
@@ -20,8 +18,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${inter.className} antialiased`}>
-        {children}
+      <body className={inter.className}>
+        <AppLoader>
+          {children}
+        </AppLoader>
       </body>
     </html>
   );

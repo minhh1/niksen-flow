@@ -83,7 +83,6 @@ function LoginPageInner() {
   }, [inviteToken]);
 
   const validateToken = async () => {
-    console.log('[validateToken] looking up token:', inviteToken);
     const { data, error } = await supabase
       .from('registration_tokens')
       .select('id, note, expires_at, used_at, company_id, company:company_id(name)')
@@ -136,7 +135,7 @@ function LoginPageInner() {
       await supabase.from('company_memberships').upsert({
         company_id: tokenData.company_id,
         user_id: userId,
-        role: 'operator' as any,
+        role: 'member',
       }, { onConflict: 'company_id,user_id' });
 
       // Switch active company
@@ -160,9 +159,11 @@ function LoginPageInner() {
   const handleGoogleLogin = async () => {
     setGoogleLoading(true);
     clearMessages();
-    const redirectTo = inviteToken
-      ? `${window.location.origin}/auth/callback?token=${inviteToken}`
-      : `${window.location.origin}/auth/callback`;
+    // Store invite token in cookie so callback can read it after OAuth redirect
+    if (inviteToken) {
+      document.cookie = `invite_token=${inviteToken}; path=/; max-age=600; SameSite=Lax`;
+    }
+    const redirectTo = `${window.location.origin}/auth/callback`;
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
@@ -205,21 +206,35 @@ function LoginPageInner() {
       return;
     }
 
-    // If there's an invite token — use server route to join company
+    const userId = data.user.id;
+
+    // If there's a valid company invite token, join that company
     if (inviteToken && tokenValid && tokenData?.company_id) {
       try {
-        const res = await fetch('/api/join-company', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: inviteToken }),
-        });
-        const result = await res.json();
-        if (!res.ok) {
-          console.error('[login] join-company error:', result.error);
-          // Don't block login — just log the error
-        }
+        // Add to company_memberships
+        const { error: memberErr } = await supabase
+          .from('company_memberships')
+          .upsert({
+            company_id: tokenData.company_id,
+            user_id: userId,
+            role: 'member',
+          }, { onConflict: 'company_id,user_id' });
+
+        if (memberErr) console.error('membership error:', memberErr);
+
+        // Switch active company to the invited company
+        await supabase.from('profiles')
+          .update({ active_company_id: tokenData.company_id })
+          .eq('id', userId);
+
+        // Mark token as used
+        await supabase.from('registration_tokens')
+          .update({ used_at: new Date().toISOString() })
+          .eq('token', inviteToken);
+
       } catch (err) {
-        console.error('[login] join-company fetch error:', err);
+        console.error('Token join error:', err);
+        // Don't block login even if join fails
       }
     }
 
@@ -265,29 +280,29 @@ function LoginPageInner() {
       const userId = authData.user.id;
 
       if (isJoinInvite && tokenData?.company_id) {
-        const companyId = tokenData.company_id;
-
-        // Switch active company first
+        // ── Join existing company ──────────────────────────────
+        // Create profile first
         await supabase.from('profiles').upsert({
           id: userId,
           full_name: fullName || email.split('@')[0],
           email,
-          active_company_id: companyId,  // ← set to invited company
+          active_company_id: tokenData.company_id,
           is_admin: false,
           is_active: true,
         }, { onConflict: 'id' });
 
-        // Then insert membership
+        // Add to memberships
         await supabase.from('company_memberships').upsert({
-          company_id: companyId,
+          company_id: tokenData.company_id,
           user_id: userId,
-          role: 'operator' as any,
+          role: 'member',
         }, { onConflict: 'company_id,user_id' });
 
         // Mark token used
         await supabase.from('registration_tokens')
           .update({ used_at: new Date().toISOString() })
           .eq('token', inviteToken);
+
       } else {
         // ── Create new company (original flow) ─────────────────
         const { data: result, error: rpcError } = await supabase.rpc(

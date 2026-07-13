@@ -16,6 +16,17 @@ interface UsePresetTableOptions {
   fetchItems: (visibleColumns: string[]) => Promise<any[]>;
 }
 
+function getCachedCompanyId(): string {
+  try {
+    const keys = Object.keys(localStorage).filter(k => k.startsWith('nk_cache_profile_'));
+    for (const k of keys) {
+      const p = JSON.parse(localStorage.getItem(k) || '{}');
+      if (p?.data?.active_company_id) return p.data.active_company_id;
+    }
+  } catch {}
+  return '';
+}
+
 export function usePresetTable({
   tableSlug,
   defaultCols,
@@ -48,9 +59,13 @@ export function usePresetTable({
     setLoading(true);
 
     // ── Step 1: show cache immediately ────────────────────────────
+    // Get cached company to scope the cache key
+    const cachedCompanyId = getCachedCompanyId();
+    const companyScopedKey = `nk_cache_rows_${cachedCompanyId}_${tableSlug}`;
+
     let hasCachedData = false;
     try {
-      const raw = localStorage.getItem(`nk_cache_rows_${tableSlug}`);
+      const raw = localStorage.getItem(companyScopedKey);
       if (raw) {
         const entry = JSON.parse(raw);
         if (entry?.data?.length) {
@@ -156,7 +171,7 @@ export function usePresetTable({
 
     // Show cached data immediately — no blank flash while switching presets
     try {
-      const cacheKey = `nk_cache_rows_${tableSlug}`;
+      const cacheKey = `nk_cache_rows_${getCachedCompanyId()}_${tableSlug}`;
       const raw = localStorage.getItem(cacheKey);
       if (raw) {
         const entry = JSON.parse(raw);
@@ -225,7 +240,7 @@ export function usePresetTable({
 
       // Show cached data immediately then refetch in background
       try {
-        const cacheKey = `nk_cache_rows_${tableSlug}`;
+        const cacheKey = `nk_cache_rows_${getCachedCompanyId()}_${tableSlug}`;
         const raw = localStorage.getItem(cacheKey);
         if (raw) {
           const entry = JSON.parse(raw);

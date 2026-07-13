@@ -238,7 +238,7 @@ function GenericMasterTableInner({
     let items: any[] = [];
 
     // Shared cache key — sidebar reads from this same cache
-    const cacheKeyBase = `rows_${tableName}`;
+    const cacheKeyBase = `rows_${cid}_${tableName}`; // scoped by company to prevent cross-company cache bleed
 
     const visibleCustomFieldIds = visibleColumns
       .filter(c => c.startsWith('custom_field:'))
@@ -327,9 +327,15 @@ function GenericMasterTableInner({
 
   const invalidateRows = useInvalidateRows();
 
-  // Reset cached companyId when it changes (e.g. company switch)
+  // Reset cached companyId and clear row cache when company changes
   useEffect(() => {
     if (companyId && companyId !== companyIdRef.current) {
+      // Clear previous company's cached rows to prevent bleed
+      if (companyIdRef.current) {
+        Object.keys(localStorage)
+          .filter(k => k.startsWith(`nk_cache_rows_${companyIdRef.current}`))
+          .forEach(k => localStorage.removeItem(k));
+      }
       companyIdRef.current = companyId;
     }
   }, [companyId]);
@@ -793,6 +799,21 @@ function GenericMasterTableInner({
             onSaveNew={handleSaveAsNewWithFilters}
             onDelete={t.handleDeletePreset}
             isBusy={t.isBusy}
+            onClearView={async () => {
+              // Clear user preferences for this table
+              const { data: { user } } = await supabase.auth.getUser();
+              if (user) {
+                await supabase.from('user_column_preferences')
+                  .delete()
+                  .eq('user_id', user.id)
+                  .eq('table_slug', tableName);
+              }
+              // Clear all localStorage cache keys for this table
+              Object.keys(localStorage)
+                .filter(k => k.includes(`_${tableName}`))
+                .forEach(k => localStorage.removeItem(k));
+              window.location.reload();
+            }}
           />
         </div>
       </header>
