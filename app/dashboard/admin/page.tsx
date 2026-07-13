@@ -11,7 +11,6 @@ import {
 import SourceEmailManager from "@/components/gmail/SourceEmailManager";
 import AdminTeamsTab from "@/components/admin/AdminTeamsTab";
 import AdminDefaultViewsTab from "@/components/admin/AdminDefaultViewsTab";
-import AdminFieldConstraintsTab from "@/components/admin/AdminFieldConstraintsTab";
 
 interface Member {
   id: string;
@@ -54,7 +53,7 @@ export default function AdminPage() {
   const [company, setCompany] = useState<Company | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [tokens, setTokens] = useState<Token[]>([]);
-  const [activeTab, setActiveTab] = useState<'members' | 'teams' | 'views' | 'company' | 'invites' | 'gmail' | 'constraints'>('members');
+  const [activeTab, setActiveTab] = useState<'members' | 'teams' | 'views' | 'company' | 'invites' | 'gmail'>('members');
   const [saving, setSaving] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
@@ -647,9 +646,6 @@ export default function AdminPage() {
           )}
 
           {/* ── Gmail source of truth ── */}
-          {activeTab === 'constraints' && company?.id && (
-            <AdminFieldConstraintsTab companyId={company.id} />
-          )}
           {activeTab === 'gmail' && (
             <div className="bg-white border border-slate-200 rounded-[40px] p-8">
               <SourceEmailManager
