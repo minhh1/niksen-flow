@@ -181,15 +181,45 @@ function TaskEditModal({ task, profiles, teams, statuses, onSave, onClose }: any
 
 // ── TemplateModal ─────────────────────────────────────────────────
 function TemplateModal({ templates, setTemplates, profiles, teams, companyId, projectId, projectCreatedAt, projectDueDate, tasks, onApply, onSaveNew, onClose }: any) {
-  type View = 'list' | 'apply' | 'create';
+  type View = 'list' | 'apply' | 'create' | 'edit';
   const [view, setView] = useState<View>('list');
   const [selected, setSelected] = useState<Template | null>(null);
   const [newName, setNewName] = useState('');
   const [newItems, setNewItems] = useState<Partial<TemplateItem>[]>([
     { title: '', due_offset_days: 0, due_anchor: 'record_created', display_order: 0 }
   ]);
+  const [editName, setEditName] = useState('');
+  const [editItems, setEditItems] = useState<Partial<TemplateItem>[]>([]);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+
+  const openEdit = (t: Template) => {
+    setSelected(t);
+    setEditName(t.name);
+    setEditItems(t.items.map(i => ({ ...i })));
+    setView('edit');
+  };
+
+  const handleSaveEdit = async () => {
+    if (!selected || !editName.trim()) return;
+    setSaving(true);
+    // Update template name
+    await supabase.from('checklist_templates').update({ name: editName.trim() }).eq('id', selected.id);
+    // Delete all existing items and re-insert
+    await supabase.from('checklist_template_items').delete().eq('template_id', selected.id);
+    const validItems = editItems.filter(i => i.title?.trim());
+    if (validItems.length) {
+      await supabase.from('checklist_template_items').insert(
+        validItems.map((item, i) => ({ ...item, template_id: selected.id, display_order: i }))
+      );
+    }
+    // Update local state
+    const updatedTemplate = { ...selected, name: editName.trim(), items: validItems.map((item, i) => ({ ...item, template_id: selected.id, display_order: i, id: item.id || '' })) };
+    setTemplates((prev: Template[]) => prev.map(t => t.id === selected.id ? updatedTemplate : t));
+    setSaving(false);
+    setView('list');
+    setSelected(null);
+  };
 
   const ANCHORS = [
     { value: 'record_created', label: 'Project created' },
@@ -257,7 +287,7 @@ function TemplateModal({ templates, setTemplates, profiles, teams, companyId, pr
             </button>
           )}
           <h3 className="text-[14px] font-bold text-slate-800 uppercase tracking-wide flex-1">
-            {view === 'list' ? 'Checklist templates' : view === 'apply' ? `Apply: ${selected?.name}` : 'Create template'}
+            {view === 'list' ? 'Checklist templates' : view === 'apply' ? `Apply: ${selected?.name}` : view === 'edit' ? `Edit: ${selected?.name}` : 'Create template'}
           </h3>
           <button onClick={onClose} className="p-2 text-slate-300 hover:text-slate-700"><X size={16} /></button>
         </div>
@@ -285,17 +315,18 @@ function TemplateModal({ templates, setTemplates, profiles, teams, companyId, pr
                   </button>
                   {/* Divider */}
                   <div className="w-px h-8 bg-slate-200" />
+                  {/* Edit */}
+                  <button onClick={() => openEdit(t)} className="p-1.5 text-slate-300 hover:text-indigo-600 transition-colors shrink-0" title="Edit template">
+                    <Pencil size={14} />
+                  </button>
+                  {/* Divider */}
+                  <div className="w-px h-8 bg-slate-200" />
                   {/* Delete */}
-                  <button
-                    onClick={() => handleDelete(t.id, t.name)}
-                    disabled={deleting === t.id}
-                    className="p-1.5 text-slate-300 hover:text-red-500 transition-colors shrink-0"
-                    title="Delete template"
-                  >
+                  <button onClick={() => handleDelete(t.id, t.name)} disabled={deleting === t.id}
+                    className="p-1.5 text-slate-300 hover:text-red-500 transition-colors shrink-0" title="Delete template">
                     {deleting === t.id
                       ? <div className="w-4 h-4 border-2 border-red-300 border-t-transparent rounded-full animate-spin" />
-                      : <Trash2 size={15} />
-                    }
+                      : <Trash2 size={15} />}
                   </button>
                 </div>
               ))}
@@ -415,6 +446,74 @@ function TemplateModal({ templates, setTemplates, profiles, teams, companyId, pr
               </div>
             </div>
           )}
+
+          {/* ── Edit view ── */}
+          {view === 'edit' && selected && (
+            <div className="space-y-6">
+              <div>
+                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Template name</p>
+                <input value={editName} onChange={e => setEditName(e.target.value)}
+                  className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none focus:border-indigo-400" />
+              </div>
+              <div>
+                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-3">Tasks</p>
+                <div className="space-y-3">
+                  {editItems.map((item, idx) => (
+                    <div key={idx} className="bg-slate-50 rounded-2xl p-4 space-y-3">
+                      <div className="flex items-center gap-2">
+                        <input value={item.title || ''} onChange={e => {
+                          const next = [...editItems]; next[idx] = { ...next[idx], title: e.target.value }; setEditItems(next);
+                        }} placeholder={`Task ${idx + 1} name...`}
+                          className="flex-1 px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400 bg-white" />
+                        <button onClick={() => setEditItems(editItems.filter((_, i) => i !== idx))}
+                          className="p-1.5 text-slate-300 hover:text-red-500 transition-colors"><X size={12} /></button>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <p className="text-[9px] text-slate-400 mb-1">Offset days</p>
+                          <input type="number" value={item.due_offset_days ?? 0} onChange={e => {
+                            const next = [...editItems]; next[idx] = { ...next[idx], due_offset_days: parseInt(e.target.value) || 0 }; setEditItems(next);
+                          }} className="w-full px-3 py-1.5 border border-slate-200 rounded-full text-[11px] outline-none bg-white" />
+                        </div>
+                        <div className="col-span-2">
+                          <p className="text-[9px] text-slate-400 mb-1">From</p>
+                          <select value={item.due_anchor || 'record_created'} onChange={e => {
+                            const next = [...editItems]; next[idx] = { ...next[idx], due_anchor: e.target.value }; setEditItems(next);
+                          }} className="w-full px-3 py-1.5 border border-slate-200 rounded-full text-[11px] outline-none bg-white">
+                            {ANCHORS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <p className="text-[9px] text-slate-400 mb-1">Assignee</p>
+                          <select value={item.assignee_id || ''} onChange={e => {
+                            const next = [...editItems]; next[idx] = { ...next[idx], assignee_id: e.target.value || null }; setEditItems(next);
+                          }} className="w-full px-3 py-1.5 border border-slate-200 rounded-full text-[11px] outline-none bg-white">
+                            <option value="">Unassigned</option>
+                            {profiles.map((p: any) => <option key={p.id} value={p.id}>{p.full_name || p.email}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <p className="text-[9px] text-slate-400 mb-1">Team</p>
+                          <select value={item.assigned_team_id || ''} onChange={e => {
+                            const next = [...editItems]; next[idx] = { ...next[idx], assigned_team_id: e.target.value || null }; setEditItems(next);
+                          }} className="w-full px-3 py-1.5 border border-slate-200 rounded-full text-[11px] outline-none bg-white">
+                            <option value="">No team</option>
+                            {teams.map((t: any) => <option key={t.id} value={t.id}>{t.team_name}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  <button onClick={() => setEditItems([...editItems, { title: '', due_offset_days: 0, due_anchor: 'record_created', display_order: editItems.length }])}
+                    className="w-full flex items-center gap-2 justify-center py-2.5 border border-dashed border-slate-300 text-slate-400 rounded-2xl hover:border-indigo-300 hover:text-indigo-600 transition-colors text-[12px]">
+                    <Plus size={13} /> Add task
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="px-8 py-5 border-t border-slate-100 shrink-0">
@@ -428,6 +527,12 @@ function TemplateModal({ templates, setTemplates, profiles, teams, companyId, pr
             <button onClick={handleSaveNew} disabled={saving || !newName.trim()}
               className="w-full py-3 bg-indigo-600 text-white text-[12px] font-bold rounded-full hover:bg-indigo-700 disabled:opacity-40 transition-colors">
               {saving ? 'Saving...' : 'Save template'}
+            </button>
+          )}
+          {view === 'edit' && (
+            <button onClick={handleSaveEdit} disabled={saving || !editName.trim()}
+              className="w-full py-3 bg-indigo-600 text-white text-[12px] font-bold rounded-full hover:bg-indigo-700 disabled:opacity-40 transition-colors">
+              {saving ? 'Saving...' : 'Save changes'}
             </button>
           )}
         </div>
