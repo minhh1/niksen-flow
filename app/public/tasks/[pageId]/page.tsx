@@ -7,19 +7,21 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { Loader2, Plus, X, ExternalLink, RefreshCw } from "lucide-react";
+import { Loader2, Plus, X, ExternalLink, RefreshCw, Pencil, Trash2, Check, FileStack } from "lucide-react";
 import { PUBLIC_TASK_COLUMNS } from "@/lib/publicTaskColumns";
+import DateCalculator from "@/components/DateCalculator";
+import ProjectPicker, { PickedProject } from "@/components/public/ProjectPicker";
 
 interface Task {
   id: string; name: string; isCompleted: boolean;
   dueDate: string | null; dueTime: string | null;
-  projectName: string | null; matterNumber: string | null;
-  status: string | null; statusColor: string | null;
-  team: string | null; estimatedCost: number | null; dateEntered: string | null;
+  projectId: string | null; projectName: string | null; matterNumber: string | null;
+  statusId: string | null; status: string | null; statusColor: string | null;
+  teamId: string | null; team: string | null;
+  isMonetary: boolean; estimatedCost: number | null; dateEntered: string | null;
 }
 interface Tab { userId: string; userName: string; tasks: Task[]; }
 interface FormOptions {
-  projects: { id: string; name: string }[];
   statuses: { id: string; label: string }[];
   teams: { id: string; team_name: string }[];
   assignees: { id: string; name: string }[];
@@ -37,6 +39,8 @@ export default function PublicTaskPage() {
   const [data, setData] = useState<PageData | null>(null);
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [showTemplates, setShowTemplates] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const checkAuthAndLoad = useCallback(async () => {
@@ -65,6 +69,21 @@ export default function PublicTaskPage() {
 
   const openInNewTab = () => {
     window.open(window.location.href, "_blank");
+  };
+
+  const toggleComplete = async (task: Task) => {
+    await fetch(`/api/public-tasks/${pageId}/tasks/${task.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isCompleted: !task.isCompleted }),
+    });
+    checkAuthAndLoad();
+  };
+
+  const deleteTask = async (task: Task) => {
+    if (!window.confirm(`Delete "${task.name}"?`)) return;
+    await fetch(`/api/public-tasks/${pageId}/tasks/${task.id}`, { method: "DELETE" });
+    checkAuthAndLoad();
   };
 
   // ── Not signed in ────────────────────────────────────────────────
@@ -131,6 +150,10 @@ export default function PublicTaskPage() {
                 <ExternalLink size={13} />
               </button>
             )}
+            <button onClick={() => setShowTemplates(true)}
+              className="flex items-center gap-1.5 px-4 py-2 bg-white border border-slate-200 text-slate-600 text-[11px] font-bold rounded-full hover:border-indigo-300 transition-colors">
+              <FileStack size={13} /> Apply template
+            </button>
             <button onClick={() => setShowAddForm(true)}
               className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white text-[11px] font-bold rounded-full hover:bg-indigo-700 transition-colors">
               <Plus size={13} /> Add task
@@ -155,24 +178,41 @@ export default function PublicTaskPage() {
           <table className="w-full text-[12px]">
             <thead>
               <tr className="border-b border-slate-100 text-left">
+                <th className="px-4 py-3 w-8"></th>
                 <th className="px-4 py-3 text-[9px] font-bold text-slate-400 uppercase tracking-widest">Task</th>
                 {columns.map(c => (
                   <th key={c.key} className="px-4 py-3 text-[9px] font-bold text-slate-400 uppercase tracking-widest whitespace-nowrap">{c.label}</th>
                 ))}
+                <th className="px-4 py-3 w-20"></th>
               </tr>
             </thead>
             <tbody>
               {activeTasks.length === 0 && (
-                <tr><td colSpan={columns.length + 1} className="px-4 py-8 text-center text-[11px] text-slate-300 italic">No tasks</td></tr>
+                <tr><td colSpan={columns.length + 3} className="px-4 py-8 text-center text-[11px] text-slate-300 italic">No tasks</td></tr>
               )}
               {activeTasks.map(t => (
-                <tr key={t.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50">
-                  <td className={`px-4 py-3 font-medium ${t.isCompleted ? "line-through text-slate-400" : "text-slate-800"}`}>{t.name}</td>
+                <tr key={t.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50 group">
+                  <td className="px-4 py-3">
+                    <button onClick={() => toggleComplete(t)}
+                      className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${t.isCompleted ? "bg-emerald-500 border-emerald-500" : "border-slate-300 hover:border-indigo-400"}`}>
+                      {t.isCompleted && <Check size={11} className="text-white" />}
+                    </button>
+                  </td>
+                  <td className={`px-4 py-3 font-medium cursor-pointer ${t.isCompleted ? "line-through text-slate-400" : "text-slate-800"}`}
+                    onClick={() => setEditingTask(t)}>
+                    {t.name}
+                  </td>
                   {columns.map(c => (
                     <td key={c.key} className="px-4 py-3 text-slate-600 whitespace-nowrap">
                       {renderCell(c.key, t)}
                     </td>
                   ))}
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button onClick={() => setEditingTask(t)} title="Edit" className="p-1.5 text-slate-300 hover:text-indigo-600"><Pencil size={13} /></button>
+                      <button onClick={() => deleteTask(t)} title="Delete" className="p-1.5 text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -181,14 +221,36 @@ export default function PublicTaskPage() {
       </div>
 
       {showAddForm && (
-        <AddTaskModal
+        <TaskModal
           pageId={pageId}
           formOptions={data.formOptions}
           defaultAssigneeId={activeTab}
           saving={saving}
           setSaving={setSaving}
           onClose={() => setShowAddForm(false)}
-          onCreated={() => { setShowAddForm(false); checkAuthAndLoad(); }}
+          onSaved={() => { setShowAddForm(false); checkAuthAndLoad(); }}
+        />
+      )}
+
+      {editingTask && (
+        <TaskModal
+          pageId={pageId}
+          formOptions={data.formOptions}
+          defaultAssigneeId={activeTab}
+          task={editingTask}
+          saving={saving}
+          setSaving={setSaving}
+          onClose={() => setEditingTask(null)}
+          onSaved={() => { setEditingTask(null); checkAuthAndLoad(); }}
+          onDeleted={() => { setEditingTask(null); checkAuthAndLoad(); }}
+        />
+      )}
+
+      {showTemplates && (
+        <TemplatesModal
+          pageId={pageId}
+          onClose={() => setShowTemplates(false)}
+          onApplied={() => { setShowTemplates(false); checkAuthAndLoad(); }}
         />
       )}
     </div>
@@ -211,40 +273,55 @@ function renderCell(key: string, t: Task) {
   }
 }
 
-function AddTaskModal({ pageId, formOptions, defaultAssigneeId, saving, setSaving, onClose, onCreated }: {
-  pageId: string; formOptions: FormOptions; defaultAssigneeId: string | null;
-  saving: boolean; setSaving: (v: boolean) => void; onClose: () => void; onCreated: () => void;
+// ── Add / Edit task modal ───────────────────────────────────────────
+function TaskModal({ pageId, formOptions, defaultAssigneeId, task, saving, setSaving, onClose, onSaved, onDeleted }: {
+  pageId: string; formOptions: FormOptions; defaultAssigneeId: string | null; task?: Task;
+  saving: boolean; setSaving: (v: boolean) => void; onClose: () => void; onSaved: () => void; onDeleted?: () => void;
 }) {
-  const [name, setName] = useState("");
-  const [projectId, setProjectId] = useState("");
-  const [dueDate, setDueDate] = useState("");
-  const [dueTime, setDueTime] = useState("");
-  const [statusId, setStatusId] = useState("");
-  const [teamId, setTeamId] = useState("");
+  const isEdit = !!task;
+  const [name, setName] = useState(task?.name || "");
+  const [project, setProject] = useState<PickedProject | null>(
+    task?.projectId ? { id: task.projectId, name: task.projectName || "", matterNumber: task.matterNumber } : null
+  );
+  const [dueDate, setDueDate] = useState(task?.dueDate || "");
+  const [dueTime, setDueTime] = useState(task?.dueTime ? task.dueTime.slice(0, 5) : "");
+  const [statusId, setStatusId] = useState(task?.statusId || "");
+  const [teamId, setTeamId] = useState(task?.teamId || "");
   const [assigneeId, setAssigneeId] = useState(defaultAssigneeId || "");
   const [error, setError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const handleSubmit = async () => {
     if (!name.trim()) { setError("Task name is required"); return; }
-    if (!projectId) { setError("Project is required"); return; }
+    if (!isEdit && !project) { setError("Project is required"); return; }
     setSaving(true);
     setError(null);
-    const res = await fetch(`/api/public-tasks/${pageId}`, {
-      method: "POST",
+    const body: any = { name, dueDate: dueDate || null, dueTime: dueTime || null, statusId: statusId || null, teamId: teamId || null };
+    if (!isEdit) { body.projectId = project!.id; body.assigneeId = assigneeId || null; }
+    const res = await fetch(`/api/public-tasks/${pageId}${isEdit ? `/tasks/${task!.id}` : ""}`, {
+      method: isEdit ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, projectId, dueDate: dueDate || null, dueTime: dueTime || null, statusId: statusId || null, teamId: teamId || null, assigneeId: assigneeId || null }),
+      body: JSON.stringify(body),
     });
     const json = await res.json();
     setSaving(false);
-    if (!res.ok) { setError(json.error || "Failed to create task"); return; }
-    onCreated();
+    if (!res.ok) { setError(json.error || "Failed to save task"); return; }
+    onSaved();
+  };
+
+  const handleDelete = async () => {
+    if (!task || !window.confirm(`Delete "${task.name}"?`)) return;
+    setDeleting(true);
+    await fetch(`/api/public-tasks/${pageId}/tasks/${task.id}`, { method: "DELETE" });
+    setDeleting(false);
+    onDeleted?.();
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30 backdrop-blur-sm" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="bg-white rounded-t-[32px] sm:rounded-[32px] shadow-2xl w-full max-w-md mx-0 sm:mx-4 max-h-[90vh] flex flex-col overflow-hidden">
         <div className="flex items-center justify-between px-6 pt-6 pb-3 border-b border-slate-100 shrink-0">
-          <h3 className="text-[13px] font-bold text-slate-800">Add task</h3>
+          <h3 className="text-[13px] font-bold text-slate-800">{isEdit ? "Edit task" : "Add task"}</h3>
           <button onClick={onClose} className="p-2 text-slate-300 hover:text-slate-700"><X size={16} /></button>
         </div>
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
@@ -253,17 +330,21 @@ function AddTaskModal({ pageId, formOptions, defaultAssigneeId, saving, setSavin
             <input value={name} onChange={e => setName(e.target.value)} placeholder="Enter task name..."
               className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none focus:border-indigo-400" />
           </div>
-          <div>
-            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Project *</p>
-            <select value={projectId} onChange={e => setProjectId(e.target.value)}
-              className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none bg-white">
-              <option value="">— Select project —</option>
-              {formOptions.projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </div>
+          {!isEdit && (
+            <ProjectPicker pageId={pageId} value={project} onChange={setProject} />
+          )}
+          {isEdit && task?.projectName && (
+            <div>
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Project</p>
+              <p className="text-[12px] text-slate-500 px-4 py-2.5 bg-slate-50 rounded-full">{task.projectName}{task.matterNumber ? ` — ${task.matterNumber}` : ""}</p>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Due date</p>
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Due date</p>
+                <DateCalculator defaultFromDate={dueDate || undefined} onApply={setDueDate} />
+              </div>
               <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)}
                 className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none" />
             </div>
@@ -281,7 +362,7 @@ function AddTaskModal({ pageId, formOptions, defaultAssigneeId, saving, setSavin
               {formOptions.statuses.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
             </select>
           </div>
-          {formOptions.assignees.length > 1 && (
+          {!isEdit && formOptions.assignees.length > 1 && (
             <div>
               <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Assignee</p>
               <select value={assigneeId} onChange={e => setAssigneeId(e.target.value)}
@@ -303,10 +384,99 @@ function AddTaskModal({ pageId, formOptions, defaultAssigneeId, saving, setSavin
           )}
           {error && <p className="text-[11px] text-red-500">{error}</p>}
         </div>
-        <div className="px-6 py-4 border-t border-slate-100 shrink-0">
+        <div className="px-6 py-4 border-t border-slate-100 shrink-0 space-y-2">
           <button onClick={handleSubmit} disabled={saving}
             className="w-full py-3 bg-indigo-600 text-white text-[12px] font-bold rounded-full hover:bg-indigo-700 disabled:opacity-40 transition-colors">
-            {saving ? "Adding..." : "Add task"}
+            {saving ? "Saving..." : isEdit ? "Save changes" : "Add task"}
+          </button>
+          {isEdit && (
+            <button onClick={handleDelete} disabled={deleting}
+              className="w-full py-3 border border-red-200 text-red-500 text-[12px] font-bold rounded-full hover:bg-red-50 disabled:opacity-40 transition-colors">
+              {deleting ? "Deleting..." : "Delete task"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Apply template modal ────────────────────────────────────────────
+function TemplatesModal({ pageId, onClose, onApplied }: { pageId: string; onClose: () => void; onApplied: () => void }) {
+  const [project, setProject] = useState<PickedProject | null>(null);
+  const [templates, setTemplates] = useState<{ id: string; name: string; itemCount: number }[]>([]);
+  const [loadingTemplates, setLoadingTemplates] = useState(true);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [applying, setApplying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<number | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const res = await fetch(`/api/public-tasks/${pageId}/templates`);
+      const json = await res.json();
+      setTemplates(json.templates || []);
+      setLoadingTemplates(false);
+    })();
+  }, [pageId]);
+
+  const handleApply = async () => {
+    if (!project) { setError("Select a project first"); return; }
+    if (!selectedTemplateId) { setError("Select a template"); return; }
+    setApplying(true);
+    setError(null);
+    const res = await fetch(`/api/public-tasks/${pageId}/templates/${selectedTemplateId}/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId: project.id }),
+    });
+    const json = await res.json();
+    setApplying(false);
+    if (!res.ok) { setError(json.error || "Failed to apply template"); return; }
+    setResult(json.count);
+  };
+
+  if (result !== null) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
+        <div className="bg-white rounded-[32px] shadow-2xl w-full max-w-sm mx-4 p-8 text-center space-y-4">
+          <Check size={28} className="text-emerald-500 mx-auto" />
+          <p className="text-[13px] font-bold text-slate-800">{result} task{result !== 1 ? "s" : ""} created</p>
+          <button onClick={onApplied} className="w-full py-3 bg-slate-900 text-white text-[12px] font-bold rounded-full hover:bg-slate-700">Done</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30 backdrop-blur-sm" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-t-[32px] sm:rounded-[32px] shadow-2xl w-full max-w-md mx-0 sm:mx-4 max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="flex items-center justify-between px-6 pt-6 pb-3 border-b border-slate-100 shrink-0">
+          <h3 className="text-[13px] font-bold text-slate-800">Apply template</h3>
+          <button onClick={onClose} className="p-2 text-slate-300 hover:text-slate-700"><X size={16} /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+          <ProjectPicker pageId={pageId} value={project} onChange={setProject} label="Project *" />
+          <div>
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Template *</p>
+            {loadingTemplates ? (
+              <Loader2 size={14} className="animate-spin text-slate-300" />
+            ) : templates.length === 0 ? (
+              <p className="text-[11px] text-slate-300 italic">No templates available</p>
+            ) : (
+              <select value={selectedTemplateId} onChange={e => setSelectedTemplateId(e.target.value)}
+                className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none bg-white">
+                <option value="">— Select template —</option>
+                {templates.map(t => <option key={t.id} value={t.id}>{t.name} ({t.itemCount} tasks)</option>)}
+              </select>
+            )}
+          </div>
+          {error && <p className="text-[11px] text-red-500">{error}</p>}
+        </div>
+        <div className="px-6 py-4 border-t border-slate-100 shrink-0">
+          <button onClick={handleApply} disabled={applying}
+            className="w-full py-3 bg-indigo-600 text-white text-[12px] font-bold rounded-full hover:bg-indigo-700 disabled:opacity-40 transition-colors">
+            {applying ? "Applying..." : "Apply template"}
           </button>
         </div>
       </div>

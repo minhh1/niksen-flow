@@ -6,46 +6,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import { createClient } from "@supabase/supabase-js";
-
-async function loadPageAndAuthorize(admin: any, pageId: string, userId: string) {
-  const { data: page } = await admin
-    .from("public_task_pages")
-    .select("id, company_id, created_by, title, scope, team_id, columns, expires_at, is_active")
-    .eq("id", pageId).maybeSingle();
-
-  if (!page) return { error: NextResponse.json({ error: "Page not found" }, { status: 404 }) };
-  if (!page.is_active) return { error: NextResponse.json({ error: "This page has been revoked" }, { status: 410 }) };
-  if (page.expires_at && new Date(page.expires_at) < new Date()) {
-    return { error: NextResponse.json({ error: "This page has expired" }, { status: 410 }) };
-  }
-
-  const { data: membership } = await admin
-    .from("company_memberships").select("role").eq("company_id", page.company_id).eq("user_id", userId).maybeSingle();
-  if (!membership) return { error: NextResponse.json({ error: "You don't have access to this company" }, { status: 403 }) };
-  const isAdmin = membership.role === "company_admin";
-
-  // ── Target users (whose tasks this page shows) ─────────────────
-  let targetUserIds: string[] = [];
-  if (page.scope === "self") {
-    targetUserIds = [page.created_by];
-    if (!isAdmin && userId !== page.created_by) {
-      return { error: NextResponse.json({ error: "This page is private to its creator" }, { status: 403 }) };
-    }
-  } else if (page.scope === "team") {
-    const { data: team } = await admin.from("teams").select("leader_id").eq("id", page.team_id).maybeSingle();
-    const { data: members } = await admin.from("team_members").select("profile_id").eq("team_id", page.team_id);
-    targetUserIds = (members || []).map((m: any) => m.profile_id);
-    const isTeamMember = targetUserIds.includes(userId) || team?.leader_id === userId;
-    if (!isAdmin && !isTeamMember) {
-      return { error: NextResponse.json({ error: "You're not a member of this team" }, { status: 403 }) };
-    }
-  } else {
-    const { data: members } = await admin.from("company_memberships").select("user_id").eq("company_id", page.company_id);
-    targetUserIds = (members || []).map((m: any) => m.user_id);
-  }
-
-  return { page, isAdmin, targetUserIds };
-}
+import { loadPageAndAuthorize } from "@/lib/publicTaskPageAuth";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ pageId: string }> }) {
   const { pageId } = await params;
@@ -65,6 +26,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
     .from("tasks")
     .select(`
       id, name, due_date, due_time, is_completed, estimated_cost, date_entered, assignee_id, project_id,
+      status_id, assigned_team_id, is_monetary,
       assignee:assignee_id(id, full_name, email),
       project:project_id(id, name),
       task_statuses:status_id(label, color_hex),
@@ -104,20 +66,22 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
           id: t.id, name: t.name, isCompleted: t.is_completed,
           dueDate: t.due_date ? String(t.due_date).slice(0, 10) : null,
           dueTime: t.due_time,
+          projectId: t.project_id,
           projectName: t.project?.name || null,
           matterNumber: t.project_id ? matterByProject[t.project_id] || null : null,
+          statusId: t.status_id,
           status: t.task_statuses?.label || null,
           statusColor: t.task_statuses?.color_hex || null,
+          teamId: t.assigned_team_id,
           team: t.teams?.team_name || null,
+          isMonetary: t.is_monetary,
           estimatedCost: t.estimated_cost,
           dateEntered: t.date_entered,
         })),
     }))
     .sort((a: any, b: any) => a.userName.localeCompare(b.userName));
 
-  // ── Form options for "add task" ─────────────────────────────────
-  const { data: projects } = await admin
-    .from("projects").select("id, name").eq("company_id", page.company_id).is("deleted_at", null).order("name");
+  // ── Form options for "add/edit task" (projects are searched separately) ──
   const { data: statuses } = await admin
     .from("task_statuses").select("id, label").eq("is_active", true).order("display_order");
   const { data: teams } = await admin
@@ -129,7 +93,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
     columns: page.columns,
     tabs,
     formOptions: {
-      projects: projects || [],
       statuses: statuses || [],
       teams: teams || [],
       assignees: (targetProfiles || []).map((p: any) => ({ id: p.id, name: p.full_name || p.email || "Unknown" })),
