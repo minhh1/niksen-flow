@@ -725,6 +725,7 @@ function buildTaskCardById(projectId, projectName, labelCode, companyId, token, 
     if (t.assignee) sub += (sub ? ' · ' : '') + '👤 ' + t.assignee;
     if (t.assignedTeam) sub += (sub ? ' · ' : '') + '👥 ' + t.assignedTeam;
     if (t.status) sub += (sub ? ' · ' : '') + t.status;
+    if (t.createdBy) sub += (sub ? ' · ' : '') + 'Added by ' + t.createdBy;
 
     var dt = CardService.newDecoratedText().setText(label).setWrapText(true);
     if (sub) dt.setBottomLabel(sub);

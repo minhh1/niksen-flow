@@ -14,7 +14,7 @@ interface Task {
   due_date: string | null; due_time: string | null; assignee_id: string | null;
   assigned_team_id: string | null; status_id: string | null; is_monetary: boolean;
   estimated_cost: number; reminder_settings: any; parent_task_id: string | null;
-  date_entered: string | null; company_id: string;
+  date_entered: string | null; company_id: string; created_by: string | null;
 }
 interface Profile { id: string; full_name: string | null; email: string | null; }
 interface Team { id: string; team_name: string; }
@@ -37,6 +37,7 @@ function TaskRow({ task, subtasks, allTasks, profiles, teams, statuses, depth, o
   const assignee = profiles.find((p: any) => p.id === task.assignee_id);
   const team = teams.find((t: any) => t.id === task.assigned_team_id);
   const status = statuses.find((s: any) => s.id === task.status_id);
+  const creator = profiles.find((p: any) => p.id === task.created_by);
   const completedSubtasks = subtasks.filter((s: any) => s.is_completed).length;
   return (
     <div className={depth > 0 ? 'ml-6 border-l-2 border-slate-100 pl-4' : ''}>
@@ -59,6 +60,7 @@ function TaskRow({ task, subtasks, allTasks, profiles, teams, statuses, depth, o
             {assignee && <span className="flex items-center gap-1 text-[10px] text-slate-400"><User size={10} />{assignee.full_name || assignee.email}</span>}
             {team && <span className="flex items-center gap-1 text-[10px] text-slate-400"><Users size={10} />{team.team_name}</span>}
             {task.is_monetary && task.estimated_cost > 0 && <span className="flex items-center gap-1 text-[10px] text-slate-400"><DollarSign size={10} />${Number(task.estimated_cost).toLocaleString()}</span>}
+            {creator && <span className="text-[10px] text-slate-300">Added by {creator.full_name || creator.email}</span>}
           </div>
         </div>
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
@@ -90,7 +92,13 @@ function TaskEditModal({ task, profiles, teams, statuses, onSave, onClose }: any
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/30 backdrop-blur-sm" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="bg-white rounded-t-[40px] sm:rounded-[40px] shadow-2xl w-full max-w-xl mx-0 sm:mx-4 max-h-[90vh] flex flex-col overflow-hidden">
         <div className="flex items-center justify-between px-8 pt-8 pb-4 border-b border-slate-100 shrink-0">
-          <h3 className="text-[14px] font-bold text-slate-800 uppercase tracking-wide">{task.id ? 'Edit task' : 'New task'}</h3>
+          <div>
+            <h3 className="text-[14px] font-bold text-slate-800 uppercase tracking-wide">{task.id ? 'Edit task' : 'New task'}</h3>
+            {task.id && task.created_by && (() => {
+              const creator = profiles.find((p: any) => p.id === task.created_by);
+              return creator ? <p className="text-[10px] text-slate-400 mt-1">Added by {creator.full_name || creator.email}</p> : null;
+            })()}
+          </div>
           <button onClick={onClose} className="p-2 text-slate-300 hover:text-slate-700"><X size={16} /></button>
         </div>
         <div className="flex-1 overflow-y-auto px-8 py-6 space-y-5">

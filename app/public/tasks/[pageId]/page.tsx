@@ -19,6 +19,7 @@ interface Task {
   statusId: string | null; status: string | null; statusColor: string | null;
   teamId: string | null; team: string | null;
   isMonetary: boolean; estimatedCost: number | null; dateEntered: string | null;
+  createdBy: string | null;
 }
 interface Tab { userId: string; userName: string; tasks: Task[]; }
 interface FormOptions {
@@ -297,6 +298,7 @@ function renderCell(key: string, t: Task) {
     case "team": return t.team || "—";
     case "estimated_cost": return t.estimatedCost ? `$${Number(t.estimatedCost).toLocaleString()}` : "—";
     case "date_entered": return t.dateEntered || "—";
+    case "created_by": return t.createdBy || "—";
     default: return "—";
   }
 }

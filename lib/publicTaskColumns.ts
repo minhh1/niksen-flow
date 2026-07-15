@@ -11,6 +11,7 @@ export const PUBLIC_TASK_COLUMNS = [
   { key: "team", label: "Team" },
   { key: "estimated_cost", label: "Estimated cost" },
   { key: "date_entered", label: "Date entered" },
+  { key: "created_by", label: "Created by" },
 ] as const;
 
 export type PublicTaskColumnKey = typeof PUBLIC_TASK_COLUMNS[number]["key"];

@@ -938,7 +938,7 @@ Deno.serve(async (req) => {
 
       const { data: tasks, error: tasksErr } = await db
         .from('tasks')
-        .select('id, name, is_completed, due_date, due_time, assignee_id, assigned_team_id, status_id, is_monetary, estimated_cost, profiles:assignee_id(full_name, email), teams:assigned_team_id(team_name), task_statuses:status_id(label, color_hex)')
+        .select('id, name, is_completed, due_date, due_time, assignee_id, assigned_team_id, status_id, is_monetary, estimated_cost, created_by, profiles:assignee_id(full_name, email), teams:assigned_team_id(team_name), task_statuses:status_id(label, color_hex), creator:created_by(full_name, email)')
         .eq('project_id', projectId)
         .is('deleted_at', null)
         .order('date_entered', { ascending: true });
@@ -971,6 +971,7 @@ Deno.serve(async (req) => {
           statusColor: t.task_statuses?.color_hex || null,
           isMonetary: t.is_monetary,
           estimatedCost: t.estimated_cost,
+          createdBy: t.creator?.full_name || t.creator?.email || null,
         })),
         statuses: statuses || [],
       }, 200, headers);
