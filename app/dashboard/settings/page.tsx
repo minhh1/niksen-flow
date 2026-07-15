@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabase";
 import {
   Database, Clock, Copy, ArrowLeft, Loader2,
   CheckCircle2, ChevronRight, AlertCircle,
-  Trash2, Building2, MapPin, LayoutGrid, Upload, Wand2, X, ChevronDown, ChevronUp
+  Trash2, Building2, MapPin, LayoutGrid, Upload, Wand2, X, ChevronDown, ChevronUp, Share2
 } from "lucide-react";
 import ImportModal from "@/components/ImportModal";
 import DataFormattingTool from "@/components/DataFormattingTool";
@@ -13,9 +13,10 @@ import SchemaVisualisation from "@/components/SchemaVisualisation";
 import SpreadsheetEditor from "@/components/SpreadsheetEditor";
 import CustomTableBuilder from "@/components/CustomTableBuilder";
 import SchemaMap from "@/components/SchemaMap";
+import PublicTaskPagesTab from "@/components/settings/PublicTaskPagesTab";
 
 
-type SettingsView = "menu" | "history" | "schema" | "duplicates_menu" | "duplicates_view";
+type SettingsView = "menu" | "history" | "schema" | "duplicates_menu" | "duplicates_view" | "public_pages";
 type DupType = "properties" | "entities" | "projects";
 
 export default function SettingsPage() {
@@ -80,6 +81,7 @@ export default function SettingsPage() {
     if (view === 'history') return 'Import history';
     if (view === 'duplicates_menu') return 'Duplicates';
     if (view === 'duplicates_view') return `Duplicates — ${activeDupType}`;
+    if (view === 'public_pages') return 'Public task pages';
     return 'Settings';
   };
 
@@ -165,6 +167,14 @@ export default function SettingsPage() {
                 </div>
                 <ChevronRight size={18} className="text-slate-200 group-hover:text-indigo-600 transition-all"/>
               </button>
+
+              <button onClick={() => setView("public_pages")} className="flex items-center justify-between p-6 bg-white border border-slate-200 rounded-[32px] hover:border-indigo-500 transition-all group shadow-sm">
+                <div className="flex items-center gap-5">
+                  <div className="p-3 bg-slate-50 rounded-2xl text-slate-400 group-hover:text-indigo-600 transition-colors"><Share2 size={20} /></div>
+                  <span className="text-[15px] font-medium text-slate-700">Public task pages</span>
+                </div>
+                <ChevronRight size={18} className="text-slate-200 group-hover:text-indigo-600 transition-all"/>
+              </button>
             </div>
           )}
 
@@ -239,8 +249,11 @@ export default function SettingsPage() {
             </div>
           )}
 
+          {/* ── PUBLIC TASK PAGES ── */}
+          {view === 'public_pages' && <PublicTaskPagesTab />}
+
           {/* ── SCHEMA VISUALISATION ── */}
-   
+
           {view === 'schema' && (
             <div className="space-y-8">
               <CustomTableBuilder />

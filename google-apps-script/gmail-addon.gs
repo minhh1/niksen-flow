@@ -111,6 +111,47 @@ function apiPost(path, body, token) {
   }
 }
 
+// Resolves "X days from [date]" — calendar or AU business days (skips weekends
+// + public holidays for a state). Returns a YYYY-MM-DD string, or null on failure.
+function calculateDueDate(fromDateStr, days, dayType, state) {
+  try {
+    var res = UrlFetchApp.fetch(DATE_CALC_API_URL, {
+      method: 'POST',
+      contentType: 'application/json',
+      payload: JSON.stringify({
+        fromDate: fromDateStr,
+        days: days,
+        mode: dayType === 'business' ? 'business' : 'calendar',
+        state: dayType === 'business' ? state : undefined,
+      }),
+      muteHttpExceptions: true,
+    });
+    if (res.getResponseCode() !== 200) {
+      Logger.log('[calculateDueDate] error: ' + res.getContentText());
+      return null;
+    }
+    var data = JSON.parse(res.getContentText());
+    return data.resultDate || null;
+  } catch (err) {
+    Logger.log('[calculateDueDate] exception: ' + err.message);
+    return null;
+  }
+}
+
+// Parses a CardService DatePicker form value (msSinceEpoch, various shapes
+// depending on formInput vs formInputs) into a YYYY-MM-DD string, or null.
+function parseDatePickerValue(e, fieldName) {
+  var raw = e.formInput ? e.formInput[fieldName] : (e.formInputs ? e.formInputs[fieldName] : null);
+  if (!raw) return null;
+  var ms = null;
+  try { ms = parseInt(raw['msSinceEpoch']); } catch (_e) {}
+  if (!ms || isNaN(ms)) { try { ms = parseInt(raw.msSinceEpoch); } catch (_e) {} }
+  if (!ms || isNaN(ms)) { try { ms = parseInt(raw[0]); } catch (_e) {} }
+  if (!ms || isNaN(ms) || ms <= 86400000) return null;
+  var d = new Date(ms);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
 function errorNotification(msg) {
   return CardService.newActionResponseBuilder()
     .setNotification(CardService.newNotification()
@@ -544,20 +585,6 @@ function buildMainCard(messageId, accessToken) {
             query: '',
           })))));
 
-  // ── Date calculator ─────────────────────────────────────────────
-  card.addSection(CardService.newCardSection()
-    .setHeader('Date calculator')
-    .setCollapsible(true)
-    .addWidget(CardService.newTextParagraph()
-      .setText('Work out a date X days from now — calendar days, or AU business days (skips weekends + public holidays for a state).'))
-    .addWidget(CardService.newButtonSet()
-      .addButton(CardService.newTextButton()
-        .setText('🗓 Open calculator')
-        .setTextButtonStyle(CardService.TextButtonStyle.OUTLINED)
-        .setOnClickAction(CardService.newAction()
-          .setFunctionName('onShowDateCalc')
-          .setParameters({ accessToken: token })))));
-
   return card.build();
 }
 
@@ -592,8 +619,9 @@ function onViewTasks(e) {
     .build();
 }
 
-function buildTaskCardById(projectId, projectName, labelCode, companyId, token, messageId) {
+function buildTaskCardById(projectId, projectName, labelCode, companyId, token, messageId, newTaskDraft) {
   Logger.log('[buildTaskCardById] START projectId=' + projectId);
+  newTaskDraft = newTaskDraft || {};
 
   // ── Cache task-context (profiles/teams/statuses/templates) ───────
   // These change rarely — cache for 5 min per company
@@ -779,23 +807,82 @@ function buildTaskCardById(projectId, projectName, labelCode, companyId, token, 
 
   // Add task form
   var addSection = CardService.newCardSection()
-    .setHeader('Add task')
-    .setCollapsible(tasks.length > 0);
+    .setHeader('Add task');
 
   // Task name (required)
   addSection.addWidget(CardService.newTextInput()
     .setFieldName('newTaskName')
     .setTitle('Task name *')
-    );
+    .setValue(newTaskDraft.name || ''));
 
-  // Due date + time
-  addSection.addWidget(CardService.newDatePicker()
-    .setFieldName('newTaskDue')
-    .setTitle('Due date'));
+  // Due date — "Specific date" or "Days from" a date (calendar/business, AU state-aware)
+  var dueMode = newTaskDraft.dueMode || 'specific';
+  var dueModeParams = {
+    projectId: projectId, projectName: projectName, labelCode: labelCode,
+    companyId: companyId, messageId: messageId || '', accessToken: token,
+  };
+  addSection.addWidget(CardService.newSelectionInput()
+    .setType(CardService.SelectionInputType.DROPDOWN)
+    .setFieldName('newTaskDueMode')
+    .setTitle('Due date type')
+    .addItem('Specific date', 'specific', dueMode === 'specific')
+    .addItem('Days from a date', 'days_from', dueMode === 'days_from')
+    .setOnChangeAction(CardService.newAction()
+      .setFunctionName('onChangeNewTaskDueMode')
+      .setParameters(dueModeParams)));
 
-  addSection.addWidget(CardService.newTimePicker()
+  if (dueMode === 'days_from') {
+    var dfDatePicker = CardService.newDatePicker()
+      .setFieldName('newTaskDaysFromDate')
+      .setTitle('From date');
+    var dfDateMs = newTaskDraft.daysFromDate ? new Date(newTaskDraft.daysFromDate + 'T00:00:00').getTime() : new Date().setHours(0,0,0,0);
+    dfDatePicker.setValueInMsSinceEpoch(dfDateMs);
+    addSection.addWidget(dfDatePicker);
+
+    addSection.addWidget(CardService.newTextInput()
+      .setFieldName('newTaskDaysFromDays')
+      .setTitle('Days')
+      .setValue(newTaskDraft.days != null ? String(newTaskDraft.days) : '7'));
+
+    var dfType = newTaskDraft.dayType || 'calendar';
+    addSection.addWidget(CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('newTaskDaysFromType')
+      .setTitle('Type')
+      .addItem('Calendar days', 'calendar', dfType === 'calendar')
+      .addItem('Business days', 'business', dfType === 'business')
+      .setOnChangeAction(CardService.newAction()
+        .setFunctionName('onChangeNewTaskDueMode')
+        .setParameters(dueModeParams)));
+
+    if (dfType === 'business') {
+      var dfStateSelect = CardService.newSelectionInput()
+        .setType(CardService.SelectionInputType.DROPDOWN)
+        .setFieldName('newTaskDaysFromState')
+        .setTitle('State (public holidays)');
+      for (var dsi = 0; dsi < AU_STATES.length; dsi++) {
+        dfStateSelect.addItem(AU_STATES[dsi], AU_STATES[dsi], (newTaskDraft.state || 'NSW') === AU_STATES[dsi]);
+      }
+      addSection.addWidget(dfStateSelect);
+    }
+  } else {
+    var dueDatePicker = CardService.newDatePicker()
+      .setFieldName('newTaskDue')
+      .setTitle('Due date');
+    if (newTaskDraft.dueDate) {
+      dueDatePicker.setValueInMsSinceEpoch(new Date(newTaskDraft.dueDate + 'T00:00:00').getTime());
+    }
+    addSection.addWidget(dueDatePicker);
+  }
+
+  var dueTimePicker = CardService.newTimePicker()
     .setFieldName('newTaskTime')
-    .setTitle('Due time'));
+    .setTitle('Due time');
+  if (newTaskDraft.dueTime) {
+    var dtp = newTaskDraft.dueTime.split(':');
+    if (dtp.length >= 2) dueTimePicker.setHours(parseInt(dtp[0])).setMinutes(parseInt(dtp[1]));
+  }
+  addSection.addWidget(dueTimePicker);
 
   // Status
   if (statuses.length) {
@@ -891,6 +978,41 @@ function buildTaskCardById(projectId, projectName, labelCode, companyId, token, 
           .setParameters({})))));
   Logger.log('[buildTaskCardById] card.build() complete, returning');
   return card.build();
+}
+
+// Fired when the "Add task" form's due-date-type dropdown (or the
+// calendar/business type dropdown within it) changes — rebuilds the task
+// card in place, preserving whatever the user has entered so far.
+function onChangeNewTaskDueMode(e) {
+  var token = e.parameters.accessToken || getToken();
+  var fi = e.formInputs || {};
+
+  var dueTimeRaw = e.formInput ? e.formInput['newTaskTime'] : (e.formInputs ? e.formInputs['newTaskTime'] : null);
+  var dueTime = '';
+  if (dueTimeRaw) {
+    var th = null, tm = null;
+    try { th = parseInt(dueTimeRaw.hours); tm = parseInt(dueTimeRaw.minutes || 0); } catch (_e) {}
+    if (th !== null && !isNaN(th)) dueTime = String(th).padStart(2, '0') + ':' + String(tm || 0).padStart(2, '0');
+  }
+
+  var draft = {
+    name: (fi.newTaskName || [''])[0] || '',
+    dueMode: (fi.newTaskDueMode || ['specific'])[0] || 'specific',
+    dueDate: parseDatePickerValue(e, 'newTaskDue'),
+    dueTime: dueTime,
+    daysFromDate: parseDatePickerValue(e, 'newTaskDaysFromDate'),
+    days: parseInt((fi.newTaskDaysFromDays || ['7'])[0]) || 7,
+    dayType: (fi.newTaskDaysFromType || ['calendar'])[0] || 'calendar',
+    state: (fi.newTaskDaysFromState || ['NSW'])[0] || 'NSW',
+  };
+
+  var card = buildTaskCardById(
+    e.parameters.projectId, e.parameters.projectName, e.parameters.labelCode,
+    e.parameters.companyId, token, e.parameters.messageId || null, draft
+  );
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().updateCard(card))
+    .build();
 }
 
 function onApplyTemplate(e) {
@@ -1062,15 +1184,62 @@ function buildEditTaskCard(params, statuses, profiles, teams) {
     .setTitle('Task name *')
     .setValue(params.taskName || ''));
 
-  // Due date picker
-  var datePicker = CardService.newDatePicker()
-    .setFieldName('editTaskDue')
-    .setTitle('Due date');
-  if (params.taskDue) {
-    var dp = new Date(params.taskDue + 'T00:00:00');
-    if (!isNaN(dp.getTime())) datePicker.setValueInMsSinceEpoch(dp.getTime());
+  // Due date — "Specific date" or "Days from" a date (calendar/business, AU state-aware)
+  var editDueMode = params.taskDueMode || 'specific';
+  section.addWidget(CardService.newSelectionInput()
+    .setType(CardService.SelectionInputType.DROPDOWN)
+    .setFieldName('editTaskDueMode')
+    .setTitle('Due date type')
+    .addItem('Specific date', 'specific', editDueMode === 'specific')
+    .addItem('Days from a date', 'days_from', editDueMode === 'days_from')
+    .setOnChangeAction(CardService.newAction()
+      .setFunctionName('onChangeEditTaskDueMode')
+      .setParameters(params)));
+
+  if (editDueMode === 'days_from') {
+    var editDfDatePicker = CardService.newDatePicker()
+      .setFieldName('editTaskDaysFromDate')
+      .setTitle('From date');
+    var editDfDateMs = params.taskDaysFromDate ? new Date(params.taskDaysFromDate + 'T00:00:00').getTime() : new Date().setHours(0,0,0,0);
+    editDfDatePicker.setValueInMsSinceEpoch(editDfDateMs);
+    section.addWidget(editDfDatePicker);
+
+    section.addWidget(CardService.newTextInput()
+      .setFieldName('editTaskDaysFromDays')
+      .setTitle('Days')
+      .setValue(params.taskDaysFromDays || '7'));
+
+    var editDfType = params.taskDayType || 'calendar';
+    section.addWidget(CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('editTaskDaysFromType')
+      .setTitle('Type')
+      .addItem('Calendar days', 'calendar', editDfType === 'calendar')
+      .addItem('Business days', 'business', editDfType === 'business')
+      .setOnChangeAction(CardService.newAction()
+        .setFunctionName('onChangeEditTaskDueMode')
+        .setParameters(params)));
+
+    if (editDfType === 'business') {
+      var editDfStateSelect = CardService.newSelectionInput()
+        .setType(CardService.SelectionInputType.DROPDOWN)
+        .setFieldName('editTaskDaysFromState')
+        .setTitle('State (public holidays)');
+      for (var edsi = 0; edsi < AU_STATES.length; edsi++) {
+        editDfStateSelect.addItem(AU_STATES[edsi], AU_STATES[edsi], (params.taskDaysFromState || 'NSW') === AU_STATES[edsi]);
+      }
+      section.addWidget(editDfStateSelect);
+    }
+  } else {
+    var datePicker = CardService.newDatePicker()
+      .setFieldName('editTaskDue')
+      .setTitle('Due date');
+    if (params.taskDue) {
+      var dp = new Date(params.taskDue + 'T00:00:00');
+      if (!isNaN(dp.getTime())) datePicker.setValueInMsSinceEpoch(dp.getTime());
+    }
+    section.addWidget(datePicker);
   }
-  section.addWidget(datePicker);
 
   // Due time picker
   var timePicker = CardService.newTimePicker()
@@ -1167,6 +1336,46 @@ function buildEditTaskCard(params, statuses, profiles, teams) {
   return card.build();
 }
 
+// Fired when the edit-task form's due-date-type dropdown (or the calendar/
+// business type dropdown within it) changes — rebuilds the card in place,
+// preserving whatever the user has entered so far.
+function onChangeEditTaskDueMode(e) {
+  var fi = e.formInputs || {};
+
+  var dueTimeRaw = e.formInput ? e.formInput['editTaskTime'] : (e.formInputs ? e.formInputs['editTaskTime'] : null);
+  var dueTime = '';
+  if (dueTimeRaw) {
+    var th = null, tm = null;
+    try { th = parseInt(dueTimeRaw.hours); tm = parseInt(dueTimeRaw.minutes || 0); } catch (_e) {}
+    if (th !== null && !isNaN(th)) dueTime = String(th).padStart(2, '0') + ':' + String(tm || 0).padStart(2, '0');
+  }
+
+  var params = Object.assign({}, e.parameters, {
+    taskName: (fi.editTaskName || [e.parameters.taskName || ''])[0] || '',
+    taskDueMode: (fi.editTaskDueMode || ['specific'])[0] || 'specific',
+    taskDue: parseDatePickerValue(e, 'editTaskDue') || '',
+    taskTime: dueTime,
+    taskDaysFromDate: parseDatePickerValue(e, 'editTaskDaysFromDate') || '',
+    taskDaysFromDays: (fi.editTaskDaysFromDays || ['7'])[0] || '7',
+    taskDayType: (fi.editTaskDaysFromType || ['calendar'])[0] || 'calendar',
+    taskDaysFromState: (fi.editTaskDaysFromState || ['NSW'])[0] || 'NSW',
+    taskStatus: (fi.editTaskStatus || [e.parameters.taskStatus || ''])[0] || '',
+    taskAssignee: (fi.editTaskAssignee || [e.parameters.taskAssignee || ''])[0] || '',
+    taskTeam: (fi.editTaskTeam || [e.parameters.taskTeam || ''])[0] || '',
+    taskMonetary: (fi.editTaskMonetary || []).indexOf('true') !== -1 ? 'true' : 'false',
+    taskCost: (fi.editTaskCost || [e.parameters.taskCost || ''])[0] || '',
+  });
+
+  var ctxRes = apiGet('/task-context?companyId=' + params.companyId, params.accessToken || getToken());
+  var statuses = ctxRes.ok ? (ctxRes.data.statuses || []) : [];
+  var profiles = ctxRes.ok ? (ctxRes.data.profiles || []) : [];
+  var teams = ctxRes.ok ? (ctxRes.data.teams || []) : [];
+
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().updateCard(buildEditTaskCard(params, statuses, profiles, teams)))
+    .build();
+}
+
 function onUpdateTask(e) {
   var token = e.parameters.accessToken || getToken();
   var name = ((e.formInputs.editTaskName || [''])[0] || '').trim();
@@ -1179,38 +1388,20 @@ function onUpdateTask(e) {
 
   if (!name) return errorNotification('Task name is required');
 
-  // Parse date picker — check both formInput (singular) and formInputs (plural)
+  // Due date — either a specific date picker, or "days from" a date (calendar/business)
+  var editDueMode = ((e.formInputs.editTaskDueMode || ['specific'])[0] || 'specific');
   var dueDate = null;
-  Logger.log('[onUpdateTask] formInput keys check');
-  try {
-    var fi = e.formInput;
-    Logger.log('[onUpdateTask] formInput.editTaskDue=' + (fi ? fi['editTaskDue'] : 'no formInput'));
-    Logger.log('[onUpdateTask] formInput.editTaskDue.msSinceEpoch=' + (fi && fi['editTaskDue'] ? fi['editTaskDue']['msSinceEpoch'] : 'null'));
-  } catch(_e) { Logger.log('[onUpdateTask] formInput error: ' + _e); }
-  try {
-    var fi2 = e.formInputs;
-    var raw = fi2 ? fi2['editTaskDue'] : null;
-    Logger.log('[onUpdateTask] formInputs.editTaskDue=' + raw);
-    if (raw) {
-      Logger.log('[onUpdateTask] formInputs.editTaskDue.msSinceEpoch=' + raw['msSinceEpoch']);
-      Logger.log('[onUpdateTask] formInputs.editTaskDue[0]=' + raw[0]);
-    }
-  } catch(_e2) { Logger.log('[onUpdateTask] formInputs error: ' + _e2); }
-
-  var dueDateRaw = e.formInput ? e.formInput['editTaskDue'] : (e.formInputs ? e.formInputs['editTaskDue'] : null);
-  if (dueDateRaw) {
-    var ms2 = null;
-    try { ms2 = parseInt(dueDateRaw['msSinceEpoch']); } catch(_e) {}
-    if (!ms2 || isNaN(ms2)) { try { ms2 = parseInt(dueDateRaw.msSinceEpoch); } catch(_e) {} }
-    if (!ms2 || isNaN(ms2)) { try { ms2 = parseInt(dueDateRaw[0]); } catch(_e) {} }
-    Logger.log('[onUpdateTask] date ms=' + ms2);
-    if (ms2 && !isNaN(ms2) && ms2 > 86400000) {
-      var dp2 = new Date(ms2);
-      dueDate = dp2.getFullYear() + '-' +
-        String(dp2.getMonth() + 1).padStart(2, '0') + '-' +
-        String(dp2.getDate()).padStart(2, '0');
-    }
+  if (editDueMode === 'days_from') {
+    var edfDate = parseDatePickerValue(e, 'editTaskDaysFromDate') || new Date().toISOString().slice(0, 10);
+    var edfDays = parseInt((e.formInputs.editTaskDaysFromDays || ['0'])[0]) || 0;
+    var edfType = (e.formInputs.editTaskDaysFromType || ['calendar'])[0] || 'calendar';
+    var edfState = (e.formInputs.editTaskDaysFromState || ['NSW'])[0] || 'NSW';
+    dueDate = calculateDueDate(edfDate, edfDays, edfType, edfState);
+    if (!dueDate) return errorNotification('Could not calculate due date — try again');
+  } else {
+    dueDate = parseDatePickerValue(e, 'editTaskDue');
   }
+  Logger.log('[onUpdateTask] parsed dueDate=' + dueDate);
 
   // Parse time picker
   var dueTime = null;
@@ -1273,26 +1464,19 @@ function onDeleteTask(e) {
 function onCreateTask(e) {
   var token = e.parameters.accessToken || getToken();
   var name = ((e.formInputs.newTaskName || [''])[0] || '').trim();
-  // Parse date picker — check both formInput (singular) and formInputs (plural)
+
+  // Due date — either a specific date picker, or "days from" a date (calendar/business)
+  var dueMode = ((e.formInputs.newTaskDueMode || ['specific'])[0] || 'specific');
   var dueDate = null;
-  try {
-    var fi = e.formInput;
-    Logger.log('[onCreateTask] formInput.newTaskDue=' + (fi ? fi['newTaskDue'] : 'no formInput'));
-  } catch(_e) {}
-  var dueDateRaw = e.formInput ? e.formInput['newTaskDue'] : (e.formInputs ? e.formInputs['newTaskDue'] : null);
-  try { Logger.log('[onCreateTask] dueDateRaw=' + dueDateRaw + ' msSinceEpoch=' + (dueDateRaw ? dueDateRaw['msSinceEpoch'] : 'null')); } catch(_e) {}
-  if (dueDateRaw) {
-    var ms = null;
-    try { ms = parseInt(dueDateRaw['msSinceEpoch']); } catch(_e) {}
-    if (!ms || isNaN(ms)) { try { ms = parseInt(dueDateRaw.msSinceEpoch); } catch(_e) {} }
-    if (!ms || isNaN(ms)) { try { ms = parseInt(dueDateRaw[0]); } catch(_e) {} }
-    Logger.log('[onCreateTask] date ms=' + ms);
-    if (ms && !isNaN(ms) && ms > 86400000) {
-      var dp = new Date(ms);
-      dueDate = dp.getFullYear() + '-' +
-        String(dp.getMonth() + 1).padStart(2, '0') + '-' +
-        String(dp.getDate()).padStart(2, '0');
-    }
+  if (dueMode === 'days_from') {
+    var dfDate = parseDatePickerValue(e, 'newTaskDaysFromDate') || new Date().toISOString().slice(0, 10);
+    var dfDays = parseInt((e.formInputs.newTaskDaysFromDays || ['0'])[0]) || 0;
+    var dfType = (e.formInputs.newTaskDaysFromType || ['calendar'])[0] || 'calendar';
+    var dfState = (e.formInputs.newTaskDaysFromState || ['NSW'])[0] || 'NSW';
+    dueDate = calculateDueDate(dfDate, dfDays, dfType, dfState);
+    if (!dueDate) return errorNotification('Could not calculate due date — try again');
+  } else {
+    dueDate = parseDatePickerValue(e, 'newTaskDue');
   }
   Logger.log('[onCreateTask] parsed dueDate=' + dueDate);
 
