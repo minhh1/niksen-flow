@@ -127,19 +127,9 @@ export default function AdminTeamsTab({ companyId }: Props) {
     load();
   };
 
-  const toggleMember = async (teamId: string, profileId: string, isMember: boolean) => {
-    if (isMember) {
-      // Remove from team
-      await supabase.from('team_members')
-        .delete()
-        .eq('team_id', teamId)
-        .eq('profile_id', profileId);
-    } else {
-      // Add to team
-      await supabase.from('team_members')
-        .upsert({ team_id: teamId, profile_id: profileId }, { onConflict: 'team_id,profile_id' });
-    }
-    // Update local state immediately
+  const toggleMember = (teamId: string, profileId: string, isMember: boolean) => {
+    // Update local state immediately — don't wait on the network round trip
+    // for the checkbox to feel responsive.
     setTeams(prev => prev.map(t => {
       if (t.id !== teamId) return t;
       const members = isMember
@@ -147,6 +137,12 @@ export default function AdminTeamsTab({ companyId }: Props) {
         : [...t.members, { profile_id: profileId, is_leader: false }];
       return { ...t, members };
     }));
+    if (isMember) {
+      supabase.from('team_members').delete().eq('team_id', teamId).eq('profile_id', profileId).then();
+    } else {
+      supabase.from('team_members')
+        .upsert({ team_id: teamId, profile_id: profileId }, { onConflict: 'team_id,profile_id' }).then();
+    }
   };
 
   const setLeader = async (teamId: string, profileId: string) => {
@@ -274,13 +270,22 @@ export default function AdminTeamsTab({ companyId }: Props) {
           {/* Member checklist — shown when + is clicked */}
           {expandedTeamId === team.id && (
             <div className="px-6 py-3 space-y-1.5 border-t border-slate-100">
+                <div className="flex items-center justify-between pb-1">
+                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Add / remove members</p>
+                  <button
+                    onClick={() => setExpandedTeamId(null)}
+                    className="px-3 py-1.5 bg-slate-900 text-white text-[10px] font-bold rounded-full hover:bg-slate-700 transition-colors"
+                  >
+                    Done
+                  </button>
+                </div>
                 {allProfiles.map(prof => {
                   const isMember = team.members.some(m => m.profile_id === prof.id);
                   return (
                     <button
                       key={prof.id}
                       onClick={() => toggleMember(team.id, prof.id, isMember)}
-                      className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-2xl border text-left transition-all ${
+                      className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-2xl border text-left transition-colors active:scale-[0.98] ${
                         isMember
                           ? 'bg-indigo-50 border-indigo-200'
                           : 'bg-white border-slate-200 hover:border-indigo-200'

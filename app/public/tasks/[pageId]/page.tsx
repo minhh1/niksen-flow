@@ -30,6 +30,11 @@ interface FormOptions {
 }
 interface PageData { title: string; scope: string; columns: string[]; companyId: string; tabs: Tab[]; formOptions: FormOptions; }
 
+// Columns whose content can run long (project names, people's names) should
+// wrap within their cell instead of forcing the table wider — everything
+// else (dates, status, cost) is short enough to stay on one line.
+const WRAP_COLUMNS = new Set(["project_name", "created_by"]);
+
 export default function PublicTaskPage() {
   const params = useParams();
   const pageId = params.pageId as string;
@@ -168,7 +173,7 @@ export default function PublicTaskPage() {
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6">
-      <div className="max-w-5xl mx-auto space-y-4">
+      <div className="max-w-[1600px] mx-auto space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-2">
           <h1 className="text-[16px] font-bold text-slate-800">{data.title}</h1>
           <div className="flex items-center gap-2">
@@ -203,39 +208,39 @@ export default function PublicTaskPage() {
         )}
 
         <div className="bg-white rounded-[24px] border border-slate-200 overflow-hidden overflow-x-auto">
-          <table className="w-full text-[12px]">
+          <table className="w-full text-[13px] table-fixed">
             <thead>
               <tr className="border-b border-slate-100 text-left">
-                <th className="px-4 py-3 w-8"></th>
-                <th className="px-4 py-3 text-[9px] font-bold text-slate-400 uppercase tracking-widest">Task</th>
+                <th className="px-4 py-3.5 w-10"></th>
+                <th className="px-4 py-3.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest w-[38%] min-w-[280px]">Task</th>
                 {columns.map(c => (
-                  <th key={c.key} className="px-4 py-3 text-[9px] font-bold text-slate-400 uppercase tracking-widest whitespace-nowrap">{c.label}</th>
+                  <th key={c.key} className={`px-4 py-3.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest ${WRAP_COLUMNS.has(c.key) ? "" : "whitespace-nowrap"}`}>{c.label}</th>
                 ))}
-                <th className="px-4 py-3 w-20"></th>
+                <th className="px-4 py-3.5 w-20"></th>
               </tr>
             </thead>
             <tbody>
               {activeTasks.length === 0 && (
-                <tr><td colSpan={columns.length + 3} className="px-4 py-8 text-center text-[11px] text-slate-300 italic">No tasks</td></tr>
+                <tr><td colSpan={columns.length + 3} className="px-4 py-10 text-center text-[12px] text-slate-300 italic">No tasks</td></tr>
               )}
               {activeTasks.map(t => (
                 <tr key={t.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50 group">
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-4">
                     <button onClick={() => toggleComplete(t)}
                       className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${t.isCompleted ? "bg-emerald-500 border-emerald-500" : "border-slate-300 hover:border-indigo-400"}`}>
                       {t.isCompleted && <Check size={11} className="text-white" />}
                     </button>
                   </td>
-                  <td className={`px-4 py-3 font-medium cursor-pointer ${t.isCompleted ? "line-through text-slate-400" : "text-slate-800"}`}
+                  <td className={`px-4 py-4 font-medium cursor-pointer leading-snug ${t.isCompleted ? "line-through text-slate-400" : "text-slate-800"}`}
                     onClick={() => setEditingTask(t)}>
                     {t.name}
                   </td>
                   {columns.map(c => (
-                    <td key={c.key} className="px-4 py-3 text-slate-600 whitespace-nowrap">
+                    <td key={c.key} className={`px-4 py-4 text-slate-600 leading-snug ${WRAP_COLUMNS.has(c.key) ? "" : "whitespace-nowrap"}`}>
                       {renderCell(c.key, t)}
                     </td>
                   ))}
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-4">
                     <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button onClick={() => setEditingTask(t)} title="Edit" className="p-1.5 text-slate-300 hover:text-indigo-600"><Pencil size={13} /></button>
                       <button onClick={() => deleteTask(t)} title="Delete" className="p-1.5 text-slate-300 hover:text-red-500"><Trash2 size={13} /></button>
