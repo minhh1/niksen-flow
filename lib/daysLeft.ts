@@ -11,10 +11,10 @@ export interface DaysLeftInfo {
 export function getDaysLeft(dueDate: string | null, isCompleted: boolean): DaysLeftInfo | null {
   if (!dueDate || isCompleted) return null;
 
-  const due = new Date(String(dueDate).slice(0, 10) + "T23:59:59");
-  const now = new Date();
-  const diffMs = due.getTime() - now.getTime();
-  const diffDays = Math.ceil(diffMs / 86_400_000);
+  const due = new Date(String(dueDate).slice(0, 10) + "T00:00:00");
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diffDays = Math.round((due.getTime() - today.getTime()) / 86_400_000);
 
   if (diffDays < 0) {
     const n = Math.abs(diffDays);
