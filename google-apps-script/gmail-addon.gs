@@ -726,6 +726,9 @@ function buildTaskCardById(projectId, projectName, labelCode, companyId, token, 
     if (t.assignedTeam) sub += (sub ? ' · ' : '') + '👥 ' + t.assignedTeam;
     if (t.status) sub += (sub ? ' · ' : '') + t.status;
     if (t.createdBy) sub += (sub ? ' · ' : '') + 'Added by ' + t.createdBy;
+    if (t.awaitingFollowUp) {
+      sub += (sub ? ' · ' : '') + '🚩 Follow up' + (t.followUpDate ? ' ' + String(t.followUpDate).substring(0, 10) : '');
+    }
 
     var dt = CardService.newDecoratedText().setText(label).setWrapText(true);
     if (sub) dt.setBottomLabel(sub);
@@ -740,6 +743,8 @@ function buildTaskCardById(projectId, projectName, labelCode, companyId, token, 
       taskTeam: t.assignedTeamId || '',
       taskMonetary: t.isMonetary ? 'true' : 'false',
       taskCost: t.estimatedCost ? String(t.estimatedCost) : '',
+      taskAwaitingFollowUp: t.awaitingFollowUp ? 'true' : 'false',
+      taskFollowUpDate: t.followUpDate || '',
       projectId: projectId,
       projectName: projectName,
       labelCode: labelCode,
@@ -765,6 +770,14 @@ function buildTaskCardById(projectId, projectName, labelCode, companyId, token, 
       .setParameters(taskParams));
 
     taskSection.addWidget(dt);
+
+    // Second tick — "done on our end, awaiting follow-up" (distinct from completion)
+    taskSection.addWidget(CardService.newButtonSet()
+      .addButton(CardService.newTextButton()
+        .setText(t.awaitingFollowUp ? '🚩 Awaiting follow-up (tap to clear)' : '🏳️ Mark awaiting follow-up')
+        .setOnClickAction(CardService.newAction()
+          .setFunctionName('onToggleFollowUp')
+          .setParameters(taskParams))));
   }
   card.addSection(taskSection);
 
@@ -1158,6 +1171,92 @@ function onToggleTask(e) {
     .build();
 }
 
+// Toggles the second "awaiting follow-up" tick. If turning it on, prompts
+// for an optional follow-up date via the edit-task card; if turning it off
+// (already awaiting), clears it immediately.
+function onToggleFollowUp(e) {
+  var token = e.parameters.accessToken || getToken();
+  var wasAwaiting = e.parameters.taskAwaitingFollowUp === 'true';
+
+  if (wasAwaiting) {
+    var result = apiPost('/toggle-follow-up', {
+      taskId: e.parameters.taskId,
+      awaitingFollowUp: false,
+      followUpDate: null,
+    }, token);
+    if (!result.ok) return errorNotification('Error: ' + (result.data.error || 'Unknown'));
+    return CardService.newActionResponseBuilder()
+      .setNavigation(CardService.newNavigation()
+        .updateCard(buildTaskCardById(
+          e.parameters.projectId, e.parameters.projectName,
+          e.parameters.labelCode, e.parameters.companyId,
+          token, e.parameters.messageId || null)))
+      .build();
+  }
+
+  // Turning it on — push a small card asking for an optional follow-up date
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation()
+      .pushCard(buildFollowUpDateCard(e.parameters)))
+    .build();
+}
+
+function buildFollowUpDateCard(params) {
+  var card = CardService.newCardBuilder()
+    .setName('follow_up_' + params.taskId)
+    .setHeader(CardService.newCardHeader()
+      .setTitle('Awaiting follow-up')
+      .setSubtitle(params.taskName || ''));
+
+  var section = CardService.newCardSection();
+  var datePicker = CardService.newDatePicker()
+    .setFieldName('followUpDate')
+    .setTitle('Follow-up date (optional)');
+  if (params.taskFollowUpDate) {
+    var fd = new Date(params.taskFollowUpDate + 'T00:00:00');
+    if (!isNaN(fd.getTime())) datePicker.setValueInMsSinceEpoch(fd.getTime());
+  }
+  section.addWidget(datePicker);
+
+  section.addWidget(CardService.newButtonSet()
+    .addButton(CardService.newTextButton()
+      .setText('Save')
+      .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+      .setBackgroundColor('#f59e0b')
+      .setOnClickAction(CardService.newAction()
+        .setFunctionName('onConfirmFollowUp')
+        .setParameters(params)))
+    .addButton(CardService.newTextButton()
+      .setText('← Back')
+      .setOnClickAction(CardService.newAction()
+        .setFunctionName('onPopCard')
+        .setParameters({}))));
+
+  card.addSection(section);
+  return card.build();
+}
+
+function onConfirmFollowUp(e) {
+  var token = e.parameters.accessToken || getToken();
+  var followUpDate = parseDatePickerValue(e, 'followUpDate') || null;
+
+  var result = apiPost('/toggle-follow-up', {
+    taskId: e.parameters.taskId,
+    awaitingFollowUp: true,
+    followUpDate: followUpDate,
+  }, token);
+  if (!result.ok) return errorNotification('Error: ' + (result.data.error || 'Unknown'));
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation()
+      .popCard()
+      .updateCard(buildTaskCardById(
+        e.parameters.projectId, e.parameters.projectName,
+        e.parameters.labelCode, e.parameters.companyId,
+        token, e.parameters.messageId || null)))
+    .setNotification(CardService.newNotification().setText('🚩 Marked awaiting follow-up'))
+    .build();
+}
+
 function onOpenEditTask(e) {
   var token = e.parameters.accessToken || getToken();
   var ctxRes = apiGet('/task-context?companyId=' + e.parameters.companyId, token);
@@ -1307,6 +1406,28 @@ function buildEditTaskCard(params, statuses, profiles, teams) {
     .setTitle('Estimated cost ($)')
     .setValue(params.taskCost || ''));
 
+  // Follow-up — done on our end, but still awaiting a follow-up
+  var awaitingFollowUp = params.taskAwaitingFollowUp === 'true';
+  section.addWidget(CardService.newSelectionInput()
+    .setType(CardService.SelectionInputType.CHECK_BOX)
+    .setFieldName('editTaskAwaitingFollowUp')
+    .setTitle('')
+    .addItem('Done on our end — awaiting follow-up', 'true', awaitingFollowUp)
+    .setOnChangeAction(CardService.newAction()
+      .setFunctionName('onChangeEditTaskDueMode')
+      .setParameters(params)));
+
+  if (awaitingFollowUp) {
+    var followUpDatePicker = CardService.newDatePicker()
+      .setFieldName('editTaskFollowUpDate')
+      .setTitle('Follow-up date (optional)');
+    if (params.taskFollowUpDate) {
+      var fud = new Date(params.taskFollowUpDate + 'T00:00:00');
+      if (!isNaN(fud.getTime())) followUpDatePicker.setValueInMsSinceEpoch(fud.getTime());
+    }
+    section.addWidget(followUpDatePicker);
+  }
+
   // Save + Delete buttons
   section.addWidget(CardService.newButtonSet()
     .addButton(CardService.newTextButton()
@@ -1365,6 +1486,8 @@ function onChangeEditTaskDueMode(e) {
     taskTeam: (fi.editTaskTeam || [e.parameters.taskTeam || ''])[0] || '',
     taskMonetary: (fi.editTaskMonetary || []).indexOf('true') !== -1 ? 'true' : 'false',
     taskCost: (fi.editTaskCost || [e.parameters.taskCost || ''])[0] || '',
+    taskAwaitingFollowUp: (fi.editTaskAwaitingFollowUp || []).indexOf('true') !== -1 ? 'true' : 'false',
+    taskFollowUpDate: parseDatePickerValue(e, 'editTaskFollowUpDate') || e.parameters.taskFollowUpDate || '',
   });
 
   var ctxRes = apiGet('/task-context?companyId=' + params.companyId, params.accessToken || getToken());
@@ -1386,6 +1509,8 @@ function onUpdateTask(e) {
   var isMonetary = (e.formInputs.editTaskMonetary || []).indexOf('true') !== -1;
   var costRaw = ((e.formInputs.editTaskCost || [''])[0] || '').trim();
   var estimatedCost = costRaw ? parseFloat(costRaw.replace(/,/g, '')) : null;
+  var awaitingFollowUp = (e.formInputs.editTaskAwaitingFollowUp || []).indexOf('true') !== -1;
+  var followUpDate = awaitingFollowUp ? (parseDatePickerValue(e, 'editTaskFollowUpDate') || null) : null;
 
   if (!name) return errorNotification('Task name is required');
 
@@ -1427,6 +1552,8 @@ function onUpdateTask(e) {
     assignedTeamId: teamId || null,
     isMonetary: isMonetary,
     estimatedCost: estimatedCost,
+    awaitingFollowUp: awaitingFollowUp,
+    followUpDate: followUpDate,
   }, token);
 
   if (!result.ok) return errorNotification('Error: ' + (result.data.error || 'Unknown'));

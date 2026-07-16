@@ -5,9 +5,11 @@ import { supabase } from "@/lib/supabase";
 import {
   Plus, Check, ChevronDown, ChevronRight, Trash2, Calendar,
   User, Users, DollarSign, Pencil, X,
-  Copy, ArrowLeft, CheckSquare,
+  Copy, ArrowLeft, CheckSquare, Flag,
 } from "lucide-react";
 import DateCalculator from "@/components/DateCalculator";
+import FollowUpToggle from "@/components/FollowUpToggle";
+import { getDaysLeft } from "@/lib/daysLeft";
 
 interface Task {
   id: string; project_id: string; name: string; is_completed: boolean;
@@ -15,6 +17,7 @@ interface Task {
   assigned_team_id: string | null; status_id: string | null; is_monetary: boolean;
   estimated_cost: number; reminder_settings: any; parent_task_id: string | null;
   date_entered: string | null; company_id: string; created_by: string | null;
+  awaiting_follow_up: boolean; follow_up_date: string | null;
 }
 interface Profile { id: string; full_name: string | null; email: string | null; }
 interface Team { id: string; team_name: string; }
@@ -49,6 +52,13 @@ function TaskRow({ task, subtasks, allTasks, profiles, teams, statuses, depth, o
           className={`mt-0.5 w-5 h-5 rounded-full border-2 shrink-0 flex items-center justify-center transition-all ${task.is_completed ? 'bg-emerald-500 border-emerald-500' : 'border-slate-300 hover:border-indigo-400'}`}>
           {task.is_completed && <Check size={11} className="text-white" />}
         </button>
+        <div className="mt-0.5 shrink-0">
+          <FollowUpToggle
+            checked={task.awaiting_follow_up}
+            date={task.follow_up_date}
+            onChange={(checked, date) => onUpdate(task.id, { awaiting_follow_up: checked, follow_up_date: date })}
+          />
+        </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className={`text-[13px] font-medium ${task.is_completed ? 'line-through text-slate-400' : 'text-slate-800'}`}>{task.name}</span>
@@ -57,9 +67,15 @@ function TaskRow({ task, subtasks, allTasks, profiles, teams, statuses, depth, o
           </div>
           <div className="flex items-center gap-3 mt-1 flex-wrap">
             {task.due_date && <span className={`flex items-center gap-1 text-[10px] font-medium ${!task.is_completed && new Date(task.due_date) < new Date() ? 'text-red-500' : 'text-slate-400'}`}><Calendar size={10} />{new Date(task.due_date).toLocaleDateString('en-AU')}{task.due_time && ` ${task.due_time.slice(0,5)}`}</span>}
+            {(() => { const dl = getDaysLeft(task.due_date, task.is_completed); return dl ? <span className={`text-[10px] font-bold ${dl.colorClass}`}>{dl.text}</span> : null; })()}
             {assignee && <span className="flex items-center gap-1 text-[10px] text-slate-400"><User size={10} />{assignee.full_name || assignee.email}</span>}
             {team && <span className="flex items-center gap-1 text-[10px] text-slate-400"><Users size={10} />{team.team_name}</span>}
             {task.is_monetary && task.estimated_cost > 0 && <span className="flex items-center gap-1 text-[10px] text-slate-400"><DollarSign size={10} />${Number(task.estimated_cost).toLocaleString()}</span>}
+            {task.awaiting_follow_up && (
+              <span className="flex items-center gap-1 text-[10px] text-amber-600 font-medium">
+                <Flag size={10} /> Follow up{task.follow_up_date ? ` ${new Date(task.follow_up_date).toLocaleDateString('en-AU')}` : ''}
+              </span>
+            )}
             {creator && <span className="text-[10px] text-slate-300">Added by {creator.full_name || creator.email}</span>}
           </div>
         </div>
@@ -181,6 +197,23 @@ function TaskEditModal({ task, profiles, teams, statuses, onSave, onClose }: any
                   className="w-full px-4 py-2 border border-slate-200 rounded-full text-[12px] outline-none" />
               </div>
             </div>
+          </div>
+          <div>
+            <label className="flex items-center gap-3 cursor-pointer">
+              <div onClick={() => set({ awaiting_follow_up: !draft.awaiting_follow_up, follow_up_date: !draft.awaiting_follow_up ? draft.follow_up_date : null })}
+                className={`w-10 h-6 rounded-full transition-colors ${draft.awaiting_follow_up ? 'bg-amber-500' : 'bg-slate-200'}`}>
+                <div className={`w-5 h-5 bg-white rounded-full shadow mt-0.5 transition-transform ${draft.awaiting_follow_up ? 'translate-x-4' : 'translate-x-0.5'}`} />
+              </div>
+              <span className="text-[12px] text-slate-700 font-medium">Done on our end — awaiting follow-up</span>
+            </label>
+            {draft.awaiting_follow_up && (
+              <div className="mt-3">
+                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Follow-up date</p>
+                <input type="date" value={draft.follow_up_date ? String(draft.follow_up_date).slice(0,10) : ''}
+                  onChange={e => set({ follow_up_date: e.target.value || null })}
+                  className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none" />
+              </div>
+            )}
           </div>
         </div>
         <div className="px-8 py-5 border-t border-slate-100 shrink-0">

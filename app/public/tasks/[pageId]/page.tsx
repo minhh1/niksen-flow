@@ -7,10 +7,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { Loader2, Plus, X, ExternalLink, RefreshCw, Pencil, Trash2, Check, FileStack } from "lucide-react";
+import { Loader2, Plus, X, ExternalLink, RefreshCw, Pencil, Trash2, Check, FileStack, Flag } from "lucide-react";
 import { PUBLIC_TASK_COLUMNS } from "@/lib/publicTaskColumns";
 import DateCalculator from "@/components/DateCalculator";
 import ProjectPicker, { PickedProject } from "@/components/public/ProjectPicker";
+import FollowUpToggle from "@/components/FollowUpToggle";
+import { getDaysLeft } from "@/lib/daysLeft";
 
 interface Task {
   id: string; name: string; isCompleted: boolean;
@@ -20,6 +22,7 @@ interface Task {
   teamId: string | null; team: string | null;
   isMonetary: boolean; estimatedCost: number | null; dateEntered: string | null;
   createdBy: string | null;
+  awaitingFollowUp: boolean; followUpDate: string | null;
 }
 interface Tab { userId: string; userName: string; tasks: Task[]; }
 interface FormOptions {
@@ -119,6 +122,22 @@ export default function PublicTaskPage() {
     refresh();
   };
 
+  const toggleFollowUp = async (task: Task, checked: boolean, followUpDate: string | null) => {
+    setData(prev => prev ? {
+      ...prev,
+      tabs: prev.tabs.map(tab => ({
+        ...tab,
+        tasks: tab.tasks.map(t => t.id === task.id ? { ...t, awaitingFollowUp: checked, followUpDate } : t),
+      })),
+    } : prev);
+    const res = await fetch(`/api/public-tasks/${pageId}/tasks/${task.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ awaitingFollowUp: checked, followUpDate }),
+    });
+    if (!res.ok) refresh();
+  };
+
   // ── Not signed in ────────────────────────────────────────────────
   if (authChecked && !signedIn) {
     return (
@@ -212,6 +231,7 @@ export default function PublicTaskPage() {
             <thead>
               <tr className="border-b border-slate-100 text-left">
                 <th className="px-4 py-3.5 w-10"></th>
+                <th className="px-2 py-3.5 w-10"></th>
                 <th className="px-4 py-3.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest min-w-[280px]">Task</th>
                 {columns.map(c => (
                   <th key={c.key} className="px-4 py-3.5 text-[10px] font-bold text-slate-400 uppercase tracking-widest whitespace-nowrap">{c.label}</th>
@@ -221,9 +241,11 @@ export default function PublicTaskPage() {
             </thead>
             <tbody>
               {activeTasks.length === 0 && (
-                <tr><td colSpan={columns.length + 3} className="px-4 py-10 text-center text-[12px] text-slate-300 italic">No tasks</td></tr>
+                <tr><td colSpan={columns.length + 4} className="px-4 py-10 text-center text-[12px] text-slate-300 italic">No tasks</td></tr>
               )}
-              {activeTasks.map(t => (
+              {activeTasks.map(t => {
+                const dl = getDaysLeft(t.dueDate, t.isCompleted);
+                return (
                 <tr key={t.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50 group">
                   <td className="px-4 py-4">
                     <button onClick={() => toggleComplete(t)}
@@ -231,9 +253,24 @@ export default function PublicTaskPage() {
                       {t.isCompleted && <Check size={11} className="text-white" />}
                     </button>
                   </td>
+                  <td className="px-2 py-4">
+                    <FollowUpToggle
+                      checked={t.awaitingFollowUp}
+                      date={t.followUpDate}
+                      onChange={(checked, date) => toggleFollowUp(t, checked, date)}
+                    />
+                  </td>
                   <td className={`px-4 py-4 font-medium cursor-pointer leading-snug ${t.isCompleted ? "line-through text-slate-400" : "text-slate-800"}`}
                     onClick={() => setEditingTask(t)}>
-                    {t.name}
+                    <div>{t.name}</div>
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                      {dl && <span className={`text-[10px] font-bold ${dl.colorClass}`}>{dl.text}</span>}
+                      {t.awaitingFollowUp && (
+                        <span className="flex items-center gap-1 text-[10px] text-amber-600 font-medium">
+                          <Flag size={9} /> Follow up{t.followUpDate ? ` ${t.followUpDate}` : ""}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   {columns.map(c => (
                     <td key={c.key} className={`px-4 py-4 text-slate-600 leading-snug ${WRAP_COLUMNS.has(c.key) ? "max-w-[220px]" : "whitespace-nowrap"}`}>
@@ -247,7 +284,7 @@ export default function PublicTaskPage() {
                     </div>
                   </td>
                 </tr>
-              ))}
+              );})}
             </tbody>
           </table>
         </div>
@@ -323,6 +360,8 @@ function TaskModal({ pageId, formOptions, defaultAssigneeId, task, saving, setSa
   const [statusId, setStatusId] = useState(task?.statusId || "");
   const [teamId, setTeamId] = useState(task?.teamId || "");
   const [assigneeId, setAssigneeId] = useState(defaultAssigneeId || "");
+  const [awaitingFollowUp, setAwaitingFollowUp] = useState(task?.awaitingFollowUp || false);
+  const [followUpDate, setFollowUpDate] = useState(task?.followUpDate || "");
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -331,7 +370,10 @@ function TaskModal({ pageId, formOptions, defaultAssigneeId, task, saving, setSa
     if (!isEdit && !project) { setError("Project is required"); return; }
     setSaving(true);
     setError(null);
-    const body: any = { name, dueDate: dueDate || null, dueTime: dueTime || null, statusId: statusId || null, teamId: teamId || null };
+    const body: any = {
+      name, dueDate: dueDate || null, dueTime: dueTime || null, statusId: statusId || null, teamId: teamId || null,
+      awaitingFollowUp, followUpDate: awaitingFollowUp ? (followUpDate || null) : null,
+    };
     if (!isEdit) { body.projectId = project!.id; body.assigneeId = assigneeId || null; }
     const res = await fetch(`/api/public-tasks/${pageId}${isEdit ? `/tasks/${task!.id}` : ""}`, {
       method: isEdit ? "PATCH" : "POST",
@@ -417,6 +459,22 @@ function TaskModal({ pageId, formOptions, defaultAssigneeId, task, saving, setSa
               </select>
             </div>
           )}
+          <div>
+            <label className="flex items-center gap-3 cursor-pointer">
+              <div onClick={() => setAwaitingFollowUp(v => !v)}
+                className={`w-10 h-6 rounded-full transition-colors ${awaitingFollowUp ? "bg-amber-500" : "bg-slate-200"}`}>
+                <div className={`w-5 h-5 bg-white rounded-full shadow mt-0.5 transition-transform ${awaitingFollowUp ? "translate-x-4" : "translate-x-0.5"}`} />
+              </div>
+              <span className="text-[12px] text-slate-700 font-medium">Done on our end — awaiting follow-up</span>
+            </label>
+            {awaitingFollowUp && (
+              <div className="mt-3">
+                <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Follow-up date</p>
+                <input type="date" value={followUpDate} onChange={e => setFollowUpDate(e.target.value)}
+                  className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none" />
+              </div>
+            )}
+          </div>
           {error && <p className="text-[11px] text-red-500">{error}</p>}
         </div>
         <div className="px-6 py-4 border-t border-slate-100 shrink-0 space-y-2">

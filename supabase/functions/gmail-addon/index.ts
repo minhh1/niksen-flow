@@ -938,7 +938,7 @@ Deno.serve(async (req) => {
 
       const { data: tasks, error: tasksErr } = await db
         .from('tasks')
-        .select('id, name, is_completed, due_date, due_time, assignee_id, assigned_team_id, status_id, is_monetary, estimated_cost, created_by, profiles:assignee_id(full_name, email), teams:assigned_team_id(team_name), task_statuses:status_id(label, color_hex), creator:created_by(full_name, email)')
+        .select('id, name, is_completed, due_date, due_time, assignee_id, assigned_team_id, status_id, is_monetary, estimated_cost, created_by, awaiting_follow_up, follow_up_date, profiles:assignee_id(full_name, email), teams:assigned_team_id(team_name), task_statuses:status_id(label, color_hex), creator:created_by(full_name, email)')
         .eq('project_id', projectId)
         .is('deleted_at', null)
         .order('date_entered', { ascending: true });
@@ -972,6 +972,8 @@ Deno.serve(async (req) => {
           isMonetary: t.is_monetary,
           estimatedCost: t.estimated_cost,
           createdBy: t.creator?.full_name || t.creator?.email || null,
+          awaitingFollowUp: t.awaiting_follow_up,
+          followUpDate: t.follow_up_date,
         })),
         statuses: statuses || [],
       }, 200, headers);
@@ -1046,14 +1048,29 @@ Deno.serve(async (req) => {
       return json({ ok: true }, 200, headers);
     }
 
+    // ── POST /toggle-follow-up ──────────────────────────────────────
+    if (req.method === 'POST' && path === '/toggle-follow-up') {
+      const body = await req.json();
+      const { taskId, awaitingFollowUp, followUpDate } = body;
+      if (!taskId) return json({ error: 'Missing taskId' }, 400, headers);
+
+      const { error } = await db.from('tasks').update({
+        awaiting_follow_up: !!awaitingFollowUp,
+        follow_up_date: awaitingFollowUp ? (followUpDate || null) : null,
+      }).eq('id', taskId);
+
+      if (error) return json({ error: error.message }, 500, headers);
+      return json({ ok: true }, 200, headers);
+    }
+
     // ── POST /update-task ──────────────────────────────────────────
     if (req.method === 'POST' && path === '/update-task') {
       const body = await req.json();
-      const { taskId, name, dueDate, dueTime, statusId, assigneeId, assignedTeamId, isMonetary, estimatedCost } = body;
+      const { taskId, name, dueDate, dueTime, statusId, assigneeId, assignedTeamId, isMonetary, estimatedCost, awaitingFollowUp, followUpDate } = body;
       if (!taskId) return json({ error: 'Missing taskId' }, 400, headers);
       if (!name?.trim()) return json({ error: 'Task name required' }, 400, headers);
 
-      const { error } = await db.from('tasks').update({
+      const update: Record<string, unknown> = {
         name: name.trim(),
         due_date: dueDate || null,
         due_time: dueTime || null,
@@ -1062,7 +1079,13 @@ Deno.serve(async (req) => {
         assigned_team_id: assignedTeamId || null,
         is_monetary: isMonetary || false,
         estimated_cost: estimatedCost || null,
-      }).eq('id', taskId);
+      };
+      if (awaitingFollowUp !== undefined) {
+        update.awaiting_follow_up = !!awaitingFollowUp;
+        update.follow_up_date = awaitingFollowUp ? (followUpDate || null) : null;
+      }
+
+      const { error } = await db.from('tasks').update(update).eq('id', taskId);
 
       if (error) return json({ error: error.message }, 500, headers);
       // Sync calendar with updated details

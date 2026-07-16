@@ -26,7 +26,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
     .from("tasks")
     .select(`
       id, name, due_date, due_time, is_completed, estimated_cost, date_entered, assignee_id, project_id,
-      status_id, assigned_team_id, is_monetary, created_by,
+      status_id, assigned_team_id, is_monetary, created_by, awaiting_follow_up, follow_up_date,
       assignee:assignee_id(id, full_name, email),
       creator:created_by(id, full_name, email),
       project:project_id(id, name),
@@ -79,6 +79,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
           estimatedCost: t.estimated_cost,
           dateEntered: t.date_entered,
           createdBy: t.creator?.full_name || t.creator?.email || null,
+          awaitingFollowUp: t.awaiting_follow_up,
+          followUpDate: t.follow_up_date ? String(t.follow_up_date).slice(0, 10) : null,
         })),
     }))
     .sort((a: any, b: any) => a.userName.localeCompare(b.userName));
