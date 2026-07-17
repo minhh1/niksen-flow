@@ -22,6 +22,7 @@ interface Task {
   date_entered: string | null; company_id: string; created_by: string | null;
   awaiting_follow_up: boolean; follow_up_date: string | null;
   notes: string | null; source_message_id: string | null;
+  source_email_subject: string | null; source_email_body: string | null;
 }
 interface Profile { id: string; full_name: string | null; email: string | null; }
 interface Team { id: string; team_name: string; }
@@ -83,11 +84,11 @@ function TaskRow({ task, subtasks, allTasks, profiles, teams, depth, followUpsBy
                 <StickyNote size={10} /> {task.notes}
               </span>
             )}
-            {task.source_message_id && (
-              <a href={`https://mail.google.com/mail/u/0/#all/${task.source_message_id}`} target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-1 text-[10px] text-indigo-500 hover:text-indigo-700 font-medium">
+            {task.source_email_subject && (
+              <button onClick={() => onEdit(task)} title={task.source_email_subject}
+                className="flex items-center gap-1 text-[10px] text-indigo-500 hover:text-indigo-700 font-medium underline decoration-dotted underline-offset-2">
                 <Mail size={10} /> Open email
-              </a>
+              </button>
             )}
             {creator && <span className="text-[10px] text-slate-300">Added by {creator.full_name || creator.email}</span>}
           </div>
@@ -242,11 +243,18 @@ function TaskEditModal({ task, profiles, teams, followUps, onAddFollowUp, onRemo
             <textarea value={draft.notes || ''} onChange={e => set({ notes: e.target.value || null })} rows={3} placeholder="Add a note..."
               className="w-full px-4 py-2.5 border border-slate-200 rounded-2xl text-[13px] outline-none focus:border-indigo-400 resize-none" />
           </div>
-          {task.source_message_id && (
-            <a href={`https://mail.google.com/mail/u/0/#all/${task.source_message_id}`} target="_blank" rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 text-[12px] text-indigo-600 hover:text-indigo-800 font-medium">
-              <Mail size={12} /> Open reference email
-            </a>
+          {task.source_email_subject && (
+            <div>
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Reference email</p>
+              <div className="border border-slate-200 rounded-2xl px-4 py-2.5">
+                <p className="flex items-center gap-1.5 text-[12px] text-slate-700 font-semibold">
+                  <Mail size={12} className="shrink-0 text-indigo-500" /> {task.source_email_subject}
+                </p>
+                {task.source_email_body && (
+                  <p className="text-[11px] text-slate-500 mt-1.5 whitespace-pre-wrap max-h-40 overflow-y-auto">{task.source_email_body}</p>
+                )}
+              </div>
+            </div>
           )}
         </div>
         )}

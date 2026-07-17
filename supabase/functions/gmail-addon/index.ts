@@ -977,7 +977,7 @@ Deno.serve(async (req) => {
 
       const { data: tasks, error: tasksErr } = await db
         .from('tasks')
-        .select('id, name, is_completed, due_date, due_time, assignee_id, assigned_team_id, status_id, is_monetary, estimated_cost, created_by, awaiting_follow_up, follow_up_date, notes, source_message_id, profiles:assignee_id(full_name, email), teams:assigned_team_id(team_name), task_statuses:status_id(label, color_hex), creator:created_by(full_name, email)')
+        .select('id, name, is_completed, due_date, due_time, assignee_id, assigned_team_id, status_id, is_monetary, estimated_cost, created_by, awaiting_follow_up, follow_up_date, notes, source_message_id, source_email_subject, source_email_body, profiles:assignee_id(full_name, email), teams:assigned_team_id(team_name), task_statuses:status_id(label, color_hex), creator:created_by(full_name, email)')
         .eq('project_id', projectId)
         .is('deleted_at', null)
         .order('date_entered', { ascending: true });
@@ -1023,6 +1023,8 @@ Deno.serve(async (req) => {
           followUpCount: followUpCounts[t.id] || 0,
           notes: t.notes,
           sourceMessageId: t.source_message_id,
+          sourceEmailSubject: t.source_email_subject,
+          sourceEmailBody: t.source_email_body,
         })),
         statuses: statuses || [],
       }, 200, headers);
@@ -1039,7 +1041,7 @@ Deno.serve(async (req) => {
         isMonetary, estimatedCost,
         reminderSetting, reminderSettings,
         responsibleTeam, assignedTo,
-        notes, messageId,
+        notes, messageId, emailSubject, emailBody,
       } = body;
 
       // ── Validation ──────────────────────────────────────────────
@@ -1073,6 +1075,8 @@ Deno.serve(async (req) => {
         assigned_to: assignedTo || null,
         notes: notes || null,
         source_message_id: messageId || null,
+        source_email_subject: emailSubject || null,
+        source_email_body: emailBody || null,
         created_by: profile?.id,
         date_entered: new Date().toISOString().split('T')[0],
         is_completed: false,
@@ -1194,13 +1198,17 @@ Deno.serve(async (req) => {
     // user viewing a task open the email that prompted it.
     if (req.method === 'POST' && path === '/link-email') {
       const body = await req.json();
-      const { taskId, messageId } = body;
+      const { taskId, messageId, emailSubject, emailBody } = body;
       if (!taskId) return json({ error: 'Missing taskId' }, 400, headers);
       if (!messageId) return json({ error: 'Missing messageId' }, 400, headers);
 
       const { data: existingTask } = await db.from('tasks').select('company_id').eq('id', taskId).maybeSingle();
 
-      const { error } = await db.from('tasks').update({ source_message_id: messageId }).eq('id', taskId);
+      const { error } = await db.from('tasks').update({
+        source_message_id: messageId,
+        source_email_subject: emailSubject || null,
+        source_email_body: emailBody || null,
+      }).eq('id', taskId);
 
       if (error) return json({ error: error.message }, 500, headers);
       if (existingTask) {
@@ -1653,7 +1661,7 @@ Deno.serve(async (req) => {
         .from('tasks')
         .select(`
           id, name, is_completed, due_date, due_time, assignee_id, assigned_team_id,
-          status_id, is_monetary, estimated_cost, created_by, awaiting_follow_up, follow_up_date, notes, source_message_id,
+          status_id, is_monetary, estimated_cost, created_by, awaiting_follow_up, follow_up_date, notes, source_message_id, source_email_subject, source_email_body,
           project_id,
           projects:project_id(id, name, project_gmail_labels(gmail_label_name, label_code)),
           profiles:assignee_id(full_name, email),
@@ -1707,6 +1715,8 @@ Deno.serve(async (req) => {
           followUpCount: followUpCounts[t.id] || 0,
           notes: t.notes,
           sourceMessageId: t.source_message_id,
+          sourceEmailSubject: t.source_email_subject,
+          sourceEmailBody: t.source_email_body,
         })),
         limit,
         offset,

@@ -29,6 +29,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
     .select(`
       id, name, due_date, due_time, is_completed, estimated_cost, date_entered, assignee_id, project_id,
       status_id, assigned_team_id, is_monetary, created_by, awaiting_follow_up, follow_up_date, notes, source_message_id,
+      source_email_subject, source_email_body,
       assignee:assignee_id(id, full_name, email),
       creator:created_by(id, full_name, email),
       project:project_id(id, name),
@@ -102,6 +103,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
           followUpDate: t.follow_up_date ? String(t.follow_up_date).slice(0, 10) : null,
           notes: t.notes,
           sourceMessageId: t.source_message_id,
+          sourceEmailSubject: t.source_email_subject,
+          sourceEmailBody: t.source_email_body,
           followUps: followUpsByTask[t.id] || [],
         })),
     }))

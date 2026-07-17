@@ -243,9 +243,38 @@ function getTaskStatusLabel(isCompleted, awaitingFollowUp) {
 }
 
 // Gmail web URL for a message, given its hex message ID (the same format
-// already threaded through the add-on as `messageId`/`cleanMessageId`).
+// already threaded through the add-on as `messageId`/`cleanMessageId`). Only
+// safe to use for the email currently open in the viewer's own mailbox —
+// Gmail message IDs don't resolve across different users' mailboxes, so this
+// must never be used with a stored/cross-user sourceMessageId.
 function gmailMessageUrl(messageId) {
   return 'https://mail.google.com/mail/u/0/#all/' + messageId;
+}
+
+// Captures an email's subject + body text so it can be stored on a task and
+// read by any viewer — message IDs don't resolve across mailboxes, but plain
+// text does. Truncates the body since Gmail messages can be very long.
+function escapeCardHtml(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+var EMAIL_BODY_MAX_CHARS = 4000;
+function fetchMessageContent(token, messageId) {
+  if (!messageId) return null;
+  try {
+    GmailApp.setCurrentMessageAccessToken(token);
+    var msg = GmailApp.getMessageById(messageId);
+    if (!msg) return null;
+    var body = msg.getPlainBody() || '';
+    if (body.length > EMAIL_BODY_MAX_CHARS) {
+      body = body.slice(0, EMAIL_BODY_MAX_CHARS) + '…';
+    }
+    return { subject: msg.getSubject() || '', body: body };
+  } catch (err) {
+    Logger.log('[fetchMessageContent] failed: ' + err);
+    return null;
+  }
 }
 
 function errorNotification(msg) {
@@ -698,6 +727,7 @@ function buildMainCard(messageId, accessToken, allTasksOffset) {
       if (at.createdBy) atSub += (atSub ? ' · ' : '') + 'Added by ' + at.createdBy;
       if (at.followUpCount) atSub += (atSub ? ' · ' : '') + '🚩 Followed up ' + at.followUpCount + 'x' + (at.followUpDate ? ' · last ' + getRelativeDateLabel(at.followUpDate) : '');
       if (at.notes) atSub += (atSub ? ' · ' : '') + '📝 ' + at.notes;
+      if (at.sourceEmailSubject) atSub += (atSub ? ' · ' : '') + '📧 ' + at.sourceEmailSubject;
 
       var atRow = CardService.newDecoratedText()
         .setTopLabel(atLabel)
@@ -714,12 +744,6 @@ function buildMainCard(messageId, accessToken, allTasksOffset) {
             messageId: '',
             accessToken: token,
           }));
-
-      if (at.sourceMessageId) {
-        atRow.setButton(CardService.newTextButton()
-          .setText('📧')
-          .setOpenLink(CardService.newOpenLink().setUrl(gmailMessageUrl(at.sourceMessageId))));
-      }
 
       allTasksSection.addWidget(atRow);
       // Spacing between rows — a divider reads clearer than blank widgets.
@@ -947,6 +971,8 @@ function buildTaskCardById(projectId, projectName, labelCode, companyId, token, 
       taskFollowUpCount: String(t.followUpCount || 0),
       taskNotes: t.notes || '',
       taskSourceMessageId: t.sourceMessageId || '',
+      taskSourceEmailSubject: t.sourceEmailSubject || '',
+      taskSourceEmailBody: t.sourceEmailBody || '',
       projectId: projectId,
       projectName: projectName,
       labelCode: labelCode,
@@ -973,6 +999,15 @@ function buildTaskCardById(projectId, projectName, labelCode, companyId, token, 
 
     taskSection.addWidget(dt);
 
+    // Reference email — the subject/body text is stored on the task itself
+    // (message IDs don't resolve across different users' mailboxes, so a
+    // deep link back to the original email only ever works for whoever
+    // linked it — plain text works for everyone).
+    if (t.sourceEmailSubject) {
+      taskSection.addWidget(CardService.newTextParagraph()
+        .setText('📧 <b>' + escapeCardHtml(t.sourceEmailSubject) + '</b>'));
+    }
+
     // Second tick — "done on our end, awaiting follow-up" — and a note button,
     // shown on the same row.
     var taskButtonRow = CardService.newButtonSet()
@@ -987,23 +1022,11 @@ function buildTaskCardById(projectId, projectName, labelCode, companyId, token, 
           .setFunctionName('onOpenNoteCard')
           .setParameters(taskParams)));
 
-    // Reference email — open the message that prompted this task if one's
-    // linked, offer to replace it with whichever email is currently open,
-    // or (if none is linked yet) offer to link the one currently open.
-    if (t.sourceMessageId) {
+    // Capture the email currently open in Gmail as this task's reference —
+    // offer to replace it if one's already linked, or link it fresh.
+    if (messageId && messageId !== t.sourceMessageId) {
       taskButtonRow.addButton(CardService.newTextButton()
-        .setText('📧 Open email')
-        .setOpenLink(CardService.newOpenLink().setUrl(gmailMessageUrl(t.sourceMessageId))));
-      if (messageId && messageId !== t.sourceMessageId) {
-        taskButtonRow.addButton(CardService.newTextButton()
-          .setText('🔄 Replace with this email')
-          .setOnClickAction(CardService.newAction()
-            .setFunctionName('onLinkEmail')
-            .setParameters(taskParams)));
-      }
-    } else if (messageId) {
-      taskButtonRow.addButton(CardService.newTextButton()
-        .setText('📎 Link this email')
+        .setText(t.sourceEmailSubject ? '🔄 Replace with this email' : '📎 Link this email')
         .setOnClickAction(CardService.newAction()
           .setFunctionName('onLinkEmail')
           .setParameters(taskParams)));
@@ -1594,10 +1617,13 @@ function onSaveNote(e) {
 function onLinkEmail(e) {
   var token = e.parameters.accessToken || getToken();
   if (!e.parameters.messageId) return errorNotification('No email is open to link');
+  var emailContent = fetchMessageContent(token, e.parameters.messageId);
 
   var result = apiPost('/link-email', {
     taskId: e.parameters.taskId,
     messageId: e.parameters.messageId,
+    emailSubject: emailContent ? emailContent.subject : null,
+    emailBody: emailContent ? emailContent.body : null,
   }, token);
   if (!result.ok) return errorNotification('Error: ' + (result.data.error || 'Unknown'));
   return CardService.newActionResponseBuilder()
@@ -1615,10 +1641,13 @@ function onLinkEmail(e) {
 function onLinkEmailFromEditCard(e) {
   var token = e.parameters.accessToken || getToken();
   if (!e.parameters.messageId) return errorNotification('No email is open to link');
+  var emailContent = fetchMessageContent(token, e.parameters.messageId);
 
   var result = apiPost('/link-email', {
     taskId: e.parameters.taskId,
     messageId: e.parameters.messageId,
+    emailSubject: emailContent ? emailContent.subject : null,
+    emailBody: emailContent ? emailContent.body : null,
   }, token);
   if (!result.ok) return errorNotification('Error: ' + (result.data.error || 'Unknown'));
   return CardService.newActionResponseBuilder()
@@ -1659,26 +1688,19 @@ function buildEditTaskCard(params, statuses, profiles, teams) {
     .setTitle('Task name *')
     .setValue(params.taskName || ''));
 
-  // Reference email — open the message that prompted this task, offer to
-  // replace it with whichever email is currently open, or (if none is
-  // linked yet) offer to link the one currently open.
-  if (params.taskSourceMessageId) {
-    var emailBtnRow = CardService.newButtonSet()
-      .addButton(CardService.newTextButton()
-        .setText('📧 Open reference email')
-        .setOpenLink(CardService.newOpenLink().setUrl(gmailMessageUrl(params.taskSourceMessageId))));
-    if (params.messageId && params.messageId !== params.taskSourceMessageId) {
-      emailBtnRow.addButton(CardService.newTextButton()
-        .setText('🔄 Replace with this email')
-        .setOnClickAction(CardService.newAction()
-          .setFunctionName('onLinkEmailFromEditCard')
-          .setParameters(params)));
-    }
-    section.addWidget(emailBtnRow);
-  } else if (params.messageId) {
+  // Reference email — subject/body text captured from the message that
+  // prompted this task, stored so every viewer can read it (message IDs
+  // don't resolve across different users' mailboxes, so a deep link back
+  // to the original email would only ever work for whoever linked it).
+  if (params.taskSourceEmailSubject) {
+    section.addWidget(CardService.newTextParagraph()
+      .setText('📧 <b>' + escapeCardHtml(params.taskSourceEmailSubject) + '</b>' +
+        (params.taskSourceEmailBody ? '<br>' + escapeCardHtml(params.taskSourceEmailBody) : '')));
+  }
+  if (params.messageId && params.messageId !== params.taskSourceMessageId) {
     section.addWidget(CardService.newButtonSet()
       .addButton(CardService.newTextButton()
-        .setText('📎 Link this email')
+        .setText(params.taskSourceEmailSubject ? '🔄 Replace with this email' : '📎 Link this email')
         .setOnClickAction(CardService.newAction()
           .setFunctionName('onLinkEmailFromEditCard')
           .setParameters(params))));
@@ -2094,6 +2116,7 @@ function onCreateTask(e) {
   }
 
   var linkEmail = (e.formInputs.newTaskLinkEmail || []).indexOf('true') !== -1;
+  var emailContent = linkEmail ? fetchMessageContent(token, e.parameters.messageId) : null;
 
   var result = apiPost('/create-task', {
     projectId: e.parameters.projectId,
@@ -2108,6 +2131,8 @@ function onCreateTask(e) {
     isMonetary: isMonetary,
     estimatedCost: estimatedCost,
     messageId: linkEmail ? (e.parameters.messageId || null) : null,
+    emailSubject: emailContent ? emailContent.subject : null,
+    emailBody: emailContent ? emailContent.body : null,
   }, token);
 
   if (!result.ok || !result.data.ok) return errorNotification('Error: ' + (result.data.error || 'Unknown'));

@@ -26,6 +26,7 @@ interface Task {
   createdBy: string | null;
   awaitingFollowUp: boolean; followUpDate: string | null;
   notes: string | null; sourceMessageId: string | null;
+  sourceEmailSubject: string | null; sourceEmailBody: string | null;
   followUps: FollowUpEntry[];
 }
 interface Tab { userId: string; userName: string; tasks: Task[]; }
@@ -283,12 +284,11 @@ export default function PublicTaskPage() {
                 <StickyNote size={9} /> {t.notes}
               </span>
             )}
-            {t.sourceMessageId && (
-              <a href={`https://mail.google.com/mail/u/0/#all/${t.sourceMessageId}`} target="_blank" rel="noopener noreferrer"
-                onClick={e => e.stopPropagation()}
-                className="flex items-center gap-1 text-[10px] text-indigo-500 hover:text-indigo-700 font-medium">
+            {t.sourceEmailSubject && (
+              <button onClick={e => { e.stopPropagation(); setEditingTask(t); }} title={t.sourceEmailSubject}
+                className="flex items-center gap-1 text-[10px] text-indigo-500 hover:text-indigo-700 font-medium underline decoration-dotted underline-offset-2">
                 <Mail size={9} /> Open email
-              </a>
+              </button>
             )}
           </div>
         </td>
@@ -584,11 +584,18 @@ function TaskModal({ pageId, formOptions, defaultAssigneeId, task, saving, setSa
             <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} placeholder="Add a note..."
               className="w-full px-4 py-2.5 border border-slate-200 rounded-2xl text-[13px] outline-none focus:border-indigo-400 resize-none" />
           </div>
-          {isEdit && task?.sourceMessageId && (
-            <a href={`https://mail.google.com/mail/u/0/#all/${task.sourceMessageId}`} target="_blank" rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 text-[12px] text-indigo-600 hover:text-indigo-800 font-medium">
-              <Mail size={12} /> Open reference email
-            </a>
+          {isEdit && task?.sourceEmailSubject && (
+            <div>
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Reference email</p>
+              <div className="border border-slate-200 rounded-2xl px-4 py-2.5">
+                <p className="flex items-center gap-1.5 text-[12px] text-slate-700 font-semibold">
+                  <Mail size={12} className="shrink-0 text-indigo-500" /> {task.sourceEmailSubject}
+                </p>
+                {task.sourceEmailBody && (
+                  <p className="text-[11px] text-slate-500 mt-1.5 whitespace-pre-wrap max-h-40 overflow-y-auto">{task.sourceEmailBody}</p>
+                )}
+              </div>
+            </div>
           )}
           {error && <p className="text-[11px] text-red-500">{error}</p>}
         </div>
