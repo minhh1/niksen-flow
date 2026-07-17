@@ -45,7 +45,8 @@ export interface TextBoxOp {
   x: number;
   y: number;
   fontSize: number;
-  font: StandardFontKey;
+  font: StandardFontKey; // encodes bold/italic — see fontMatch.ts's withBoldItalic/isBoldFont/isItalicFont
+  underline: boolean; // pdf-lib has no text-decoration; drawn as a manual line at save time
   text: string;
   color: RGB;
 }

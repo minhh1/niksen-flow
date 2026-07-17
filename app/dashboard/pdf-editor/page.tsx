@@ -1,11 +1,13 @@
 // app/dashboard/pdf-editor/page.tsx
-// Library view for the standalone PDF editor: upload a PDF, list the company's
-// PDFs, open one into <PdfEditor>. Not tied to the document-templates/fill flow.
+// Library view for the standalone PDF editor: pick or drag-drop a PDF to open it
+// straight into the editor (no upload round trip — it's only written to the
+// bucket on first Save), or open one of the company's already-saved PDFs.
+// Not tied to the document-templates/fill flow.
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileText, Upload, Loader2, Trash2, PenSquare } from "lucide-react";
-import PdfEditor from "@/components/pdfeditor/PdfEditor";
+import PdfEditor, { type PdfSource } from "@/components/pdfeditor/PdfEditor";
 
 interface PdfDoc {
   id: string;
@@ -17,9 +19,9 @@ interface PdfDoc {
 export default function PdfEditorPage() {
   const [loading, setLoading] = useState(true);
   const [documents, setDocuments] = useState<PdfDoc[]>([]);
-  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [source, setSource] = useState<PdfSource | null>(null);
+  const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -32,23 +34,14 @@ export default function PdfEditorPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleUpload = async (file: File | undefined) => {
+  const openFile = (file: File | undefined) => {
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".pdf")) {
-      setError("Please upload a .pdf file");
+    if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
+      setError("Please open a .pdf file");
       return;
     }
     setError(null);
-    setUploading(true);
-    const form = new FormData();
-    form.append("file", file);
-    form.append("name", file.name.replace(/\.pdf$/i, ""));
-    const res = await fetch("/api/pdf-editor/upload", { method: "POST", body: form });
-    const json = await res.json();
-    setUploading(false);
-    if (!res.ok) { setError(json.error || "Upload failed"); return; }
-    setOpenId(json.document.id);
-    load();
+    setSource({ kind: "new", file });
   };
 
   const handleDelete = async (id: string) => {
@@ -57,12 +50,37 @@ export default function PdfEditorPage() {
     load();
   };
 
-  if (openId) {
-    return <PdfEditor documentId={openId} onBack={() => { setOpenId(null); load(); }} />;
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes("Files")) setDragActive(true);
+  };
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+  };
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+    openFile(e.dataTransfer.files?.[0]);
+  };
+
+  if (source) {
+    return <PdfEditor source={source} onBack={() => { setSource(null); load(); }} />;
   }
 
   return (
-    <div className="p-8 max-w-4xl mx-auto">
+    <div
+      className="p-8 max-w-4xl mx-auto min-h-screen relative"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {dragActive && (
+        <div className="fixed inset-0 z-50 bg-indigo-600/10 border-4 border-dashed border-indigo-400 flex items-center justify-center pointer-events-none">
+          <p className="text-indigo-700 text-sm font-bold bg-white px-6 py-3 rounded-full shadow-lg">Drop your PDF to open it</p>
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-3xl font-light text-slate-900 tracking-tight">PDF Editor</h1>
@@ -70,18 +88,17 @@ export default function PdfEditorPage() {
         </div>
         <button
           onClick={() => fileInputRef.current?.click()}
-          disabled={uploading}
-          className="flex items-center gap-2 px-5 py-2.5 text-[12px] font-medium bg-slate-900 text-white rounded-full disabled:opacity-50"
+          className="flex items-center gap-2 px-5 py-2.5 text-[12px] font-medium bg-slate-900 text-white rounded-full"
         >
-          {uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
-          Upload PDF
+          <Upload size={14} />
+          Open PDF
         </button>
         <input
           ref={fileInputRef}
           type="file"
           accept="application/pdf,.pdf"
           className="hidden"
-          onChange={(e) => handleUpload(e.target.files?.[0])}
+          onChange={(e) => openFile(e.target.files?.[0])}
         />
       </div>
 
@@ -95,21 +112,21 @@ export default function PdfEditorPage() {
         </div>
       ) : documents.length === 0 ? (
         <div className="text-center mt-16 text-slate-400 text-[13px]">
-          No PDFs yet — upload one to get started.
+          No saved PDFs yet — drag a PDF anywhere on this page, or click "Open PDF" to get started.
         </div>
       ) : (
         <div className="bg-white rounded-2xl border border-slate-100 divide-y divide-slate-50">
           {documents.map((doc) => (
             <div key={doc.id} className="flex items-center gap-4 px-5 py-4 hover:bg-slate-50 transition-all group">
               <FileText size={18} className="text-slate-300 shrink-0" />
-              <button onClick={() => setOpenId(doc.id)} className="flex-1 min-w-0 text-left">
+              <button onClick={() => setSource({ kind: "existing", documentId: doc.id })} className="flex-1 min-w-0 text-left">
                 <p className="text-[13px] font-medium text-slate-900 truncate">{doc.name}</p>
                 <p className="text-[11px] text-slate-400 mt-0.5">
                   Updated {new Date(doc.updated_at).toLocaleDateString()}
                 </p>
               </button>
               <button
-                onClick={() => setOpenId(doc.id)}
+                onClick={() => setSource({ kind: "existing", documentId: doc.id })}
                 title="Edit"
                 className="p-2 rounded-full text-slate-400 hover:text-slate-900 hover:bg-slate-100 opacity-0 group-hover:opacity-100 transition-all"
               >

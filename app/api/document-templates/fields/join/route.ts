@@ -1,8 +1,8 @@
 // app/api/document-templates/fields/join/route.ts
-// Admin-side (auth required). Marks two fields — usually from different
-// uploaded documents for the same project — as "the same answer" (the
-// client is asked once, applied to every joined document's tag), or
-// reverses that.
+// Admin-side (auth required). Marks two fields WITHIN THE SAME uploaded
+// document as "the same answer" (the client is asked once, applied to both
+// tags), or reverses that. Linking across different documents isn't
+// supported — each document's fields are joined independently.
 //
 // POST body: { fieldId, joinTargetFieldId } — joinTargetFieldId null unlinks
 // fieldId (makes it independent again). Otherwise fieldId's whole group
@@ -12,7 +12,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authorizeCompanyMember } from "@/lib/documentTemplateAuth";
 
-interface FieldRow { id: string; template_id: string; joined_to_field_id: string | null }
+interface FieldRow { id: string; joined_to_field_id: string | null }
 
 function resolveRoot(fieldId: string, byId: Map<string, FieldRow>): string {
   const seen = new Set<string>();
@@ -40,12 +40,12 @@ export async function POST(req: NextRequest) {
 
   const { data: field } = await admin
     .from("document_template_fields")
-    .select("id, template_id, joined_to_field_id, document_templates!inner(id, company_id, project_id)")
+    .select("id, template_id, joined_to_field_id, document_templates!inner(id, company_id)")
     .eq("id", fieldId).maybeSingle();
   if (!field || (field as any).document_templates.company_id !== companyId) {
     return NextResponse.json({ error: "Field not found" }, { status: 404 });
   }
-  const projectId = (field as any).document_templates.project_id;
+  const templateId = (field as any).template_id;
 
   // ── Unlink ──────────────────────────────────────────────────────
   if (!joinTargetFieldId) {
@@ -59,23 +59,16 @@ export async function POST(req: NextRequest) {
   }
 
   const { data: targetField } = await admin
-    .from("document_template_fields")
-    .select("id, template_id, document_templates!inner(id, company_id, project_id)")
-    .eq("id", joinTargetFieldId).maybeSingle();
-  if (!targetField || (targetField as any).document_templates.company_id !== companyId) {
-    return NextResponse.json({ error: "Target field not found" }, { status: 404 });
-  }
-  if ((targetField as any).document_templates.project_id !== projectId) {
-    return NextResponse.json({ error: "Fields must belong to the same project" }, { status: 400 });
+    .from("document_template_fields").select("id, template_id").eq("id", joinTargetFieldId).maybeSingle();
+  if (!targetField || targetField.template_id !== templateId) {
+    return NextResponse.json({ error: "Fields must belong to the same document" }, { status: 400 });
   }
 
-  // Load every field across this project's templates to resolve join roots
-  // and re-point an entire group at once (see module comment).
-  const { data: projectTemplates } = await admin.from("document_templates").select("id").eq("project_id", projectId);
-  const templateIds = (projectTemplates || []).map((t: any) => t.id);
-  const { data: allFields } = await admin
-    .from("document_template_fields").select("id, template_id, joined_to_field_id").in("template_id", templateIds);
-  const byId = new Map<string, FieldRow>((allFields || []).map((f: any) => [f.id, f]));
+  // Load every field in this document to resolve join roots and re-point an
+  // entire group at once (see module comment).
+  const { data: docFields } = await admin
+    .from("document_template_fields").select("id, joined_to_field_id").eq("template_id", templateId);
+  const byId = new Map<string, FieldRow>((docFields || []).map((f: any) => [f.id, f]));
 
   const rootA = resolveRoot(fieldId, byId);
   const rootB = resolveRoot(joinTargetFieldId, byId);

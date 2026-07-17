@@ -10,7 +10,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PDFPageProxy } from "pdfjs-dist";
 import type { DrawOp, HighlightOp, ImageOp, PdfEditOp, TextBoxOp, ToolId } from "@/lib/pdfeditor/types";
-import { matchStandardFont } from "@/lib/pdfeditor/fontMatch";
+import { matchStandardFont, isBoldFont, isItalicFont, withBoldItalic } from "@/lib/pdfeditor/fontMatch";
+import type { StandardFontKey } from "@/lib/pdfeditor/types";
 
 // pdfjs-dist doesn't re-export TextContent/TextItem from its top-level types
 // module — shapes mirrored here from display/api.d.ts (str/transform/width/
@@ -36,7 +37,22 @@ interface Props {
   activeTool: ToolId;
   pendingSignature: string | null;
   onAddOp: (op: PdfEditOp) => void;
+  onUpdateOp: (id: string, patch: Partial<PdfEditOp>) => void; // reposition/resize/reformat an existing op
+  onDeleteOp: (id: string) => void;
   onPlacementComplete: () => void; // called after a discrete placement (textbox/signature) so the toolbar can revert to "select"
+}
+
+function opBoundingBox(viewport: any, o: HighlightOp | TextBoxOp | ImageOp | DrawOp, scale: number) {
+  if (o.type === "highlight" || o.type === "image") return pdfRectToScreen(viewport, o.x, o.y, o.width, o.height);
+  if (o.type === "textbox") {
+    const [sx, sy] = viewport.convertToViewportPoint(o.x, o.y);
+    const approxWidth = o.text.length * o.fontSize * scale * 0.55;
+    return { left: sx, top: sy - o.fontSize * scale, width: approxWidth, height: o.fontSize * scale * 1.2 };
+  }
+  const screenPts = o.points.map((p) => viewport.convertToViewportPoint(p.x, p.y));
+  const xs = screenPts.map((p: number[]) => p[0]);
+  const ys = screenPts.map((p: number[]) => p[1]);
+  return { left: Math.min(...xs), top: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
 }
 
 function pdfRectToScreen(viewport: any, x: number, y: number, width: number, height: number) {
@@ -51,12 +67,81 @@ function pdfRectToScreen(viewport: any, x: number, y: number, width: number, hei
 const rgbCss = (c: [number, number, number]) => `rgb(${c[0] * 255}, ${c[1] * 255}, ${c[2] * 255})`;
 
 export default function PdfPageView({
-  pdfPage, pageIndex, scale, ops, activeTool, pendingSignature, onAddOp, onPlacementComplete,
+  pdfPage, pageIndex, scale, ops, activeTool, pendingSignature, onAddOp, onMoveOp, onDeleteOp, onPlacementComplete,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
+
+  // ── Annotation selection / drag / delete (select tool only) ─────────────
+  const [selectedOpId, setSelectedOpId] = useState<string | null>(null);
+  const dragStateRef = useRef<{ id: string; startClientX: number; startClientY: number; startX: number; startY: number; moved: boolean } | null>(null);
+  const [dragOffset, setDragOffset] = useState<{ id: string; dx: number; dy: number } | null>(null);
+
+  useEffect(() => {
+    if (activeTool !== "select") setSelectedOpId(null);
+  }, [activeTool]);
+
+  useEffect(() => {
+    if (!selectedOpId) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      const active = document.activeElement;
+      const isEditingText = active instanceof HTMLElement && (active.isContentEditable || active.tagName === "INPUT" || active.tagName === "TEXTAREA");
+      if (isEditingText) return;
+      onDeleteOp(selectedOpId);
+      setSelectedOpId(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedOpId, onDeleteOp]);
+
+  const beginDrag = (id: string, startX: number, startY: number, e: React.PointerEvent) => {
+    if (activeTool !== "select") return;
+    e.stopPropagation();
+    setSelectedOpId(id);
+    dragStateRef.current = { id, startClientX: e.clientX, startClientY: e.clientY, startX, startY, moved: false };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+  const onDragMove = (e: React.PointerEvent) => {
+    const ds = dragStateRef.current;
+    if (!ds) return;
+    const dx = e.clientX - ds.startClientX;
+    const dy = e.clientY - ds.startClientY;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) ds.moved = true;
+    setDragOffset({ id: ds.id, dx, dy });
+  };
+  const onDragEnd = (e: React.PointerEvent) => {
+    const ds = dragStateRef.current;
+    if (!ds) return;
+    dragStateRef.current = null;
+    setDragOffset(null);
+    if (!ds.moved) return;
+    const dx = e.clientX - ds.startClientX;
+    const dy = e.clientY - ds.startClientY;
+    const [origSx, origSy] = viewport.convertToViewportPoint(ds.startX, ds.startY);
+    const [newX, newY] = viewport.convertToPdfPoint(origSx + dx, origSy + dy);
+    onMoveOp(ds.id, newX, newY);
+  };
+
+  function DeleteBadge({ id }: { id: string }) {
+    if (selectedOpId !== id) return null;
+    return (
+      <button
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => { e.stopPropagation(); onDeleteOp(id); setSelectedOpId(null); }}
+        title="Delete"
+        style={{
+          position: "absolute", top: -8, right: -8, width: 18, height: 18, borderRadius: 9999,
+          background: "#1e293b", color: "white", fontSize: 12, lineHeight: "16px", textAlign: "center",
+          cursor: "pointer", border: "2px solid white", boxShadow: "0 1px 3px rgba(0,0,0,0.3)", padding: 0,
+        }}
+      >
+        ×
+      </button>
+    );
+  }
 
   const contentRef = useRef<PdfTextContent | null>(null);
   const textDivsRef = useRef<HTMLElement[]>([]);
@@ -81,46 +166,63 @@ export default function PdfPageView({
     let textLayer: any;
 
     (async () => {
-      setReady(false);
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      renderTask = pdfPage.render({ canvas, viewport });
-      await renderTask.promise;
-      if (cancelled) return;
+      try {
+        setReady(false);
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        renderTask = pdfPage.render({ canvas, viewport });
+        await renderTask.promise;
+        if (cancelled) return;
 
-      const rawContent = await pdfPage.getTextContent();
-      if (cancelled) return;
-      const content = rawContent as unknown as PdfTextContent;
-      contentRef.current = content;
-      const textItems = content.items.filter((it): it is PdfTextItem => "str" in it);
-      textItemsRef.current = textItems;
+        const rawContent = await pdfPage.getTextContent();
+        if (cancelled) return;
+        const content = rawContent as unknown as PdfTextContent;
+        contentRef.current = content;
+        const textItems = content.items.filter((it): it is PdfTextItem => "str" in it);
+        textItemsRef.current = textItems;
 
-      const container = textLayerRef.current;
-      if (!container) return;
-      container.innerHTML = "";
+        const container = textLayerRef.current;
+        if (!container) return;
+        container.innerHTML = "";
 
-      const { TextLayer } = await import("pdfjs-dist");
-      textLayer = new TextLayer({ textContentSource: rawContent, container, viewport });
-      await textLayer.render();
-      if (cancelled) return;
+        const { TextLayer } = await import("pdfjs-dist");
+        textLayer = new TextLayer({ textContentSource: rawContent, container, viewport });
+        await textLayer.render();
+        if (cancelled) return;
 
-      const textDivs = textLayer.textDivs as HTMLElement[];
-      textDivsRef.current = textDivs;
+        const textDivs = textLayer.textDivs as HTMLElement[];
+        textDivsRef.current = textDivs;
 
-      textDivs.forEach((span, i) => {
-        const item = textItems[i];
-        if (!item) return;
-        span.dataset.originalText = item.str;
-        span.style.cursor = "text";
-        span.addEventListener("click", () => {
-          if (activeToolRef.current !== "select") return;
-          startEdit(i);
+        textDivs.forEach((span, i) => {
+          const item = textItems[i];
+          if (!item) return;
+          span.dataset.originalText = item.str;
+          span.style.cursor = "text";
+          span.addEventListener("click", () => {
+            if (activeToolRef.current !== "select") return;
+            startEdit(i);
+          });
+          span.addEventListener("mouseenter", () => {
+            if (activeToolRef.current !== "select" || editingIndexRef.current === i) return;
+            span.style.outline = "1px dashed #94a3b8";
+            span.style.outlineOffset = "1px";
+          });
+          span.addEventListener("mouseleave", () => {
+            if (editingIndexRef.current === i) return;
+            span.style.outline = "";
+          });
         });
-      });
 
-      setReady(true);
+        setReady(true);
+      } catch (e: any) {
+        // The cleanup below cancels an in-flight render/text-layer task whenever this
+        // effect re-runs (e.g. page or zoom change before the previous render finished),
+        // which rejects their promises with a cancellation exception — expected, not a bug.
+        if (cancelled || e?.name === "RenderingCancelledException") return;
+        console.error("PdfPageView render error:", e);
+      }
     })();
 
     return () => {
@@ -171,12 +273,19 @@ export default function PdfPageView({
     span.style.backgroundColor = "#ffffff";
     span.style.outline = "1.5px solid #3b82f6";
     span.style.zIndex = "5";
-    span.focus();
-    const range = document.createRange();
-    range.selectNodeContents(span);
-    const sel = window.getSelection();
-    sel?.removeAllRanges();
-    sel?.addRange(range);
+    // Focusing a contentEditable element synchronously right after setting the
+    // attribute is unreliable in some browsers (notably Safari) — it silently
+    // no-ops before the DOM has processed the attribute change. Deferring to
+    // the next frame makes focus (and the caret) reliable everywhere.
+    requestAnimationFrame(() => {
+      if (editingIndexRef.current !== i) return; // user already moved on
+      span.focus();
+      const range = document.createRange();
+      range.selectNodeContents(span);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    });
 
     const commit = () => {
       span.removeEventListener("blur", commit);
@@ -308,14 +417,33 @@ export default function PdfPageView({
   };
 
   return (
-    <div className="relative bg-white shadow-md" style={{ width: viewport.width, height: viewport.height }}>
+    <div
+      className="relative bg-white shadow-md"
+      style={{ width: viewport.width, height: viewport.height }}
+      onClick={() => { if (activeTool === "select") setSelectedOpId(null); }}
+    >
       <canvas ref={canvasRef} className="absolute inset-0" />
 
       {/* Highlights render under the text so glyphs stay legible on top */}
       <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 1 }}>
         {pageOps.filter((o): o is HighlightOp => o.type === "highlight").map((o) => {
           const r = pdfRectToScreen(viewport, o.x, o.y, o.width, o.height);
-          return <div key={o.id} style={{ position: "absolute", left: r.left, top: r.top, width: r.width, height: r.height, backgroundColor: rgbCss(o.color), opacity: o.opacity }} />;
+          const selected = selectedOpId === o.id;
+          return (
+            <div
+              key={o.id}
+              onClick={(e) => { if (activeTool !== "select") return; e.stopPropagation(); setSelectedOpId(o.id); }}
+              style={{
+                position: "absolute", left: r.left, top: r.top, width: r.width, height: r.height,
+                backgroundColor: rgbCss(o.color), opacity: o.opacity,
+                pointerEvents: activeTool === "select" ? "auto" : "none",
+                cursor: activeTool === "select" ? "pointer" : undefined,
+                outline: selected ? "2px solid #3b82f6" : undefined, outlineOffset: 1,
+              }}
+            >
+              <DeleteBadge id={o.id} />
+            </div>
+          );
         })}
       </div>
 
@@ -325,25 +453,85 @@ export default function PdfPageView({
       <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 3 }}>
         {pageOps.filter((o): o is TextBoxOp => o.type === "textbox").map((o) => {
           const [sx, sy] = viewport.convertToViewportPoint(o.x, o.y);
+          const offset = dragOffset?.id === o.id ? dragOffset : null;
+          const selected = selectedOpId === o.id;
           return (
-            <div key={o.id} style={{ position: "absolute", left: sx, top: sy - o.fontSize * scale, fontSize: o.fontSize * scale, color: rgbCss(o.color), fontFamily: "Helvetica, Arial, sans-serif", whiteSpace: "pre" }}>
+            <div
+              key={o.id}
+              onPointerDown={(e) => beginDrag(o.id, o.x, o.y, e)}
+              onPointerMove={onDragMove}
+              onPointerUp={onDragEnd}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "absolute", left: sx, top: sy - o.fontSize * scale,
+                fontSize: o.fontSize * scale, color: rgbCss(o.color), fontFamily: "Helvetica, Arial, sans-serif", whiteSpace: "pre",
+                pointerEvents: activeTool === "select" ? "auto" : "none",
+                cursor: activeTool === "select" ? "grab" : undefined,
+                transform: offset ? `translate(${offset.dx}px, ${offset.dy}px)` : undefined,
+                outline: selected ? "1.5px dashed #3b82f6" : undefined, outlineOffset: 3,
+              }}
+            >
               {o.text}
+              <DeleteBadge id={o.id} />
             </div>
           );
         })}
         {pageOps.filter((o): o is ImageOp => o.type === "image").map((o) => {
           const r = pdfRectToScreen(viewport, o.x, o.y, o.width, o.height);
-          return <img key={o.id} src={o.pngDataUrl} alt="Signature" style={{ position: "absolute", left: r.left, top: r.top, width: r.width, height: r.height }} />;
+          const offset = dragOffset?.id === o.id ? dragOffset : null;
+          const selected = selectedOpId === o.id;
+          return (
+            <div
+              key={o.id}
+              onPointerDown={(e) => beginDrag(o.id, o.x, o.y, e)}
+              onPointerMove={onDragMove}
+              onPointerUp={onDragEnd}
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                position: "absolute", left: r.left, top: r.top, width: r.width, height: r.height,
+                pointerEvents: activeTool === "select" ? "auto" : "none",
+                cursor: activeTool === "select" ? "grab" : undefined,
+                transform: offset ? `translate(${offset.dx}px, ${offset.dy}px)` : undefined,
+                outline: selected ? "1.5px dashed #3b82f6" : undefined, outlineOffset: 3,
+              }}
+            >
+              <img src={o.pngDataUrl} alt="Signature" draggable={false} style={{ width: "100%", height: "100%", pointerEvents: "none" }} />
+              <DeleteBadge id={o.id} />
+            </div>
+          );
         })}
         <svg className="absolute inset-0" width={viewport.width} height={viewport.height}>
           {pageOps.filter((o): o is DrawOp => o.type === "draw").map((o) => {
             const pts = o.points.map((p) => viewport.convertToViewportPoint(p.x, p.y).join(",")).join(" ");
-            return <polyline key={o.id} points={pts} fill="none" stroke={rgbCss(o.color)} strokeWidth={o.strokeWidth * scale} strokeLinecap="round" strokeLinejoin="round" />;
+            const selected = selectedOpId === o.id;
+            return (
+              <g key={o.id}>
+                {selected && (
+                  <polyline points={pts} fill="none" stroke="#3b82f6" strokeWidth={o.strokeWidth * scale + 4} strokeLinecap="round" strokeLinejoin="round" opacity={0.3} style={{ pointerEvents: "none" }} />
+                )}
+                <polyline points={pts} fill="none" stroke={rgbCss(o.color)} strokeWidth={o.strokeWidth * scale} strokeLinecap="round" strokeLinejoin="round" style={{ pointerEvents: "none" }} />
+                {/* Wider invisible stroke so a thin freehand line is easy to click for selection */}
+                <polyline
+                  points={pts} fill="none" stroke="transparent" strokeWidth={Math.max(14, o.strokeWidth * scale + 10)}
+                  strokeLinecap="round" strokeLinejoin="round"
+                  style={{ pointerEvents: activeTool === "select" ? "stroke" : "none", cursor: activeTool === "select" ? "pointer" : undefined }}
+                  onClick={(e) => { e.stopPropagation(); setSelectedOpId(o.id); }}
+                />
+              </g>
+            );
           })}
           {livePreview?.kind === "path" && (
             <polyline points={livePreview.points!.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke="rgb(230,38,38)" strokeWidth={1.5 * scale} strokeLinecap="round" strokeLinejoin="round" />
           )}
         </svg>
+        {selectedOpId && pageOps.filter((o) => o.id === selectedOpId && o.type === "draw").map((o) => {
+          const box = opBoundingBox(viewport, o as DrawOp, scale);
+          return (
+            <div key={`badge-${o.id}`} style={{ position: "absolute", left: box.left, top: box.top, width: box.width, height: box.height, pointerEvents: "none" }}>
+              <DeleteBadge id={o.id} />
+            </div>
+          );
+        })}
       </div>
 
       {/* Interaction layer for drag/click-based tools */}

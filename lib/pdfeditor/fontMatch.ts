@@ -33,3 +33,32 @@ export function matchStandardFont(fontFamily: string | undefined): StandardFontK
   if (italic) return "Helvetica-Oblique";
   return "Helvetica";
 }
+
+// Bold/italic toggles for the "Add text box" tool — read/derived off the
+// StandardFontKey itself rather than tracked as separate booleans, so there's
+// one source of truth for which pdf-lib Standard-14 font gets embedded.
+export function isBoldFont(key: StandardFontKey): boolean {
+  return key.includes("Bold");
+}
+export function isItalicFont(key: StandardFontKey): boolean {
+  return key.includes("Oblique") || key.includes("Italic");
+}
+export function withBoldItalic(key: StandardFontKey, bold: boolean, italic: boolean): StandardFontKey {
+  const family = key.startsWith("Courier") ? "Courier" : key.startsWith("Times") ? "Times" : "Helvetica";
+  if (family === "Courier") {
+    if (bold && italic) return "Courier-BoldOblique";
+    if (bold) return "Courier-Bold";
+    if (italic) return "Courier-Oblique";
+    return "Courier";
+  }
+  if (family === "Times") {
+    if (bold && italic) return "Times-BoldItalic";
+    if (bold) return "Times-Bold";
+    if (italic) return "Times-Italic";
+    return "TimesRoman";
+  }
+  if (bold && italic) return "Helvetica-BoldOblique";
+  if (bold) return "Helvetica-Bold";
+  if (italic) return "Helvetica-Oblique";
+  return "Helvetica";
+}

@@ -65,6 +65,16 @@ export async function applyEdits(originalBytes: Uint8Array, ops: PdfEditOp[]): P
     } else if (op.type === "textbox") {
       const font = await getFont(op.font);
       page.drawText(op.text, { x: op.x, y: op.y, size: op.fontSize, font, color: rgb(...op.color) });
+      if (op.underline) {
+        const width = font.widthOfTextAtSize(op.text, op.fontSize);
+        const underlineY = op.y - op.fontSize * 0.12;
+        page.drawLine({
+          start: { x: op.x, y: underlineY },
+          end: { x: op.x + width, y: underlineY },
+          thickness: Math.max(0.5, op.fontSize * 0.05),
+          color: rgb(...op.color),
+        });
+      }
     } else if (op.type === "draw") {
       for (let i = 1; i < op.points.length; i++) {
         page.drawLine({

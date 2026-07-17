@@ -4,7 +4,7 @@
 // for auto-fill, then generate shareable unauthenticated client-fill links.
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, type DragEvent } from "react";
 import {
   Loader2, Upload, FileText, Plus, Copy, Check, Trash2, ExternalLink, X, Link2, Lock, RefreshCw, Bold, Italic, List,
   ChevronUp, ChevronDown,
@@ -22,11 +22,6 @@ interface TemplateField {
   joined_to_field_id: string | null;
   display_order: number;
 }
-// A field annotated with which document it came from — used to offer
-// "join with..." candidates from OTHER uploaded documents in this project,
-// which is the whole point (preventing the client re-entering the same
-// answer once per document).
-interface FlatField extends TemplateField { templateId: string; templateName: string; }
 interface Template {
   id: string;
   name: string;
@@ -81,8 +76,12 @@ export default function DocumentTemplatesTab({ recordId }: Props) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Called both on mount and after every save/join/upload/revoke — only the
+  // initial call should show the full-tab spinner (`loading` starts true).
+  // Re-fetching afterwards must NOT flip it back to true, or every join/save
+  // would unmount the whole tab to a bare spinner and swallow the "Saved"
+  // checkmark before the user ever sees it.
   const load = useCallback(async () => {
-    setLoading(true);
     const res = await fetch(`/api/document-templates/list?projectId=${recordId}`);
     const json = await res.json();
     setTemplates(json.templates || []);
@@ -148,10 +147,6 @@ export default function DocumentTemplatesTab({ recordId }: Props) {
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 1500);
   };
-
-  const allFields: FlatField[] = templates.flatMap(t =>
-    t.fields.map(f => ({ ...f, templateId: t.id, templateName: t.name }))
-  );
 
   if (loading) return <div className="flex justify-center p-20"><Loader2 className="animate-spin text-slate-300" /></div>;
 
@@ -257,7 +252,81 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
   const [downloadFilename, setDownloadFilename] = useState(template.download_filename || template.name);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  // Which row's "link a field" search popover is open, and its search text.
+  const [linkFieldId, setLinkFieldId] = useState<string | null>(null);
+  const [linkQuery, setLinkQuery] = useState("");
   const descriptionRef = useRef<HTMLTextAreaElement>(null);
+
+  // Aliased fields (joined_to_field_id set) never render their own row —
+  // they show up as a chip on their root's row instead. Reorder only
+  // operates over what's visible. Linking is scoped to this one document:
+  // fields never leave `fields` to search across other templates.
+  const visibleFields = fields.filter(f => !f.joined_to_field_id);
+  const chipsFor = (fieldId: string) => fields.filter(f => f.joined_to_field_id === fieldId);
+  // A field can only be picked to link if it's currently standalone (not
+  // itself an alias, and not already a root with its own followers) — that
+  // keeps every link/unlink a single-field mutation with no multi-field
+  // group-merge case to reconcile.
+  const linkCandidates = (excludeId: string) => fields.filter(f =>
+    f.id !== excludeId && !f.joined_to_field_id && !fields.some(other => other.joined_to_field_id === f.id)
+  );
+
+  const update = (id: string, patch: Partial<TemplateField>) =>
+    setFields(prev => prev.map(f => f.id === id ? { ...f, ...patch } : f));
+
+  const moveField = (fieldId: string, dir: -1 | 1) => {
+    const vIdx = visibleFields.findIndex(f => f.id === fieldId);
+    const target = visibleFields[vIdx + dir];
+    if (!target) return;
+    setFields(prev => {
+      const next = [...prev];
+      const i = next.findIndex(f => f.id === fieldId);
+      const j = next.findIndex(f => f.id === target.id);
+      [next[i], next[j]] = [next[j], next[i]];
+      return next;
+    });
+  };
+
+  // Optimistic: the row updates immediately: the API call happens in the
+  // background and only touches local state again if it fails.
+  const handleLink = async (memberFieldId: string, rootFieldId: string) => {
+    update(memberFieldId, { joined_to_field_id: rootFieldId });
+    const res = await fetch("/api/document-templates/fields/join", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fieldId: memberFieldId, joinTargetFieldId: rootFieldId }),
+    });
+    if (!res.ok) update(memberFieldId, { joined_to_field_id: null });
+  };
+  const handleUnlink = async (memberFieldId: string) => {
+    const prevRoot = fields.find(f => f.id === memberFieldId)?.joined_to_field_id ?? null;
+    update(memberFieldId, { joined_to_field_id: null });
+    const res = await fetch("/api/document-templates/fields/join", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fieldId: memberFieldId, joinTargetFieldId: null }),
+    });
+    if (!res.ok) update(memberFieldId, { joined_to_field_id: prevRoot });
+  };
+
+  const handleChipDragStart = (e: DragEvent, fieldId: string) => {
+    e.dataTransfer.setData("text/plain", fieldId);
+    e.dataTransfer.effectAllowed = "move";
+  };
+  // Dropping a dragged chip onto a (different) field's row merges it there.
+  const handleRowDrop = (e: DragEvent, rootId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const draggedId = e.dataTransfer.getData("text/plain");
+    if (draggedId && draggedId !== rootId) handleLink(draggedId, rootId);
+  };
+  // Dropping anywhere else in the list (not on a specific row —
+  // handleRowDrop stops propagation so this only fires for "empty space")
+  // unlinks the dragged chip, returning it to its own row.
+  const handleContainerDrop = (e: DragEvent) => {
+    const draggedId = e.dataTransfer.getData("text/plain");
+    if (draggedId) handleUnlink(draggedId);
+  };
 
   // Wraps the current selection in markdown syntax (or inserts a
   // placeholder if nothing's selected), matching the toolbar buttons below.
@@ -279,9 +348,6 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
   useEffect(() => { setFields(template.fields); }, [template.fields]);
   useEffect(() => { setDescription(template.description || ""); }, [template.description]);
   useEffect(() => { setDownloadFilename(template.download_filename || template.name); }, [template.download_filename, template.name]);
-
-  const update = (id: string, patch: Partial<TemplateField>) =>
-    setFields(prev => prev.map(f => f.id === id ? { ...f, ...patch } : f));
 
   const handleSave = async () => {
     setSaving(true);
@@ -360,42 +426,94 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
       {fields.length === 0 ? (
         <p className="text-[11px] text-slate-300 italic mb-3">No {"{{tags}}"} detected in this document.</p>
       ) : (
-        <div className="space-y-3 mb-3">
-          {fields.map(f => (
-            <div key={f.id} className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
-              <code className="sm:col-span-2 text-[11px] text-indigo-500 truncate">{`{{${f.tag_key}}}`}</code>
-              <input value={f.label} onChange={e => update(f.id, { label: e.target.value })}
-                placeholder="Label"
-                className="sm:col-span-3 px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
-              <select value={f.field_type} onChange={e => update(f.id, { field_type: e.target.value as TemplateField["field_type"] })}
-                className="sm:col-span-2 px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none bg-white">
-                {FIELD_TYPES.map(t => <option key={t} value={t}>{FIELD_TYPE_LABELS[t]}</option>)}
-              </select>
-              <select value={f.auto_fill_field_id || ""} onChange={e => update(f.id, { auto_fill_field_id: e.target.value || null })}
-                className="sm:col-span-3 px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none bg-white">
-                <option value="">No auto-fill</option>
-                {customFields.map(cf => <option key={cf.id} value={cf.id}>Auto: {cf.label}</option>)}
-              </select>
-              <label className="sm:col-span-2 flex items-center gap-1.5 text-[11px] text-slate-500 cursor-pointer">
-                <input type="checkbox" checked={f.is_required} onChange={e => update(f.id, { is_required: e.target.checked })} />
-                Required
-              </label>
-              {(f.field_type === "select" || f.field_type === "multiselect") && (
-                <input
-                  value={Array.isArray(f.select_options) ? f.select_options.join(", ") : (f.select_options || "")}
-                  onChange={e => update(f.id, { select_options: e.target.value as any })}
-                  placeholder="Options (comma-separated)"
-                  className="sm:col-span-12 px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
-              )}
-              {!f.auto_fill_field_id && (
-                <input
-                  value={f.default_value || ""}
-                  onChange={e => update(f.id, { default_value: e.target.value })}
-                  placeholder="Default value if the client leaves this blank (optional)"
-                  className="sm:col-span-12 px-3 py-2 border border-dashed border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
-              )}
-            </div>
-          ))}
+        <div className="space-y-2 mb-3" onDragOver={e => e.preventDefault()} onDrop={handleContainerDrop}>
+          {visibleFields.map((f, vIdx) => {
+            const chips = chipsFor(f.id);
+            return (
+              <div key={f.id} className="space-y-1.5" onDragOver={e => e.preventDefault()} onDrop={e => handleRowDrop(e, f.id)}>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex flex-col shrink-0">
+                    <button onClick={() => moveField(f.id, -1)} disabled={vIdx === 0} title="Move up"
+                      className="text-slate-300 hover:text-indigo-600 disabled:opacity-20 transition-colors"><ChevronUp size={12} /></button>
+                    <button onClick={() => moveField(f.id, 1)} disabled={vIdx === visibleFields.length - 1} title="Move down"
+                      className="text-slate-300 hover:text-indigo-600 disabled:opacity-20 transition-colors"><ChevronDown size={12} /></button>
+                  </div>
+                  <code className="text-[11px] text-indigo-500 shrink-0 max-w-[120px] truncate" title={f.tag_key}>{`{{${f.tag_key}}}`}</code>
+                  <input value={f.label} onChange={e => update(f.id, { label: e.target.value })}
+                    placeholder="Label"
+                    className="flex-1 min-w-[140px] px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
+                  <select value={f.field_type} onChange={e => update(f.id, { field_type: e.target.value as TemplateField["field_type"] })}
+                    className="w-44 shrink-0 px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none bg-white">
+                    {FIELD_TYPES.map(t => <option key={t} value={t}>{FIELD_TYPE_LABELS[t]}</option>)}
+                  </select>
+                  <select value={f.auto_fill_field_id || ""} onChange={e => update(f.id, { auto_fill_field_id: e.target.value || null })}
+                    className="w-40 shrink-0 px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none bg-white">
+                    <option value="">No auto-fill</option>
+                    {customFields.map(cf => <option key={cf.id} value={cf.id}>Auto: {cf.label}</option>)}
+                  </select>
+                  <label className="shrink-0 flex items-center gap-1.5 text-[11px] text-slate-500 cursor-pointer">
+                    <input type="checkbox" checked={f.is_required} onChange={e => update(f.id, { is_required: e.target.checked })} />
+                    Required
+                  </label>
+
+                  {chips.map(c => (
+                    <span key={c.id} draggable onDragStart={e => handleChipDragStart(e, c.id)}
+                      title="Drag out, or click × to unlink"
+                      className="shrink-0 flex items-center gap-1 pl-2 pr-1 py-1 bg-indigo-50 border border-indigo-100 rounded-full text-[10px] text-indigo-600 cursor-grab active:cursor-grabbing">
+                      <code>{`{{${c.tag_key}}}`}</code>
+                      <button onClick={() => handleUnlink(c.id)} className="p-0.5 hover:text-red-500 rounded-full"><X size={10} /></button>
+                    </span>
+                  ))}
+
+                  <div className="relative shrink-0">
+                    <button onClick={() => { setLinkFieldId(linkFieldId === f.id ? null : f.id); setLinkQuery(""); }}
+                      title="Link with another field in this document so the client is only asked once"
+                      className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-[10px] font-bold transition-colors ${linkFieldId === f.id ? "bg-indigo-100 text-indigo-600" : "text-slate-400 hover:text-indigo-600 hover:bg-slate-50"}`}>
+                      <Link2 size={12} /> Link
+                    </button>
+                    {linkFieldId === f.id && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setLinkFieldId(null)} />
+                        <div className="absolute right-0 z-20 mt-1 w-72 bg-white border border-slate-200 rounded-2xl shadow-xl p-2">
+                          <input autoFocus value={linkQuery} onChange={e => setLinkQuery(e.target.value)}
+                            placeholder="Search fields to link..."
+                            className="w-full px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400 mb-1" />
+                          <div className="max-h-48 overflow-y-auto">
+                            {linkCandidates(f.id)
+                              .filter(c => !linkQuery.trim() || c.label.toLowerCase().includes(linkQuery.toLowerCase()) || c.tag_key.toLowerCase().includes(linkQuery.toLowerCase()))
+                              .map(c => (
+                                <button key={c.id} onClick={() => { handleLink(c.id, f.id); setLinkFieldId(null); setLinkQuery(""); }}
+                                  className="w-full text-left px-3 py-2 text-[12px] text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-xl truncate">
+                                  <code className="text-indigo-400">{`{{${c.tag_key}}}`}</code> — {c.label}
+                                </button>
+                              ))}
+                            {linkCandidates(f.id).length === 0 && (
+                              <p className="px-3 py-2 text-[11px] text-slate-300">No other fields in this document to link</p>
+                            )}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {(f.field_type === "select" || f.field_type === "multiselect") && (
+                  <input
+                    value={Array.isArray(f.select_options) ? f.select_options.join(", ") : (f.select_options || "")}
+                    onChange={e => update(f.id, { select_options: e.target.value as any })}
+                    placeholder="Options (comma-separated)"
+                    className="w-full ml-6 px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
+                )}
+                {!f.auto_fill_field_id && (
+                  <input
+                    value={f.default_value || ""}
+                    onChange={e => update(f.id, { default_value: e.target.value })}
+                    placeholder="Default value if the client leaves this blank (optional)"
+                    className="w-full ml-6 px-3 py-2 border border-dashed border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
