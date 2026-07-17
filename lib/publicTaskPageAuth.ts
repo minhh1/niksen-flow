@@ -42,5 +42,20 @@ export async function loadPageAndAuthorize(admin: any, pageId: string, userId: s
     targetUserIds = (members || []).map((m: any) => m.user_id);
   }
 
-  return { page, isAdmin, targetUserIds };
+  // What the public page's header shows after "Tasks - " — the team name
+  // for a team-scoped page, the creator's name for a self-scoped page, or
+  // the company name for a company-wide page.
+  let scopeName = "";
+  if (page.scope === "team") {
+    const { data: team } = await admin.from("teams").select("team_name").eq("id", page.team_id).maybeSingle();
+    scopeName = team?.team_name || "Team";
+  } else if (page.scope === "self") {
+    const { data: creator } = await admin.from("profiles").select("full_name, email").eq("id", page.created_by).maybeSingle();
+    scopeName = creator?.full_name || creator?.email || "Me";
+  } else {
+    const { data: company } = await admin.from("companies").select("name").eq("id", page.company_id).maybeSingle();
+    scopeName = company?.name || "Company";
+  }
+
+  return { page, isAdmin, targetUserIds, scopeName };
 }

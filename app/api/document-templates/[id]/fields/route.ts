@@ -9,7 +9,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { authorizeCompanyMember } from "@/lib/documentTemplateAuth";
 
-const VALID_TYPES = new Set(["text", "date", "number", "currency", "select"]);
+const VALID_TYPES = new Set(["text", "date", "number", "currency", "select", "multiselect"]);
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: templateId } = await params;
@@ -43,7 +43,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     const { error } = await admin.from("document_template_fields").update({
       label: String(f.label || "").trim() || f.tag_key || "Field",
       field_type: fieldType,
-      select_options: fieldType === "select" ? (f.select_options ?? null) : null,
+      select_options: (fieldType === "select" || fieldType === "multiselect") ? (f.select_options ?? null) : null,
       is_required: !!f.is_required,
       auto_fill_field_id: f.auto_fill_field_id || null,
       default_value: String(f.default_value || "").trim() || null,

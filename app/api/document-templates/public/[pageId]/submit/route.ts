@@ -60,12 +60,22 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pag
   const templateIds = (joins || []).map((j: any) => j.template_id);
   if (!templateIds.length) return NextResponse.json({ error: "This page has no templates" }, { status: 400 });
 
+  // "Generate this document only" scopes rendering (and required-field
+  // validation below) to a subset of the page's bundled templates; omitting
+  // templateIds (or sending an empty/invalid one) falls back to generating
+  // everything, matching the original "Generate all documents" behavior.
+  const requestedTemplateIds: string[] = Array.isArray(body?.templateIds) ? body.templateIds : [];
+  const targetTemplateIds = requestedTemplateIds.length
+    ? templateIds.filter((id: string) => requestedTemplateIds.includes(id))
+    : templateIds;
+  if (!targetTemplateIds.length) return NextResponse.json({ error: "No valid document selected" }, { status: 400 });
+
   const { data: templates } = await admin
-    .from("document_templates").select("id, name, storage_path").in("id", templateIds);
+    .from("document_templates").select("id, name, download_filename, storage_path").in("id", targetTemplateIds);
 
   const { data: fieldRows } = await admin
     .from("document_template_fields")
-    .select("template_id, tag_key, label, is_required, auto_fill_field_id, default_value")
+    .select("template_id, tag_key, label, is_required, auto_fill_field_id")
     .in("template_id", templateIds);
 
   // ── Resolve auto-fill values from the project's custom field data ──
@@ -83,26 +93,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pag
   }
 
   // Effective value for a tag: "Not applicable" always wins (forces blank
-  // even over stale submitted text), then submitted, then its auto-fill
-  // value (real project data), then its admin-set default, else "".
-  const effective = (tagKey: string, autoFillFieldId: string | null, defaultValue: string | null): string => {
+  // even over stale submitted text), then whatever the client actually
+  // submitted (which already started out pre-filled with the auto-fill or
+  // default value — see the GET route — so this is what they chose to keep,
+  // edit, or delete), else its auto-fill value as a last-resort fallback if
+  // the client genuinely never touched the field. Default values are NOT
+  // reapplied here — they only ever pre-fill the input once; if the client
+  // deletes that text without marking "Not applicable", it must stay blank
+  // rather than silently reappearing in the generated document.
+  const effective = (tagKey: string, autoFillFieldId: string | null): string => {
     if (naFields.has(tagKey)) return "";
     const s = submitted[tagKey];
-    if (s !== undefined && s !== null && String(s) !== "") return String(s);
+    if (s !== undefined && s !== null) return String(s);
     if (autoFillFieldId && autoFillValues[autoFillFieldId] != null) return String(autoFillValues[autoFillFieldId]);
-    if (defaultValue) return String(defaultValue);
     return "";
   };
 
   // ── Validate required fields (de-duplicated by tag_key) ───────────
   // A field marked "Not applicable" satisfies its own requiredness — that's
-  // the whole point of the button.
+  // the whole point of the button. Scoped to the documents actually being
+  // generated — a required field exclusive to a document that isn't part of
+  // this "generate this document only" request shouldn't block it.
   const seenReq = new Set<string>();
-  for (const f of fieldRows || []) {
+  for (const f of (fieldRows || []).filter((f: any) => targetTemplateIds.includes(f.template_id))) {
     if (!f.is_required || seenReq.has(f.tag_key)) continue;
     seenReq.add(f.tag_key);
     if (naFields.has(f.tag_key)) continue;
-    if (!effective(f.tag_key, f.auto_fill_field_id, f.default_value)) {
+    if (!effective(f.tag_key, f.auto_fill_field_id)) {
       return NextResponse.json({ error: `"${f.label}" is required` }, { status: 400 });
     }
   }
@@ -128,7 +145,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pag
     // Build this template's substitution map from its own fields.
     const data: Record<string, string> = {};
     for (const f of (fieldRows || []).filter((f: any) => f.template_id === tpl.id)) {
-      data[f.tag_key] = effective(f.tag_key, f.auto_fill_field_id, f.default_value);
+      data[f.tag_key] = effective(f.tag_key, f.auto_fill_field_id);
     }
 
     let out: Buffer;
@@ -166,7 +183,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pag
       storage_path: storagePath,
     });
 
-    generated.push({ name: safeFileName(tpl.name), storagePath, buffer: out });
+    generated.push({ name: safeFileName(tpl.download_filename || tpl.name), storagePath, buffer: out });
   }
 
   // ── Signed download URLs ─────────────────────────────────────────

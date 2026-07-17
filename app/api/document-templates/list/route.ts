@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
 
   const { data: templates } = await admin
     .from("document_templates")
-    .select("id, name, description, storage_path, created_at, fields:document_template_fields(id, tag_key, label, field_type, select_options, is_required, auto_fill_field_id, default_value, display_order)")
+    .select("id, name, description, download_filename, storage_path, created_at, fields:document_template_fields(id, tag_key, label, field_type, select_options, is_required, auto_fill_field_id, default_value, display_order)")
     .eq("company_id", companyId)
     .eq("project_id", projectId)
     .order("created_at", { ascending: false });
@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
 
   const { data: pagesRaw } = await admin
     .from("document_fill_pages")
-    .select("id, title, expires_at, is_active, access_code, created_at, templates:document_fill_page_templates(template_id)")
+    .select("id, title, client_name, expires_at, is_active, access_code, created_at, templates:document_fill_page_templates(template_id)")
     .eq("company_id", companyId)
     .eq("project_id", projectId)
     .order("created_at", { ascending: false });
@@ -40,6 +40,7 @@ export async function GET(req: NextRequest) {
   const pages = (pagesRaw || []).map((p: any) => ({
     id: p.id,
     title: p.title,
+    clientName: p.client_name,
     expiresAt: p.expires_at,
     isActive: p.is_active,
     accessCode: p.access_code,

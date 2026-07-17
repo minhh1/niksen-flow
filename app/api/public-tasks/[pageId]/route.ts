@@ -8,6 +8,7 @@ import { createSupabaseServerClient } from "@/lib/supabaseServer";
 import { createClient } from "@supabase/supabase-js";
 import { loadPageAndAuthorize } from "@/lib/publicTaskPageAuth";
 import { logTaskActivity } from "@/lib/taskActivityLog";
+import { filterTasksByProjectAccess } from "@/lib/projectAccess";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ pageId: string }> }) {
   const { pageId } = await params;
@@ -21,9 +22,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
 
   const auth = await loadPageAndAuthorize(admin, pageId, user.id);
   if (auth.error) return auth.error;
-  const { page, targetUserIds } = auth;
+  const { page, targetUserIds, isAdmin, scopeName } = auth;
 
-  const { data: tasks } = await admin
+  const { data: rawTasks } = await admin
     .from("tasks")
     .select(`
       id, name, due_date, due_time, is_completed, estimated_cost, date_entered, assignee_id, project_id,
@@ -38,6 +39,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
     .eq("company_id", page.company_id)
     .is("deleted_at", null)
     .order("due_date", { ascending: true, nullsFirst: false });
+
+  // Being on the same team-scoped page doesn't grant access to a project
+  // that's restricted to specific teams/members — filter those out for
+  // whoever is actually viewing the page (not the task's assignee).
+  // Admins can already see everything else in the app, so they're exempt.
+  const tasks = isAdmin ? rawTasks : await filterTasksByProjectAccess(admin, user.id, rawTasks || []);
 
   // ── Follow-up log, grouped per task ──────────────────────────────
   let followUpsByTask: Record<string, { id: string; followedUpAt: string }[]> = {};
@@ -127,6 +134,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
 
   return NextResponse.json({
     title: page.title,
+    scopeName,
     scope: page.scope,
     columns: page.columns,
     companyId: page.company_id,

@@ -5,12 +5,20 @@
 // existing, is_active = true, and expires_at not in the past (see loadActiveFillPage).
 // Uses the service-role admin client throughout because there is no user session.
 //
-// Returns the page title + the merged, de-duplicated (by tag_key) list of fields
-// across all the page's joined templates, pre-filling any auto_fill_field_id-bound
-// value from the project's custom field data.
+// Returns the page title + a computed `heading` ("Documents Template" or
+// "Documents Template - {clientName}") + the merged, de-duplicated (by
+// tag_key) list of fields across all the page's joined templates, pre-
+// filling any auto_fill_field_id-bound value from the project's custom
+// field data. Each document also carries `fieldTagKeys` — which of the
+// deduped fields belong to it — so the client page can show one tab per
+// document with just its own fields.
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { loadActiveFillPage, codeMatches } from "@/lib/documentFillPageGate";
+
+function computeHeading(clientName: string | null): string {
+  return clientName ? `Documents Template - ${clientName}` : "Documents Template";
+}
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ pageId: string }> }) {
   const { pageId } = await params;
@@ -26,9 +34,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
   // Access-code gate — a second, independent check on top of expiry/active.
   // No code supplied yet: tell the client a code is needed without leaking
   // the field list. Wrong code: 401. Both cases skip the rest of this route.
+  const heading = computeHeading(page.client_name);
+
   if (page.access_code) {
     const code = req.nextUrl.searchParams.get("code");
-    if (!code) return NextResponse.json({ title: page.title, requiresCode: true, documents: [], fields: [] });
+    if (!code) return NextResponse.json({ title: page.title, heading, requiresCode: true, documents: [], fields: [] });
     if (!codeMatches(page, code)) {
       return NextResponse.json({ error: "Incorrect access code" }, { status: 401 });
     }
@@ -39,12 +49,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
     .from("document_fill_page_templates").select("template_id").eq("page_id", pageId);
   const templateIds = (joins || []).map((j: any) => j.template_id);
   if (!templateIds.length) {
-    return NextResponse.json({ title: page.title, requiresCode: false, documents: [], fields: [] });
+    return NextResponse.json({ title: page.title, heading, requiresCode: false, documents: [], fields: [] });
   }
 
   const { data: templateRows } = await admin
     .from("document_templates").select("id, name, description").in("id", templateIds);
-  const documents = (templateRows || []).map((t: any) => ({ id: t.id, name: t.name, description: t.description }));
 
   const { data: fieldRows } = await admin
     .from("document_template_fields")
@@ -90,5 +99,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
     });
   }
 
-  return NextResponse.json({ title: page.title, requiresCode: false, documents, fields });
+  // Which deduped tag keys belong to each document — powers one tab per
+  // document on the client page, each showing only its own fields (a tag
+  // shared across documents just shows up on every tab that uses it, kept
+  // in sync since they all read/write the same `values[tagKey]`).
+  const documents = (templateRows || []).map((t: any) => ({
+    id: t.id,
+    name: t.name,
+    description: t.description,
+    fieldTagKeys: [...new Set((fieldRows || []).filter((f: any) => f.template_id === t.id).map((f: any) => f.tag_key))],
+  }));
+
+  return NextResponse.json({ title: page.title, heading, requiresCode: false, documents, fields });
 }

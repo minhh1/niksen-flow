@@ -35,7 +35,7 @@ interface FormOptions {
   teams: { id: string; team_name: string }[];
   assignees: { id: string; name: string }[];
 }
-interface PageData { title: string; scope: string; columns: string[]; companyId: string; tabs: Tab[]; formOptions: FormOptions; }
+interface PageData { title: string; scopeName: string; scope: string; columns: string[]; companyId: string; tabs: Tab[]; formOptions: FormOptions; }
 
 // Columns whose content can run long (project names, people's names) should
 // wrap within their cell instead of forcing the table wider — everything
@@ -305,7 +305,7 @@ export default function PublicTaskPage() {
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6">
       <div className="max-w-[1600px] mx-auto space-y-4">
         <div className="flex items-center justify-between flex-wrap gap-2">
-          <h1 className="text-[16px] font-bold text-slate-800">{data.title}</h1>
+          <h1 className="text-[16px] font-bold text-slate-800">Tasks - {data.scopeName}</h1>
           <div className="flex items-center gap-2">
             {isEmbedded && (
               <button onClick={openInNewTab} title="Open in new tab"
@@ -331,7 +331,7 @@ export default function PublicTaskPage() {
                 className={`shrink-0 px-4 py-1.5 rounded-full text-[11px] font-bold transition-colors ${
                   activeTab === tab.userId ? "bg-slate-900 text-white" : "bg-white text-slate-500 border border-slate-200 hover:border-slate-300"
                 }`}>
-                {tab.userName} <span className="opacity-60">({tab.tasks.length})</span>
+                {tab.userName} <span className="opacity-60">({tab.tasks.filter(t => !t.isCompleted).length})</span>
               </button>
             ))}
           </div>

@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid body" }, { status: 400 });
   }
 
-  const { title, projectId, expiresAt, templateIds, accessCode } = body;
+  const { title, projectId, expiresAt, templateIds, accessCode, clientName } = body;
   if (!title?.trim()) return NextResponse.json({ error: "Title is required" }, { status: 400 });
   if (!projectId) return NextResponse.json({ error: "projectId is required" }, { status: 400 });
   if (!Array.isArray(templateIds) || templateIds.length === 0) {
@@ -43,6 +43,7 @@ export async function POST(req: NextRequest) {
     title: title.trim(),
     expires_at: expiresAt || null,
     access_code: accessCode?.trim() || null,
+    client_name: clientName?.trim() || null,
     created_by: user.id,
   }).select("id").single();
 

@@ -6,14 +6,14 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
-  Loader2, Upload, FileText, Plus, Copy, Check, Trash2, ExternalLink, X, Link2, Lock, RefreshCw,
+  Loader2, Upload, FileText, Plus, Copy, Check, Trash2, ExternalLink, X, Link2, Lock, RefreshCw, Bold, Italic, List,
 } from "lucide-react";
 
 interface TemplateField {
   id: string;
   tag_key: string;
   label: string;
-  field_type: "text" | "date" | "number" | "currency" | "select";
+  field_type: "text" | "date" | "number" | "currency" | "select" | "multiselect";
   select_options: string[] | null;
   is_required: boolean;
   auto_fill_field_id: string | null;
@@ -24,6 +24,7 @@ interface Template {
   id: string;
   name: string;
   description: string | null;
+  download_filename: string | null;
   storage_path: string;
   created_at: string;
   fields: TemplateField[];
@@ -31,6 +32,7 @@ interface Template {
 interface FillPage {
   id: string;
   title: string;
+  clientName: string | null;
   expiresAt: string | null;
   isActive: boolean;
   accessCode: string | null;
@@ -48,7 +50,11 @@ interface CustomField { id: string; field_key: string; label: string; field_type
 
 interface Props { recordId: string; companyId: string; }
 
-const FIELD_TYPES: TemplateField["field_type"][] = ["text", "date", "number", "currency", "select"];
+const FIELD_TYPES: TemplateField["field_type"][] = ["text", "date", "number", "currency", "select", "multiselect"];
+const FIELD_TYPE_LABELS: Record<TemplateField["field_type"], string> = {
+  text: "text", date: "date", number: "number", currency: "currency",
+  select: "dropdown (one choice)", multiselect: "checkboxes (multiple choices)",
+};
 
 function defaultExpiry(): string {
   const d = new Date();
@@ -62,6 +68,7 @@ export default function DocumentTemplatesTab({ recordId }: Props) {
   const [pages, setPages] = useState<FillPage[]>([]);
   const [customFields, setCustomFields] = useState<CustomField[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -79,23 +86,40 @@ export default function DocumentTemplatesTab({ recordId }: Props) {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleFile = async (file: File) => {
-    setUploadError(null);
+  const uploadOne = async (file: File): Promise<string | null> => {
     const lower = file.name.toLowerCase();
     if (!lower.endsWith(".docx") && !lower.endsWith(".doc")) {
-      setUploadError("Please upload a .docx or .doc file.");
-      return;
+      return `"${file.name}": please upload a .docx or .doc file.`;
     }
-    setUploading(true);
     const form = new FormData();
     form.append("file", file);
     form.append("projectId", recordId);
     form.append("name", file.name.replace(/\.docx?$/i, ""));
     const res = await fetch("/api/document-templates/upload", { method: "POST", body: form });
     const json = await res.json();
+    if (!res.ok) return `"${file.name}": ${json.error || "upload failed"}`;
+    return null;
+  };
+
+  // Uploads sequentially (not in parallel) — the .doc -> .docx conversion
+  // step shells out to a single-threaded LibreOffice instance server-side,
+  // so parallel uploads would just queue up behind each other anyway.
+  const handleFiles = async (files: FileList | File[]) => {
+    const list = Array.from(files);
+    if (!list.length) return;
+    setUploadError(null);
+    setUploading(true);
+    setUploadProgress({ done: 0, total: list.length });
+    const errors: string[] = [];
+    for (let i = 0; i < list.length; i++) {
+      const err = await uploadOne(list[i]);
+      if (err) errors.push(err);
+      setUploadProgress({ done: i + 1, total: list.length });
+    }
     setUploading(false);
+    setUploadProgress(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
-    if (!res.ok) { setUploadError(json.error || "Upload failed"); return; }
+    if (errors.length) setUploadError(errors.join(" · "));
     load();
   };
 
@@ -125,15 +149,15 @@ export default function DocumentTemplatesTab({ recordId }: Props) {
       {/* Upload */}
       <div>
         <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-3">Templates</p>
-        <input ref={fileInputRef} type="file" accept=".docx,.doc" className="hidden"
-          onChange={e => { const f = e.target.files?.[0]; if (f) handleFile(f); }} />
+        <input ref={fileInputRef} type="file" accept=".docx,.doc" multiple className="hidden"
+          onChange={e => { const f = e.target.files; if (f && f.length) handleFiles(f); }} />
         <button onClick={() => fileInputRef.current?.click()} disabled={uploading}
           className="flex items-center gap-2 px-5 py-3 bg-indigo-600 text-white text-[11px] font-bold rounded-full hover:bg-indigo-700 disabled:opacity-40 transition-colors">
           {uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
-          {uploading ? "Uploading..." : "Upload Word template"}
+          {uploading && uploadProgress ? `Uploading ${uploadProgress.done}/${uploadProgress.total}...` : "Upload Word templates"}
         </button>
         <p className="text-[10px] text-slate-400 mt-2">
-          Word documents (.docx or .doc) with <code className="text-indigo-500">{"{{tag}}"}</code> mail-merge placeholders. Tags are detected automatically. Older .doc files are converted automatically.
+          Word documents (.docx or .doc) with <code className="text-indigo-500">{"{{tag}}"}</code> mail-merge placeholders. Tags are detected automatically. Older .doc files are converted automatically. You can select multiple files at once.
         </p>
         {uploadError && <p className="text-[11px] text-red-500 mt-2">{uploadError}</p>}
       </div>
@@ -165,7 +189,7 @@ export default function DocumentTemplatesTab({ recordId }: Props) {
             <div key={p.id} className="flex items-center gap-4 p-5 bg-white border border-slate-200 rounded-[24px]">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <p className="text-[13px] font-bold text-slate-800">{p.title}</p>
+                  <p className="text-[13px] font-bold text-slate-800">{p.title}{p.clientName ? ` — ${p.clientName}` : ""}</p>
                   <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${p.isActive ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-400"}`}>
                     {p.isActive ? "Active" : "Revoked"}
                   </span>
@@ -219,11 +243,31 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
 }) {
   const [fields, setFields] = useState<TemplateField[]>(template.fields);
   const [description, setDescription] = useState(template.description || "");
+  const [downloadFilename, setDownloadFilename] = useState(template.download_filename || template.name);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const descriptionRef = useRef<HTMLTextAreaElement>(null);
+
+  // Wraps the current selection in markdown syntax (or inserts a
+  // placeholder if nothing's selected), matching the toolbar buttons below.
+  const wrapDescriptionSelection = (before: string, after: string, placeholder: string) => {
+    const el = descriptionRef.current;
+    if (!el) return;
+    const start = el.selectionStart ?? description.length;
+    const end = el.selectionEnd ?? description.length;
+    const selected = description.slice(start, end) || placeholder;
+    const next = description.slice(0, start) + before + selected + after + description.slice(end);
+    setDescription(next);
+    requestAnimationFrame(() => {
+      el.focus();
+      const cursor = start + before.length + selected.length + after.length;
+      el.setSelectionRange(cursor, cursor);
+    });
+  };
 
   useEffect(() => { setFields(template.fields); }, [template.fields]);
   useEffect(() => { setDescription(template.description || ""); }, [template.description]);
+  useEffect(() => { setDownloadFilename(template.download_filename || template.name); }, [template.download_filename, template.name]);
 
   const update = (id: string, patch: Partial<TemplateField>) =>
     setFields(prev => prev.map(f => f.id === id ? { ...f, ...patch } : f));
@@ -238,7 +282,7 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
         body: JSON.stringify({
           fields: fields.map(f => ({
             id: f.id, tag_key: f.tag_key, label: f.label, field_type: f.field_type,
-            select_options: f.field_type === "select"
+            select_options: (f.field_type === "select" || f.field_type === "multiselect")
               ? (Array.isArray(f.select_options) ? f.select_options : String(f.select_options || "").split(",").map(s => s.trim()).filter(Boolean))
               : null,
             is_required: f.is_required, auto_fill_field_id: f.auto_fill_field_id, default_value: f.default_value,
@@ -248,7 +292,12 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
       fetch(`/api/document-templates/${template.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description }),
+        body: JSON.stringify({
+          description,
+          // Blank input just means "use the template name" — send null
+          // rather than persisting a redundant copy of the name.
+          download_filename: downloadFilename.trim() === template.name.trim() ? null : downloadFilename,
+        }),
       }),
     ]);
     setSaving(false);
@@ -267,12 +316,34 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
       </div>
 
       <div className="mb-4">
-        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
-          Explanation for the client <span className="text-slate-300 normal-case font-normal">(optional, shown on the client link)</span>
-        </p>
-        <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2}
+        <div className="flex items-center justify-between mb-1.5">
+          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+            Explanation for the client <span className="text-slate-300 normal-case font-normal">(optional, shown on the client link)</span>
+          </p>
+          <div className="flex items-center gap-1">
+            <button type="button" title="Bold" onClick={() => wrapDescriptionSelection("**", "**", "bold text")}
+              className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-slate-50 rounded-lg transition-colors"><Bold size={12} /></button>
+            <button type="button" title="Italic" onClick={() => wrapDescriptionSelection("*", "*", "italic text")}
+              className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-slate-50 rounded-lg transition-colors"><Italic size={12} /></button>
+            <button type="button" title="Bullet list" onClick={() => wrapDescriptionSelection("\n- ", "", "list item")}
+              className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-slate-50 rounded-lg transition-colors"><List size={12} /></button>
+          </div>
+        </div>
+        <textarea ref={descriptionRef} value={description} onChange={e => setDescription(e.target.value)} rows={3}
           placeholder="e.g. This is the loan agreement between the company and the shareholder..."
           className="w-full px-4 py-2.5 border border-slate-200 rounded-2xl text-[12px] outline-none focus:border-indigo-400 resize-none" />
+        <p className="text-[9px] text-slate-300 mt-1">Supports basic formatting: **bold**, *italic*, - bullet lists, [links](https://...)</p>
+      </div>
+
+      <div className="mb-4">
+        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+          Download file name <span className="text-slate-300 normal-case font-normal">(defaults to the document's name)</span>
+        </p>
+        <div className="flex items-center gap-2">
+          <input value={downloadFilename} onChange={e => setDownloadFilename(e.target.value)}
+            className="flex-1 px-4 py-2.5 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
+          <span className="text-[11px] text-slate-400 shrink-0">.docx</span>
+        </div>
       </div>
 
       {fields.length === 0 ? (
@@ -287,7 +358,7 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
                 className="sm:col-span-3 px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
               <select value={f.field_type} onChange={e => update(f.id, { field_type: e.target.value as TemplateField["field_type"] })}
                 className="sm:col-span-2 px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none bg-white">
-                {FIELD_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                {FIELD_TYPES.map(t => <option key={t} value={t}>{FIELD_TYPE_LABELS[t]}</option>)}
               </select>
               <select value={f.auto_fill_field_id || ""} onChange={e => update(f.id, { auto_fill_field_id: e.target.value || null })}
                 className="sm:col-span-3 px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none bg-white">
@@ -298,7 +369,7 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
                 <input type="checkbox" checked={f.is_required} onChange={e => update(f.id, { is_required: e.target.checked })} />
                 Required
               </label>
-              {f.field_type === "select" && (
+              {(f.field_type === "select" || f.field_type === "multiselect") && (
                 <input
                   value={Array.isArray(f.select_options) ? f.select_options.join(", ") : (f.select_options || "")}
                   onChange={e => update(f.id, { select_options: e.target.value as any })}
@@ -333,6 +404,7 @@ function CreateLinkModal({ projectId, templates, onClose, onCreated }: {
   projectId: string; templates: Template[]; onClose: () => void; onCreated: () => void;
 }) {
   const [title, setTitle] = useState("");
+  const [clientName, setClientName] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>(templates.length === 1 ? [templates[0].id] : []);
   const [noExpiry, setNoExpiry] = useState(false);
   const [expiresAt, setExpiresAt] = useState(defaultExpiry());
@@ -358,6 +430,7 @@ function CreateLinkModal({ projectId, templates, onClose, onCreated }: {
         title, projectId, templateIds: selectedIds,
         expiresAt: noExpiry ? null : expiresAt,
         accessCode: requireCode ? accessCode.trim() : null,
+        clientName: clientName.trim() || null,
       }),
     });
     const json = await res.json();
@@ -408,6 +481,14 @@ function CreateLinkModal({ projectId, templates, onClose, onCreated }: {
           <div>
             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Title</p>
             <input value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Sale contract pack"
+              className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none focus:border-indigo-400" />
+          </div>
+
+          <div>
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">
+              Client name <span className="text-slate-300 normal-case font-normal">(optional, shown in the page title)</span>
+            </p>
+            <input value={clientName} onChange={e => setClientName(e.target.value)} placeholder="e.g. John Smith"
               className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none focus:border-indigo-400" />
           </div>
 

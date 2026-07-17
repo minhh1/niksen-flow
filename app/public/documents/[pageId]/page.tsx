@@ -9,11 +9,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { Loader2, FileText, Download, Check, FileArchive, Lock, Ban } from "lucide-react";
+import { renderMarkdown } from "@/lib/renderMarkdown";
 
 interface Field {
   tagKey: string;
   label: string;
-  fieldType: "text" | "date" | "number" | "currency" | "select";
+  fieldType: "text" | "date" | "number" | "currency" | "select" | "multiselect";
   selectOptions: string[] | null;
   isRequired: boolean;
   autoFilled: boolean;
@@ -212,7 +213,10 @@ export default function PublicDocumentFillPage() {
             {data.documents.map(d => (
               <div key={d.id}>
                 <p className="text-[13px] font-bold text-slate-700">{d.name}</p>
-                {d.description && <p className="text-[12px] text-slate-500 mt-1 whitespace-pre-wrap">{d.description}</p>}
+                {d.description && (
+                  <div className="text-[12px] text-slate-500 mt-1 prose-sm [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_a]:text-indigo-600 [&_a]:underline"
+                    dangerouslySetInnerHTML={{ __html: renderMarkdown(d.description) }} />
+                )}
               </div>
             ))}
           </div>
@@ -249,6 +253,25 @@ export default function PublicDocumentFillPage() {
                     <option value="">— Select —</option>
                     {f.selectOptions.map((opt, i) => <option key={i} value={opt}>{opt}</option>)}
                   </select>
+                ) : f.fieldType === "multiselect" && Array.isArray(f.selectOptions) ? (
+                  <div className="flex flex-wrap gap-2">
+                    {f.selectOptions.map((opt, i) => {
+                      const selected = (values[f.tagKey] || "").split(", ").filter(Boolean).includes(opt);
+                      return (
+                        <label key={i}
+                          className={`flex items-center gap-2 px-3 py-2 rounded-full border text-[12px] cursor-pointer transition-colors ${
+                            selected ? "border-indigo-400 bg-indigo-50 text-indigo-700" : "border-slate-200 text-slate-600 hover:border-slate-300"
+                          }`}>
+                          <input type="checkbox" checked={selected} className="accent-indigo-600" onChange={() => {
+                            const current = (values[f.tagKey] || "").split(", ").filter(Boolean);
+                            const next = selected ? current.filter(o => o !== opt) : [...current, opt];
+                            setValue(f.tagKey, next.join(", "));
+                          }} />
+                          {opt}
+                        </label>
+                      );
+                    })}
+                  </div>
                 ) : (
                   <input
                     type={f.fieldType === "date" ? "date" : f.fieldType === "number" || f.fieldType === "currency" ? "number" : "text"}
