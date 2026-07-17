@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Loader2, Upload, FileText, Plus, Copy, Check, Trash2, ExternalLink, X, Link2, Lock, RefreshCw, Bold, Italic, List,
+  ChevronUp, ChevronDown,
 } from "lucide-react";
 
 interface TemplateField {
@@ -18,8 +19,14 @@ interface TemplateField {
   is_required: boolean;
   auto_fill_field_id: string | null;
   default_value: string | null;
+  joined_to_field_id: string | null;
   display_order: number;
 }
+// A field annotated with which document it came from — used to offer
+// "join with..." candidates from OTHER uploaded documents in this project,
+// which is the whole point (preventing the client re-entering the same
+// answer once per document).
+interface FlatField extends TemplateField { templateId: string; templateName: string; }
 interface Template {
   id: string;
   name: string;
@@ -141,6 +148,10 @@ export default function DocumentTemplatesTab({ recordId }: Props) {
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 1500);
   };
+
+  const allFields: FlatField[] = templates.flatMap(t =>
+    t.fields.map(f => ({ ...f, templateId: t.id, templateName: t.name }))
+  );
 
   if (loading) return <div className="flex justify-center p-20"><Loader2 className="animate-spin text-slate-300" /></div>;
 

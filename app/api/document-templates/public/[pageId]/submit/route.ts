@@ -75,8 +75,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pag
 
   const { data: fieldRows } = await admin
     .from("document_template_fields")
-    .select("template_id, tag_key, label, is_required, auto_fill_field_id")
+    .select("id, template_id, tag_key, label, is_required, auto_fill_field_id, joined_to_field_id")
     .in("template_id", templateIds);
+
+  // Resolve each field to its join-root — mirrors the GET route (see
+  // app/api/document-templates/public/[pageId]/route.ts for the full
+  // rationale). The client's form was built from that same resolution, so
+  // `values`/`naFields` here are keyed by ROOT tag_key; each field row still
+  // substitutes into its OWN literal {{tag}} placeholder in its own document.
+  const fieldsById = new Map((fieldRows || []).map((f: any) => [f.id, f]));
+  function pageLocalRoot(f: any): any {
+    let current = f;
+    const seen = new Set<string>();
+    while (current.joined_to_field_id && fieldsById.has(current.joined_to_field_id) && !seen.has(current.id)) {
+      seen.add(current.id);
+      current = fieldsById.get(current.joined_to_field_id);
+    }
+    return current;
+  }
 
   // ── Resolve auto-fill values from the project's custom field data ──
   const autoFillFieldIds = [...new Set((fieldRows || []).map((f: any) => f.auto_fill_field_id).filter(Boolean))];
@@ -109,18 +125,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pag
     return "";
   };
 
-  // ── Validate required fields (de-duplicated by tag_key) ───────────
+  // ── Validate required fields (de-duplicated by join-resolved tag_key) ──
   // A field marked "Not applicable" satisfies its own requiredness — that's
   // the whole point of the button. Scoped to the documents actually being
   // generated — a required field exclusive to a document that isn't part of
-  // this "generate this document only" request shouldn't block it.
+  // this "generate this document only" request shouldn't block it. Uses
+  // each field's ROOT for requiredness/label, since once joined the group
+  // is treated as one field (see pageLocalRoot above).
   const seenReq = new Set<string>();
   for (const f of (fieldRows || []).filter((f: any) => targetTemplateIds.includes(f.template_id))) {
-    if (!f.is_required || seenReq.has(f.tag_key)) continue;
-    seenReq.add(f.tag_key);
-    if (naFields.has(f.tag_key)) continue;
-    if (!effective(f.tag_key, f.auto_fill_field_id)) {
-      return NextResponse.json({ error: `"${f.label}" is required` }, { status: 400 });
+    const root = pageLocalRoot(f);
+    if (!root.is_required || seenReq.has(root.tag_key)) continue;
+    seenReq.add(root.tag_key);
+    if (naFields.has(root.tag_key)) continue;
+    if (!effective(root.tag_key, root.auto_fill_field_id)) {
+      return NextResponse.json({ error: `"${root.label}" is required` }, { status: 400 });
     }
   }
 
@@ -142,10 +161,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pag
     }
     const srcBuffer = Buffer.from(await fileData.arrayBuffer());
 
-    // Build this template's substitution map from its own fields.
+    // Build this template's substitution map from its own fields — each
+    // substitutes into ITS OWN literal {{tag}} placeholder, but the value
+    // comes from its join-resolved root (shared across every document that
+    // joins onto the same answer).
     const data: Record<string, string> = {};
     for (const f of (fieldRows || []).filter((f: any) => f.template_id === tpl.id)) {
-      data[f.tag_key] = effective(f.tag_key, f.auto_fill_field_id);
+      const root = pageLocalRoot(f);
+      data[f.tag_key] = effective(root.tag_key, root.auto_fill_field_id);
     }
 
     let out: Buffer;

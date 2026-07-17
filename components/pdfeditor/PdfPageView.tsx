@@ -58,9 +58,9 @@ export default function PdfPageView({
   const overlayRef = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
 
-  const contentRef = useRef<TextContent | null>(null);
+  const contentRef = useRef<PdfTextContent | null>(null);
   const textDivsRef = useRef<HTMLElement[]>([]);
-  const textItemsRef = useRef<TextItem[]>([]);
+  const textItemsRef = useRef<PdfTextItem[]>([]);
   const editingIndexRef = useRef<number | null>(null);
 
   // Read via refs inside long-lived span click handlers to avoid stale closures.
@@ -90,10 +90,11 @@ export default function PdfPageView({
       await renderTask.promise;
       if (cancelled) return;
 
-      const content = await pdfPage.getTextContent();
+      const rawContent = await pdfPage.getTextContent();
       if (cancelled) return;
+      const content = rawContent as unknown as PdfTextContent;
       contentRef.current = content;
-      const textItems = content.items.filter((it): it is TextItem => "str" in it);
+      const textItems = content.items.filter((it): it is PdfTextItem => "str" in it);
       textItemsRef.current = textItems;
 
       const container = textLayerRef.current;
@@ -101,7 +102,7 @@ export default function PdfPageView({
       container.innerHTML = "";
 
       const { TextLayer } = await import("pdfjs-dist");
-      textLayer = new TextLayer({ textContentSource: content, container, viewport });
+      textLayer = new TextLayer({ textContentSource: rawContent, container, viewport });
       await textLayer.render();
       if (cancelled) return;
 

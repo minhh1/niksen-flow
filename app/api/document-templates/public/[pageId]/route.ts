@@ -57,9 +57,25 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
 
   const { data: fieldRows } = await admin
     .from("document_template_fields")
-    .select("id, template_id, tag_key, label, field_type, select_options, is_required, auto_fill_field_id, default_value, display_order")
+    .select("id, template_id, tag_key, label, field_type, select_options, is_required, auto_fill_field_id, default_value, joined_to_field_id, display_order")
     .in("template_id", templateIds)
     .order("display_order");
+
+  // Resolve each field to its join-root — a field explicitly joined with
+  // another (see app/api/document-templates/fields/join/route.ts) collapses
+  // onto that field's tag_key/label/etc rather than showing as its own
+  // input. Only resolves within THIS page's bundled fields — a join to a
+  // field outside this page's documents has nothing to collapse onto here.
+  const fieldsById = new Map((fieldRows || []).map((f: any) => [f.id, f]));
+  function pageLocalRoot(f: any): any {
+    let current = f;
+    const seen = new Set<string>();
+    while (current.joined_to_field_id && fieldsById.has(current.joined_to_field_id) && !seen.has(current.id)) {
+      seen.add(current.id);
+      current = fieldsById.get(current.joined_to_field_id);
+    }
+    return current;
+  }
 
   // ── Resolve auto-fill values from the project's custom field data ──
   // Read shape mirrors RecordDashboard.tsx's company_custom_field_values merge.
@@ -76,38 +92,42 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
     }
   }
 
-  // ── De-duplicate by tag_key (a tag shared by two templates is asked once) ──
+  // ── De-duplicate by (join-resolved) tag_key — a tag shared by two
+  // templates by exact text, OR explicitly joined despite different text,
+  // is asked once, using the root field's own label/type/required/etc. ──
   const seen = new Set<string>();
   const fields: any[] = [];
   for (const f of fieldRows || []) {
-    if (seen.has(f.tag_key)) continue;
-    seen.add(f.tag_key);
-    const autoVal = f.auto_fill_field_id ? autoFillValues[f.auto_fill_field_id] ?? null : null;
+    const root = pageLocalRoot(f);
+    if (seen.has(root.tag_key)) continue;
+    seen.add(root.tag_key);
+    const autoVal = root.auto_fill_field_id ? autoFillValues[root.auto_fill_field_id] ?? null : null;
     const autoFilled = autoVal !== null && autoVal !== undefined && autoVal !== "";
     // Default value only kicks in when there's no actual project data to
     // auto-fill from — real project data always wins over a generic fallback.
-    const isDefault = !autoFilled && !!f.default_value;
+    const isDefault = !autoFilled && !!root.default_value;
     fields.push({
-      tagKey: f.tag_key,
-      label: f.label,
-      fieldType: f.field_type,
-      selectOptions: f.select_options,
-      isRequired: f.is_required,
+      tagKey: root.tag_key,
+      label: root.label,
+      fieldType: root.field_type,
+      selectOptions: root.select_options,
+      isRequired: root.is_required,
       autoFilled,
       isDefault,
-      value: autoFilled ? String(autoVal) : (isDefault ? String(f.default_value) : ""),
+      value: autoFilled ? String(autoVal) : (isDefault ? String(root.default_value) : ""),
     });
   }
 
-  // Which deduped tag keys belong to each document — powers one tab per
-  // document on the client page, each showing only its own fields (a tag
-  // shared across documents just shows up on every tab that uses it, kept
-  // in sync since they all read/write the same `values[tagKey]`).
+  // Which deduped (join-resolved) tag keys belong to each document — powers
+  // one tab per document on the client page, each showing only its own
+  // fields (a tag shared or joined across documents just shows up on every
+  // tab that uses it, kept in sync since they all read/write the same
+  // `values[tagKey]`).
   const documents = (templateRows || []).map((t: any) => ({
     id: t.id,
     name: t.name,
     description: t.description,
-    fieldTagKeys: [...new Set((fieldRows || []).filter((f: any) => f.template_id === t.id).map((f: any) => f.tag_key))],
+    fieldTagKeys: [...new Set((fieldRows || []).filter((f: any) => f.template_id === t.id).map((f: any) => pageLocalRoot(f).tag_key))],
   }));
 
   return NextResponse.json({ title: page.title, heading, requiresCode: false, documents, fields });

@@ -134,7 +134,7 @@ export default function PdfEditor({ documentId, onBack }: Props) {
       const res = await fetch(`/api/pdf-editor/${documentId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/pdf" },
-        body: newBytes,
+        body: new Blob([newBytes as unknown as BlobPart], { type: "application/pdf" }),
       });
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
