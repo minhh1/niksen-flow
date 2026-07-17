@@ -82,6 +82,12 @@ export default function PublicTaskPage() {
 
   useEffect(() => { checkAuthAndLoad(); }, [checkAuthAndLoad]);
 
+  // Browser tab title — matches the on-page header instead of the generic
+  // site-wide "niksen-flow" title.
+  useEffect(() => {
+    if (data?.scopeName) document.title = `Tasks - ${data.scopeName}`;
+  }, [data?.scopeName]);
+
   // ── Realtime — live-refresh when anyone (this page or the main app)
   // changes a task for this company, so multiple viewers stay in sync
   // without a manual reload.
