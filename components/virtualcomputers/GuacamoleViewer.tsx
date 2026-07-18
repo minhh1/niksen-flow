@@ -1,14 +1,30 @@
 // components/virtualcomputers/GuacamoleViewer.tsx
 "use client";
 
-import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Loader2, Maximize2, Minimize2 } from "lucide-react";
 
 const GUACAMOLE_URL = process.env.NEXT_PUBLIC_GUACAMOLE_URL || "http://localhost:8080/guacamole";
 
 export default function GuacamoleViewer({ vmId }: { vmId: string }) {
   const [src, setSrc] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onFullscreenChange = () => setIsFullscreen(document.fullscreenElement === containerRef.current);
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => document.removeEventListener("fullscreenchange", onFullscreenChange);
+  }, []);
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else {
+      containerRef.current?.requestFullscreen();
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -50,12 +66,26 @@ export default function GuacamoleViewer({ vmId }: { vmId: string }) {
   }
 
   return (
-    <iframe
-      src={src}
-      className="w-full h-full border-0"
-      sandbox="allow-scripts allow-same-origin allow-forms"
-      allow="clipboard-read; clipboard-write"
-      title="Virtual computer session"
-    />
+    <div ref={containerRef} className="relative w-full h-full bg-black">
+      <iframe
+        src={src}
+        className="w-full h-full border-0"
+        // No sandbox: Guacamole needs to be able to take real keyboard focus
+        // on click (its remote-input capture relies on focusing a hidden
+        // textarea) -- sandboxing this iframe left focus stuck on <body>,
+        // so mouse input reached the VM but keystrokes never did. This is
+        // our own trusted backend, not third-party content, so sandboxing
+        // it isn't buying any real isolation anyway.
+        allow="clipboard-read; clipboard-write; fullscreen"
+        title="Virtual computer session"
+      />
+      <button
+        onClick={toggleFullscreen}
+        title={isFullscreen ? "Exit full screen" : "Enter full screen"}
+        className="absolute top-3 right-3 p-2 rounded-lg bg-black/50 hover:bg-black/70 text-white transition-colors"
+      >
+        {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+      </button>
+    </div>
   );
 }

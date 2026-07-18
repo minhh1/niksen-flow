@@ -122,6 +122,7 @@ ${writeFiles}runcmd:
   if (protocol === "vnc") {
     return `${userSetup}
   - DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 xfce4-goodies tigervnc-standalone-server
+  - DEBIAN_FRONTEND=noninteractive apt-get remove -y xfce4-screensaver light-locker || true
   - su - ${escapedUsername} -c "mkdir -p ~/.vnc"
   - su - ${escapedUsername} -c "echo '${escapedPassword}' | vncpasswd -f > ~/.vnc/passwd"
   - su - ${escapedUsername} -c "chmod 600 ~/.vnc/passwd"
@@ -134,6 +135,7 @@ ${writeFiles}runcmd:
 
   return `${userSetup}
   - DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 xfce4-goodies xrdp
+  - DEBIAN_FRONTEND=noninteractive apt-get remove -y xfce4-screensaver light-locker || true
   - echo xfce4-session > /home/${escapedUsername}/.xsession
   - chown ${escapedUsername}:${escapedUsername} /home/${escapedUsername}/.xsession
   - adduser xrdp ssl-cert
