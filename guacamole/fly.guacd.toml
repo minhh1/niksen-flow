@@ -7,6 +7,18 @@ primary_region = "syd"
 [build]
   image = "guacamole/guacd:1.5.5"
 
+# The image's default command binds guacd to 0.0.0.0 (IPv4 only), which is
+# NOT reachable via Fly's private 6PN network -- that's IPv6
+# (niksenflow-guacd.internal resolves to an fdaa:... address). This caused
+# every virtual-computer connection to fail with a generic "internal error"
+# in Guacamole: guacd worked perfectly when reached directly (confirmed by
+# SSHing in and connecting to localhost:4822), but the guacamole app on a
+# separate machine got "Connection refused" reaching it over .internal.
+# Binding to `::` (IPv6 any) instead makes the socket dual-stack, which
+# covers both the private network and IPv4 loopback/localhost.
+[processes]
+  app = "/opt/guacamole/sbin/guacd -b :: -L info -f"
+
 [[vm]]
   size = "shared-cpu-1x"
   memory = "512mb"

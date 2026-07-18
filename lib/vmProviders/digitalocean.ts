@@ -72,7 +72,7 @@ function cloudInitScript(protocol: VmProtocol, username: string, password: strin
       Type=simple
       User=${escapedUsername}
       WorkingDirectory=/home/${escapedUsername}
-      ExecStart=/usr/bin/vncserver -fg -localhost no :%i
+      ExecStart=/usr/bin/vncserver -fg -localhost no -SecurityTypes VncAuth :%i
       Restart=on-failure
 
       [Install]

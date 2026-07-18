@@ -20,6 +20,12 @@ export default function GuacamoleViewer({ vmId }: { vmId: string }) {
         setError(json.error || "Could not start session");
         return;
       }
+      // This Guacamole deployment runs Angular in hashbang mode
+      // (html5Mode(false)), so $location.search() -- which is what reads
+      // the auto-login `token` param -- parses the query string INSIDE the
+      // hash fragment, not window.location.search. token must come after
+      // the `#/client/...` route, not before it (confirmed by inspecting
+      // the deployed app's own bundle, not guessed).
       setSrc(`${GUACAMOLE_URL}/#/client/${json.clientIdentifier}?token=${json.authToken}`);
     })();
     return () => {
