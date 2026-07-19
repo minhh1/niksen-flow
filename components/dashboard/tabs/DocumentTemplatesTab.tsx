@@ -7,7 +7,7 @@
 import { useState, useEffect, useCallback, useRef, type DragEvent } from "react";
 import {
   Loader2, Upload, FileText, Plus, Copy, Check, Trash2, ExternalLink, X, Link2, Lock, RefreshCw, Bold, Italic, List,
-  ChevronUp, ChevronDown,
+  ChevronUp, ChevronDown, Combine,
 } from "lucide-react";
 
 interface TemplateField {
@@ -20,6 +20,9 @@ interface TemplateField {
   auto_fill_field_id: string | null;
   default_value: string | null;
   joined_to_field_id: string | null;
+  trigger_field_id: string | null;
+  trigger_value: string | null;
+  is_branch_only: boolean;
   display_order: number;
 }
 interface Template {
@@ -62,6 +65,71 @@ function defaultExpiry(): string {
   const d = new Date();
   d.setDate(d.getDate() + 30);
   return d.toISOString().slice(0, 10);
+}
+
+// A "combined group" is every field transitively linked to `fieldId` via
+// trigger_field_id, walked in both directions (who I show after, and who
+// shows after me) — the flat pool that free reordering happens within.
+// Returned in `list`'s current order. A field with no links of its own
+// (never combined) is a group of one. Always filters out joined_to_field_id
+// aliases first, whatever `list` is passed — an aliased field never renders
+// its own row, so it can't sit "inside" a visible chain. Without this, a
+// field that gets Linked away while it's mid-chain would silently stay
+// wired into the graph as an invisible member, breaking the visible
+// adjacency buildFieldBlocks relies on for whoever came after it.
+function groupOf(list: TemplateField[], fieldId: string): TemplateField[] {
+  const visible = list.filter(f => !f.joined_to_field_id);
+  const byId = new Map(visible.map(f => [f.id, f]));
+  const seen = new Set<string>();
+  const queue = [fieldId];
+  while (queue.length) {
+    const id = queue.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const f = byId.get(id);
+    if (f?.trigger_field_id && byId.has(f.trigger_field_id)) queue.push(f.trigger_field_id);
+    for (const other of visible) {
+      if (other.trigger_field_id === id) queue.push(other.id);
+    }
+  }
+  return visible.filter(f => seen.has(f.id));
+}
+
+// Rewrites trigger_field_id for every member of a group to match its
+// current array order — a combined group is always a strict order-of-
+// appearance sequence, so after any reorder the first member has no
+// trigger and each later member's trigger becomes whoever now sits right
+// before it. trigger_value only survives on a member whose immediate
+// predecessor didn't actually change — otherwise a leftover "= Yes"
+// condition could end up describing a completely different question.
+function relinkGroup(list: TemplateField[], memberIds: Set<string>): TemplateField[] {
+  const ordered = list.filter(f => memberIds.has(f.id));
+  return list.map(f => {
+    if (!memberIds.has(f.id)) return f;
+    const idx = ordered.findIndex(m => m.id === f.id);
+    const newTrigger = idx === 0 ? null : ordered[idx - 1].id;
+    if (newTrigger === f.trigger_field_id) return f;
+    return { ...f, trigger_field_id: newTrigger, trigger_value: null };
+  });
+}
+
+// Splits the field list into blocks for rendering: a run of consecutive
+// fields that all belong to the same combined group becomes one block
+// (rendered together in a shaded area), everything else is its own block of
+// one. Deliberately goes off the CURRENT array order rather than the
+// trigger_field_id graph directly — combining always keeps both fields
+// contiguous (see setTrigger), so this only matters as a fallback for an
+// edge case like a stale/imported chain that isn't actually adjacent.
+function buildFieldBlocks(list: TemplateField[]): TemplateField[][] {
+  const blocks: TemplateField[][] = [];
+  for (const f of list) {
+    const prevBlock = blocks[blocks.length - 1];
+    const prevField = prevBlock?.[prevBlock.length - 1];
+    const directlyLinked = !!prevField && (f.trigger_field_id === prevField.id || prevField.trigger_field_id === f.id);
+    if (prevBlock && directlyLinked) prevBlock.push(f);
+    else blocks.push([f]);
+  }
+  return blocks;
 }
 
 export default function DocumentTemplatesTab({ recordId }: Props) {
@@ -252,9 +320,24 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
   const [downloadFilename, setDownloadFilename] = useState(template.download_filename || template.name);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   // Which row's "link a field" search popover is open, and its search text.
   const [linkFieldId, setLinkFieldId] = useState<string | null>(null);
   const [linkQuery, setLinkQuery] = useState("");
+  // Which row's "combine" search popover is open, and its search text.
+  const [triggerFieldId, setTriggerFieldId] = useState<string | null>(null);
+  const [triggerQuery, setTriggerQuery] = useState("");
+  // The inline "new branching question" mini-form inside the Combine
+  // popover — only one can be open at a time, alongside triggerFieldId.
+  const [newQuestionOpen, setNewQuestionOpen] = useState(false);
+  const [newQuestionLabel, setNewQuestionLabel] = useState("");
+  const [newQuestionType, setNewQuestionType] = useState<TemplateField["field_type"]>("select");
+  const [newQuestionOptions, setNewQuestionOptions] = useState("Yes, No");
+  // After attaching a field under a select/multiselect anchor, this holds
+  // the attached field's id while the Combine popover shows a follow-up
+  // step to pick which of the anchor's answers should reveal it.
+  const [pendingConditionFor, setPendingConditionFor] = useState<string | null>(null);
+  const [pendingConditionValues, setPendingConditionValues] = useState<string[]>([]);
   const descriptionRef = useRef<HTMLTextAreaElement>(null);
 
   // Aliased fields (joined_to_field_id set) never render their own row —
@@ -274,23 +357,172 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
   const update = (id: string, patch: Partial<TemplateField>) =>
     setFields(prev => prev.map(f => f.id === id ? { ...f, ...patch } : f));
 
+  // Candidates for "combine with" from excludeId's popover — anything NOT
+  // already in excludeId's own group. Picking something from excludeId's
+  // own group would cycle: setTrigger moves the picked field's whole group
+  // to sit after excludeId's tail, and excludeId can't sit both before AND
+  // inside the block being moved.
+  const triggerCandidates = (excludeId: string) => {
+    const ownGroupIds = new Set(groupOf(visibleFields, excludeId).map(g => g.id));
+    return visibleFields.filter(f => !ownGroupIds.has(f.id));
+  };
+
+  // Combining keeps the anchor field (the one whose Combine button was
+  // clicked) exactly where it is, and moves the picked/created field to sit
+  // directly after it, joining its group. Always attaches after the
+  // anchor's current group TAIL rather than literally right after the
+  // anchor itself, so an anchor that already has followers gets this
+  // appended to the end of its sequence instead of forking a branch. If the
+  // field being attached already has its own followers, that whole block
+  // moves together so their relative order survives the move.
+  const setTrigger = (movingFieldId: string, anchorFieldId: string) => {
+    setFields(prev => {
+      const tail = groupOf(prev, anchorFieldId).at(-1)!;
+      const moving = groupOf(prev, movingFieldId);
+      const movingIds = new Set(moving.map(m => m.id));
+      const withNewLink = prev.map(f => f.id === movingFieldId ? { ...f, trigger_field_id: tail.id, trigger_value: null } : f);
+      const movingBlock = moving.map(m => withNewLink.find(f => f.id === m.id)!);
+      const rest = withNewLink.filter(f => !movingIds.has(f.id));
+      const tailIdx = rest.findIndex(f => f.id === tail.id);
+      rest.splice(tailIdx + 1, 0, ...movingBlock);
+      return rest;
+    });
+  };
+  // Creates a fresh question that exists purely to gate `forFieldId` — not
+  // detected from the uploaded document (no real {{tag}} backs it), so its
+  // tag_key is synthetic and prefixed to never collide with a real
+  // placeholder. Otherwise it's a normal field: same type system, answered
+  // by the client like anything else, and other fields can combine with it
+  // too. Lands immediately below forFieldId, in the same group — same as
+  // picking an existing field from the Combine search would do.
+  const addBranchOnlyQuestion = (forFieldId: string, label: string, fieldType: TemplateField["field_type"], optionsText: string): string => {
+    const id = crypto.randomUUID();
+    const isChoice = fieldType === "select" || fieldType === "multiselect";
+    const newField: TemplateField = {
+      id, tag_key: `_branch_${id.slice(0, 8)}`, label: label.trim() || "Question", field_type: fieldType,
+      select_options: isChoice ? optionsText.split(",").map(s => s.trim()).filter(Boolean) : null,
+      is_required: false, auto_fill_field_id: null, default_value: null, joined_to_field_id: null,
+      trigger_field_id: null, trigger_value: null, is_branch_only: true, display_order: 0,
+    };
+    setFields(prev => [...prev, newField]);
+    setTrigger(id, forFieldId);
+    return id;
+  };
+  // After attaching attachedId under a select/multiselect anchor, records
+  // which of the anchor's answers should reveal it (empty = any answer).
+  const finishCondition = (attachedId: string, values: string[]) => {
+    update(attachedId, { trigger_value: values.length ? values.join("||") : null });
+    setPendingConditionFor(null); setPendingConditionValues([]);
+    setTriggerFieldId(null); setTriggerQuery("");
+  };
+  // The one field (in a strict combined group, there's normally at most
+  // one) that shows right after fieldId is answered.
+  const followerOf = (fieldId: string) => fields.find(x => x.trigger_field_id === fieldId) || null;
+  const setRevealCondition = (fieldId: string, values: string[]) => {
+    const follower = followerOf(fieldId);
+    if (!follower) return;
+    update(follower.id, { trigger_value: values.length ? values.join("||") : null });
+  };
+  // Only branch-only questions can be deleted outright — a real,
+  // document-detected field must stay in sync with its {{tag}}, but a
+  // branch-only one has no such tie and was authored purely in this UI.
+  // Whatever was following it gets reattached to its own predecessor first,
+  // same as clearTrigger, so removing a mid-chain question doesn't strand
+  // the rest of the sequence. Takes effect on the next Save, like every
+  // other local edit here.
+  const deleteBranchOnlyField = (fieldId: string) => {
+    if (!window.confirm("Delete this branching question? This can't be undone.")) return;
+    setFields(prev => {
+      const f = prev.find(x => x.id === fieldId);
+      const predecessor = f?.trigger_field_id ?? null;
+      return prev
+        .filter(x => x.id !== fieldId)
+        .map(x => x.trigger_field_id === fieldId ? { ...x, trigger_field_id: predecessor, trigger_value: null } : x);
+    });
+  };
+  // Detaches a field from its group. Anything that was following it gets
+  // reattached to whatever came before it, so the rest of the sequence
+  // stays intact instead of losing its place in the order.
+  const clearTrigger = (fieldId: string) => {
+    setFields(prev => {
+      const f = prev.find(x => x.id === fieldId);
+      if (!f) return prev;
+      const predecessor = f.trigger_field_id;
+      return prev.map(x => {
+        if (x.id === fieldId) return { ...x, trigger_field_id: null, trigger_value: null };
+        if (x.trigger_field_id === fieldId) return { ...x, trigger_field_id: predecessor, trigger_value: null };
+        return x;
+      });
+    });
+  };
+
+  // Reordering happens within the field's whole combined group (every field
+  // it's transitively linked to) so any member — including the original
+  // first one — can move freely. A field that isn't combined with anything
+  // reorders among the other standalone/group-head fields instead, matching
+  // how plain (uncombined) fields always worked.
+  const siblingsOf = (f: TemplateField) => {
+    const grp = groupOf(visibleFields, f.id);
+    return grp.length > 1 ? grp : visibleFields.filter(x => !x.trigger_field_id);
+  };
+
   const moveField = (fieldId: string, dir: -1 | 1) => {
-    const vIdx = visibleFields.findIndex(f => f.id === fieldId);
-    const target = visibleFields[vIdx + dir];
+    const f = fields.find(x => x.id === fieldId);
+    if (!f) return;
+    const siblings = siblingsOf(f);
+    const sIdx = siblings.findIndex(s => s.id === fieldId);
+    const target = siblings[sIdx + dir];
     if (!target) return;
     setFields(prev => {
       const next = [...prev];
       const i = next.findIndex(f => f.id === fieldId);
       const j = next.findIndex(f => f.id === target.id);
       [next[i], next[j]] = [next[j], next[i]];
+      const grp = groupOf(next, fieldId);
+      return grp.length > 1 ? relinkGroup(next, new Set(grp.map(g => g.id))) : next;
+    });
+  };
+
+  // Moves an entire combined group (or a standalone field) as a single unit
+  // past whichever block sits next to it, swapping the two blocks' whole
+  // ranges — separate from moveField, which only reorders within a group.
+  // Membership-based rather than index-based so any alias fields riding
+  // along elsewhere in `fields` just stay wherever they were, unaffected.
+  const moveBlock = (block: TemplateField[], dir: -1 | 1) => {
+    const blocks = buildFieldBlocks(visibleFields);
+    const idx = blocks.findIndex(b => b[0].id === block[0].id);
+    const target = blocks[idx + dir];
+    if (!target) return;
+    setFields(prev => {
+      const aIds = new Set(block.map(f => f.id));
+      const bIds = new Set(target.map(f => f.id));
+      const firstIdx = prev.findIndex(f => aIds.has(f.id) || bIds.has(f.id));
+      let restBefore = 0;
+      for (let i = 0; i < firstIdx; i++) if (!aIds.has(prev[i].id) && !bIds.has(prev[i].id)) restBefore++;
+      const rest = prev.filter(f => !aIds.has(f.id) && !bIds.has(f.id));
+      const ordered = dir === -1 ? [...block, ...target] : [...target, ...block];
+      const next = [...rest];
+      next.splice(restBefore, 0, ...ordered);
       return next;
     });
   };
 
   // Optimistic: the row updates immediately: the API call happens in the
   // background and only touches local state again if it fails.
+  // A field that gets Linked away (aliased) never renders its own row again,
+  // so if it was mid-combine-chain it needs detaching first — same as
+  // clearTrigger — or whatever was following it would be left pointing at a
+  // now-invisible predecessor and fall out of the visible group.
   const handleLink = async (memberFieldId: string, rootFieldId: string) => {
-    update(memberFieldId, { joined_to_field_id: rootFieldId });
+    setFields(prev => {
+      const f = prev.find(x => x.id === memberFieldId);
+      const predecessor = f?.trigger_field_id ?? null;
+      return prev.map(x => {
+        if (x.id === memberFieldId) return { ...x, joined_to_field_id: rootFieldId, trigger_field_id: null, trigger_value: null };
+        if (x.trigger_field_id === memberFieldId) return { ...x, trigger_field_id: predecessor, trigger_value: null };
+        return x;
+      });
+    });
     const res = await fetch("/api/document-templates/fields/join", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -352,6 +584,7 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
   const handleSave = async () => {
     setSaving(true);
     setSaved(false);
+    setSaveError(null);
     const [fieldsRes] = await Promise.all([
       fetch(`/api/document-templates/${template.id}/fields`, {
         method: "PATCH",
@@ -363,6 +596,7 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
               ? (Array.isArray(f.select_options) ? f.select_options : String(f.select_options || "").split(",").map(s => s.trim()).filter(Boolean))
               : null,
             is_required: f.is_required, auto_fill_field_id: f.auto_fill_field_id, default_value: f.default_value,
+            trigger_field_id: f.trigger_field_id, trigger_value: f.trigger_value, is_branch_only: f.is_branch_only,
           })),
         }),
       }),
@@ -378,7 +612,13 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
       }),
     ]);
     setSaving(false);
-    if (fieldsRes.ok) { setSaved(true); setTimeout(() => setSaved(false), 1500); onSaved(); }
+    if (fieldsRes.ok) { setSaved(true); setTimeout(() => setSaved(false), 1500); onSaved(); return; }
+    // Surface the failure — a save that silently does nothing is worse than
+    // no save at all, since the admin has no way to tell their edits (and
+    // anything downstream, like combine/branching setup) never persisted.
+    let message = "Failed to save";
+    try { message = (await fieldsRes.json())?.error || message; } catch { /* non-JSON error body */ }
+    setSaveError(message);
   };
 
   return (
@@ -427,18 +667,45 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
         <p className="text-[11px] text-slate-300 italic mb-3">No {"{{tags}}"} detected in this document.</p>
       ) : (
         <div className="space-y-2 mb-3" onDragOver={e => e.preventDefault()} onDrop={handleContainerDrop}>
-          {visibleFields.map((f, vIdx) => {
-            const chips = chipsFor(f.id);
-            return (
-              <div key={f.id} className="space-y-1.5" onDragOver={e => e.preventDefault()} onDrop={e => handleRowDrop(e, f.id)}>
-                <div className="flex items-center gap-2 flex-wrap">
+          {(() => {
+            const allBlocks = buildFieldBlocks(visibleFields);
+            return allBlocks.map((block, bi) => (
+            <div key={block[0].id} className={block.length > 1 ? "space-y-2 bg-slate-50 rounded-2xl p-3" : undefined}>
+              {block.length > 1 && (
+                <div className="flex items-center gap-2 px-1">
                   <div className="flex flex-col shrink-0">
-                    <button onClick={() => moveField(f.id, -1)} disabled={vIdx === 0} title="Move up"
+                    <button onClick={() => moveBlock(block, -1)} disabled={bi === 0} title="Move this whole combined group up"
                       className="text-slate-300 hover:text-indigo-600 disabled:opacity-20 transition-colors"><ChevronUp size={12} /></button>
-                    <button onClick={() => moveField(f.id, 1)} disabled={vIdx === visibleFields.length - 1} title="Move down"
+                    <button onClick={() => moveBlock(block, 1)} disabled={bi === allBlocks.length - 1} title="Move this whole combined group down"
                       className="text-slate-300 hover:text-indigo-600 disabled:opacity-20 transition-colors"><ChevronDown size={12} /></button>
                   </div>
-                  <code className="text-[11px] text-indigo-500 shrink-0 max-w-[120px] truncate" title={f.tag_key}>{`{{${f.tag_key}}}`}</code>
+                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                    Combined group · {block.length} fields
+                  </p>
+                </div>
+              )}
+              {block.map(f => {
+                const chips = chipsFor(f.id);
+                const siblings = siblingsOf(f);
+                const sIdx = siblings.findIndex(s => s.id === f.id);
+                const triggerField = f.trigger_field_id ? fields.find(t => t.id === f.trigger_field_id) : null;
+                return (
+                  <div key={f.id} className="space-y-1.5" onDragOver={e => e.preventDefault()} onDrop={e => handleRowDrop(e, f.id)}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                  <div className="flex flex-col shrink-0">
+                    <button onClick={() => moveField(f.id, -1)} disabled={sIdx === 0} title="Move up"
+                      className="text-slate-300 hover:text-indigo-600 disabled:opacity-20 transition-colors"><ChevronUp size={12} /></button>
+                    <button onClick={() => moveField(f.id, 1)} disabled={sIdx === siblings.length - 1} title="Move down"
+                      className="text-slate-300 hover:text-indigo-600 disabled:opacity-20 transition-colors"><ChevronDown size={12} /></button>
+                  </div>
+                  {f.is_branch_only ? (
+                    <span title="Not in the document — used only to decide what to show next"
+                      className="shrink-0 px-2 py-1 bg-amber-50 text-amber-600 rounded-full text-[9px] font-bold uppercase tracking-widest">
+                      Branching only
+                    </span>
+                  ) : (
+                    <code className="text-[11px] text-indigo-500 shrink-0 max-w-[120px] truncate" title={f.tag_key}>{`{{${f.tag_key}}}`}</code>
+                  )}
                   <input value={f.label} onChange={e => update(f.id, { label: e.target.value })}
                     placeholder="Label"
                     className="flex-1 min-w-[140px] px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
@@ -467,9 +734,9 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
 
                   <div className="relative shrink-0">
                     <button onClick={() => { setLinkFieldId(linkFieldId === f.id ? null : f.id); setLinkQuery(""); }}
-                      title="Link with another field in this document so the client is only asked once"
-                      className={`flex items-center gap-1 px-2 py-1.5 rounded-lg text-[10px] font-bold transition-colors ${linkFieldId === f.id ? "bg-indigo-100 text-indigo-600" : "text-slate-400 hover:text-indigo-600 hover:bg-slate-50"}`}>
-                      <Link2 size={12} /> Link
+                      title="Link with another field in this document, so the client is only asked once and the same answer fills both"
+                      className={`p-1.5 rounded-lg transition-colors ${linkFieldId === f.id || chips.length > 0 ? "bg-indigo-100 text-indigo-600" : "text-slate-400 hover:text-indigo-600 hover:bg-slate-50"}`}>
+                      <Link2 size={13} />
                     </button>
                     {linkFieldId === f.id && (
                       <>
@@ -495,6 +762,136 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
                       </>
                     )}
                   </div>
+
+                  <div className="relative shrink-0">
+                    <button onClick={() => { setTriggerFieldId(triggerFieldId === f.id ? null : f.id); setTriggerQuery(""); }}
+                      title={f.trigger_field_id
+                        ? `Combined with {{${triggerField?.tag_key ?? "?"}}}${f.trigger_value ? ` — only shown when that's ${f.trigger_value.split("||").map(v => `"${v}"`).join(" or ")}` : " — only shown once that's answered"}. Click to change.`
+                        : "Combine with another field in this document, so this one only appears once the other is answered"}
+                      className={`p-1.5 rounded-lg transition-colors ${f.trigger_field_id || triggerFieldId === f.id ? "bg-indigo-100 text-indigo-600" : "text-slate-400 hover:text-indigo-600 hover:bg-slate-50"}`}>
+                      <Combine size={13} />
+                    </button>
+                    {triggerFieldId === f.id && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => {
+                          setTriggerFieldId(null); setNewQuestionOpen(false);
+                          setPendingConditionFor(null); setPendingConditionValues([]);
+                        }} />
+                        <div className="absolute right-0 z-20 mt-1 w-72 bg-white border border-slate-200 rounded-2xl shadow-xl p-2">
+                          {pendingConditionFor ? (
+                            <div className="space-y-1.5 p-1">
+                              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest px-1">
+                                Which answer to &quot;{f.label || f.tag_key}&quot; reveals this?
+                              </p>
+                              <button onClick={() => finishCondition(pendingConditionFor, [])}
+                                className={`w-full text-left px-3 py-2 rounded-xl text-[12px] transition-colors ${!pendingConditionValues.length ? "bg-indigo-100 text-indigo-700" : "bg-slate-50 text-slate-600 hover:bg-indigo-50"}`}>
+                                Any answer
+                              </button>
+                              <div className="max-h-40 overflow-y-auto space-y-1">
+                                {(f.select_options || []).map((opt, i) => {
+                                  const checked = pendingConditionValues.includes(opt);
+                                  return (
+                                    <label key={i} className="flex items-center gap-2 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-[12px] text-slate-600 cursor-pointer">
+                                      <input type="checkbox" checked={checked}
+                                        onChange={() => setPendingConditionValues(checked ? pendingConditionValues.filter(v => v !== opt) : [...pendingConditionValues, opt])} />
+                                      {opt}
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                              <button onClick={() => finishCondition(pendingConditionFor, pendingConditionValues)}
+                                disabled={!pendingConditionValues.length}
+                                className="w-full py-2 bg-indigo-600 text-white text-[11px] font-bold rounded-full hover:bg-indigo-700 disabled:opacity-40">
+                                Done
+                              </button>
+                            </div>
+                          ) : newQuestionOpen ? (
+                            <div className="space-y-1.5 p-1">
+                              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest px-1">
+                                New question, just for branching
+                              </p>
+                              <input autoFocus value={newQuestionLabel} onChange={e => setNewQuestionLabel(e.target.value)}
+                                placeholder="e.g. Is the borrower a trust?"
+                                className="w-full px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
+                              <select value={newQuestionType} onChange={e => setNewQuestionType(e.target.value as TemplateField["field_type"])}
+                                className="w-full px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none bg-white">
+                                {FIELD_TYPES.map(t => <option key={t} value={t}>{FIELD_TYPE_LABELS[t]}</option>)}
+                              </select>
+                              {(newQuestionType === "select" || newQuestionType === "multiselect") && (
+                                <input value={newQuestionOptions} onChange={e => setNewQuestionOptions(e.target.value)}
+                                  placeholder="Options (comma-separated)"
+                                  className="w-full px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
+                              )}
+                              <p className="text-[9px] text-slate-300 px-1">Not in the document — used only to decide what to show next.</p>
+                              <div className="flex gap-1.5 pt-1">
+                                <button onClick={() => { setNewQuestionOpen(false); setTriggerFieldId(null); }}
+                                  className="flex-1 py-2 text-[11px] text-slate-500 hover:bg-slate-50 rounded-full">Cancel</button>
+                                <button onClick={() => {
+                                  const newId = addBranchOnlyQuestion(f.id, newQuestionLabel, newQuestionType, newQuestionOptions);
+                                  setNewQuestionOpen(false); setTriggerQuery("");
+                                  setNewQuestionLabel(""); setNewQuestionType("select"); setNewQuestionOptions("Yes, No");
+                                  // The question just created shows after f — if f itself is a
+                                  // choice question, ask which of its answers should reveal it,
+                                  // same as picking an existing field would.
+                                  if (f.field_type === "select" || f.field_type === "multiselect") {
+                                    setPendingConditionFor(newId); setPendingConditionValues([]);
+                                  } else {
+                                    setTriggerFieldId(null);
+                                  }
+                                }} disabled={!newQuestionLabel.trim()}
+                                  className="flex-1 py-2 bg-indigo-600 text-white text-[11px] font-bold rounded-full hover:bg-indigo-700 disabled:opacity-40">
+                                  Create
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <button onClick={() => setNewQuestionOpen(true)}
+                                className="w-full flex items-center gap-1.5 text-left px-3 py-2 text-[12px] text-indigo-600 hover:bg-indigo-50 rounded-xl mb-1">
+                                <Plus size={12} /> New branching question...
+                              </button>
+                              <input autoFocus value={triggerQuery} onChange={e => setTriggerQuery(e.target.value)}
+                                placeholder="Or search fields to combine..."
+                                className="w-full px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400 mb-1" />
+                              <div className="max-h-48 overflow-y-auto">
+                                {triggerCandidates(f.id)
+                                  .filter(c => !triggerQuery.trim() || c.label.toLowerCase().includes(triggerQuery.toLowerCase()) || c.tag_key.toLowerCase().includes(triggerQuery.toLowerCase()))
+                                  .map(c => (
+                                    // f stays put; the picked field (c) moves to sit directly
+                                    // below it and joins its group (see setTrigger). If f is a
+                                    // choice question, ask which answer reveals c instead of
+                                    // closing immediately.
+                                    <button key={c.id} onClick={() => {
+                                      setTrigger(c.id, f.id);
+                                      if (f.field_type === "select" || f.field_type === "multiselect") {
+                                        setPendingConditionFor(c.id); setPendingConditionValues([]);
+                                      } else {
+                                        setTriggerFieldId(null); setTriggerQuery("");
+                                      }
+                                    }}
+                                      className="w-full text-left px-3 py-2 text-[12px] text-slate-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-xl truncate">
+                                      <code className="text-indigo-400">{`{{${c.tag_key}}}`}</code> — {c.label}
+                                    </button>
+                                  ))}
+                                {triggerCandidates(f.id).length === 0 && (
+                                  <p className="px-3 py-2 text-[11px] text-slate-300">No other fields in this document to combine with</p>
+                                )}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {f.trigger_field_id && (
+                    <button onClick={() => clearTrigger(f.id)} title="Remove from this combined group"
+                      className="p-1.5 text-slate-300 hover:text-red-500 rounded-full shrink-0"><X size={13} /></button>
+                  )}
+                  {f.is_branch_only && (
+                    <button onClick={() => deleteBranchOnlyField(f.id)} title="Delete this branching question"
+                      className="p-1.5 text-slate-300 hover:text-red-500 rounded-full shrink-0"><Trash2 size={13} /></button>
+                  )}
                 </div>
 
                 {(f.field_type === "select" || f.field_type === "multiselect") && (
@@ -504,20 +901,58 @@ function TemplateCard({ template, customFields, onSaved, onDelete }: {
                     placeholder="Options (comma-separated)"
                     className="w-full ml-6 px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
                 )}
-                {!f.auto_fill_field_id && (
+                {f.is_branch_only ? (() => {
+                  // A branch-only question exists purely to gate what comes
+                  // next, so a "default value" (which prefills what gets
+                  // written into a document it isn't even part of) isn't
+                  // useful here — this replaces it with the condition that
+                  // actually matters: which answer reveals its follower.
+                  const follower = followerOf(f.id);
+                  if (!follower) {
+                    return <p className="ml-6 text-[10px] text-slate-300 italic">Combine this with another field to reveal it based on the answer</p>;
+                  }
+                  const selected = follower.trigger_value ? follower.trigger_value.split("||") : [];
+                  const opts = (f.field_type === "select" || f.field_type === "multiselect") && Array.isArray(f.select_options)
+                    ? f.select_options : null;
+                  return (
+                    <div className="ml-6 flex flex-wrap items-center gap-2 px-3 py-2 border border-dashed border-slate-200 rounded-full text-[11px] text-slate-500">
+                      <span className="shrink-0">If answer is</span>
+                      {opts ? opts.map((opt, i) => {
+                        const checked = selected.includes(opt);
+                        return (
+                          <label key={i} className="flex items-center gap-1 shrink-0 cursor-pointer">
+                            <input type="checkbox" checked={checked}
+                              onChange={() => setRevealCondition(f.id, checked ? selected.filter(v => v !== opt) : [...selected, opt])} />
+                            {opt}
+                          </label>
+                        );
+                      }) : (
+                        <input value={selected.join(", ")}
+                          onChange={e => setRevealCondition(f.id, e.target.value.split(",").map(s => s.trim()).filter(Boolean))}
+                          placeholder="any answer"
+                          className="flex-1 min-w-[100px] px-2 py-1 border border-slate-200 rounded-full text-[11px] outline-none focus:border-indigo-400" />
+                      )}
+                      <span className="shrink-0 text-slate-400">reveal the next field{!selected.length && " (currently: any answer)"}</span>
+                    </div>
+                  );
+                })() : !f.auto_fill_field_id && (
                   <input
                     value={f.default_value || ""}
                     onChange={e => update(f.id, { default_value: e.target.value })}
                     placeholder="Default value if the client leaves this blank (optional)"
                     className="w-full ml-6 px-3 py-2 border border-dashed border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
                 )}
-              </div>
-            );
-          })}
+                  </div>
+                );
+              })}
+            </div>
+            ));
+          })()}
         </div>
       )}
 
-      <div className="flex justify-end pt-2">
+      <div className="flex items-center justify-end gap-3 pt-2">
+        {saveError && <p className="text-[11px] text-red-500">{saveError}</p>}
         <button onClick={handleSave} disabled={saving}
           className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-[11px] font-bold rounded-full hover:bg-indigo-700 disabled:opacity-40 transition-colors">
           {saving ? <Loader2 size={13} className="animate-spin" /> : saved ? <Check size={13} /> : null}

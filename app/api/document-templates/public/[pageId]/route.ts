@@ -57,7 +57,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
 
   const { data: fieldRows } = await admin
     .from("document_template_fields")
-    .select("id, template_id, tag_key, label, field_type, select_options, is_required, auto_fill_field_id, default_value, joined_to_field_id, display_order")
+    .select("id, template_id, tag_key, label, field_type, select_options, is_required, auto_fill_field_id, default_value, joined_to_field_id, trigger_field_id, trigger_value, display_order")
     .in("template_id", templateIds)
     .order("display_order");
 
@@ -106,6 +106,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
     // Default value only kicks in when there's no actual project data to
     // auto-fill from — real project data always wins over a generic fallback.
     const isDefault = !autoFilled && !!root.default_value;
+    // Resolve the trigger to its join-root's tag_key too, so the client only
+    // ever deals in tag_keys. A trigger pointing outside this page's bundled
+    // fields (dangling/cross-page edge case) just means the field always
+    // shows rather than getting stuck permanently hidden.
+    const triggerField = root.trigger_field_id ? fieldsById.get(root.trigger_field_id) : null;
+    const triggerTagKey = triggerField ? pageLocalRoot(triggerField).tag_key : null;
     fields.push({
       tagKey: root.tag_key,
       label: root.label,
@@ -115,6 +121,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
       autoFilled,
       isDefault,
       value: autoFilled ? String(autoVal) : (isDefault ? String(root.default_value) : ""),
+      triggerTagKey,
+      triggerValue: triggerTagKey ? (root.trigger_value ?? null) : null,
     });
   }
 

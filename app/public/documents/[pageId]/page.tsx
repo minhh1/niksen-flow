@@ -6,7 +6,7 @@
 // is gated purely server-side by the page being active + unexpired.
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams } from "next/navigation";
 import { Loader2, FileText, Download, Check, FileArchive, Lock, Ban, Layers } from "lucide-react";
 import { renderMarkdown } from "@/lib/renderMarkdown";
@@ -20,6 +20,8 @@ interface Field {
   autoFilled: boolean;
   isDefault: boolean;
   value: string;
+  triggerTagKey: string | null;
+  triggerValue: string | null;
 }
 interface DocumentInfo { id: string; name: string; description: string | null; fieldTagKeys: string[]; }
 interface PageData { title: string; heading: string; requiresCode: boolean; documents: DocumentInfo[]; fields: Field[]; }
@@ -41,6 +43,38 @@ function setCachedCode(pageId: string, code: string) {
 }
 function clearCachedCode(pageId: string) {
   try { localStorage.removeItem(codeCacheKey(pageId)); } catch { /* ignore */ }
+}
+
+// Which fields currently satisfy their trigger (if any) and should render.
+// Fields with no trigger are always visible. A triggered field needs its
+// trigger to itself be visible, answered (a value, or explicitly marked N/A),
+// and — if triggerValue is set — the trigger's answer to include at least
+// one of triggerValue's "||"-separated allowed values (a single value is
+// just the one-element case). Recursive with a cache + in-progress guard so
+// a chain (or an accidental cycle) resolves once and a cycle just falls back
+// to "not visible" rather than infinite-looping.
+function computeVisibleTagKeys(fields: Field[], values: Record<string, string>, naFields: Set<string>): Set<string> {
+  const byTagKey = new Map(fields.map(f => [f.tagKey, f]));
+  const cache = new Map<string, boolean>();
+  const inProgress = new Set<string>();
+  function visible(tagKey: string): boolean {
+    if (cache.has(tagKey)) return cache.get(tagKey)!;
+    if (inProgress.has(tagKey)) return false;
+    inProgress.add(tagKey);
+    const f = byTagKey.get(tagKey);
+    let result = true;
+    if (f?.triggerTagKey) {
+      const parentAnswered = naFields.has(f.triggerTagKey) || !!(values[f.triggerTagKey] || "").trim();
+      const answered = (values[f.triggerTagKey] || "").split(", ").filter(Boolean);
+      const allowed = f.triggerValue == null ? null : f.triggerValue.split("||");
+      const parentValueOk = allowed == null ? true : answered.some(v => allowed.includes(v));
+      result = visible(f.triggerTagKey) && parentAnswered && parentValueOk;
+    }
+    inProgress.delete(tagKey);
+    cache.set(tagKey, result);
+    return result;
+  }
+  return new Set(fields.filter(f => visible(f.tagKey)).map(f => f.tagKey));
 }
 
 export default function PublicDocumentFillPage() {
@@ -142,12 +176,52 @@ export default function PublicDocumentFillPage() {
     setValue(tagKey, "");
   };
 
+  // Global (not tab-scoped, since values/naFields are shared across tabs) —
+  // which fields currently satisfy their trigger, if they have one.
+  const visibleTagKeys = useMemo(
+    () => computeVisibleTagKeys(data?.fields ?? [], values, naFields),
+    [data?.fields, values, naFields]
+  );
+
+  // Clears a triggered field's stale value/N/A the moment it drops OUT of
+  // visibleTagKeys (e.g. the client changes an earlier answer so a branch no
+  // longer applies) — otherwise a stale answer could silently survive into a
+  // generated document even though its field is no longer shown. Only fires
+  // on a genuine visible→hidden transition (tracked via prevVisibleRef) —
+  // NOT on initial load, when every not-yet-answered gated field starts out
+  // hidden with a pre-filled default/auto-filled value that hasn't been
+  // shown to the client yet and must survive until its trigger is answered.
+  const prevVisibleRef = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (!data) return;
+    const prevVisible = prevVisibleRef.current;
+    prevVisibleRef.current = visibleTagKeys;
+    if (!prevVisible) return;
+    const stale = data.fields.filter(f =>
+      f.triggerTagKey && prevVisible.has(f.tagKey) && !visibleTagKeys.has(f.tagKey)
+      && ((values[f.tagKey] ?? "") !== "" || naFields.has(f.tagKey))
+    );
+    if (!stale.length) return;
+    setValues(prev => {
+      const next = { ...prev };
+      stale.forEach(f => { next[f.tagKey] = ""; });
+      return next;
+    });
+    setNaFields(prev => {
+      const next = new Set(prev);
+      stale.forEach(f => next.delete(f.tagKey));
+      return next;
+    });
+  }, [data, visibleTagKeys, values, naFields]);
+
   const activeDoc = data?.documents.find(d => d.id === activeDocId) || null;
   const isMultiDoc = (data?.documents.length ?? 0) > 1;
   // With one document there's nothing to scope a tab to — show every field.
   // With several, each tab only shows the fields that document actually uses.
+  // Either way, a field with an unmet trigger stays hidden regardless of tab.
   const visibleFields = data
     ? (isMultiDoc && activeDoc ? data.fields.filter(f => activeDoc.fieldTagKeys.includes(f.tagKey)) : data.fields)
+      .filter(f => visibleTagKeys.has(f.tagKey))
     : [];
 
   const missingRequired = (fields: Field[]): string | null => {
@@ -175,7 +249,7 @@ export default function PublicDocumentFillPage() {
 
   const handleGenerateAll = async () => {
     if (!data) return;
-    const missing = missingRequired(data.fields);
+    const missing = missingRequired(data.fields.filter(f => visibleTagKeys.has(f.tagKey)));
     if (missing) { setSubmitError(missing); return; }
     await submit("All documents", undefined, "all");
   };

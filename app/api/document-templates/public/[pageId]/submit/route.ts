@@ -75,7 +75,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pag
 
   const { data: fieldRows } = await admin
     .from("document_template_fields")
-    .select("id, template_id, tag_key, label, is_required, auto_fill_field_id, joined_to_field_id")
+    .select("id, template_id, tag_key, label, is_required, auto_fill_field_id, joined_to_field_id, trigger_field_id, trigger_value")
     .in("template_id", templateIds);
 
   // Resolve each field to its join-root — mirrors the GET route (see
@@ -125,6 +125,29 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pag
     return "";
   };
 
+  // A required field whose trigger condition isn't currently met (e.g. trust
+  // fields when the borrower isn't a trust) doesn't actually apply — recurse
+  // up the trigger chain since an ancestor might itself be conditionally
+  // hidden. Cycle-guarded the same way pageLocalRoot is. trigger_value may
+  // hold several "||"-separated allowed values (a condition can accept any
+  // one of a set of answers, not just a single exact value).
+  function isTriggerSatisfied(f: any, seen: Set<string> = new Set()): boolean {
+    if (!f.trigger_field_id || seen.has(f.id)) return true;
+    seen.add(f.id);
+    const triggerField = fieldsById.get(f.trigger_field_id);
+    if (!triggerField) return true;
+    const triggerRoot = pageLocalRoot(triggerField);
+    if (!isTriggerSatisfied(triggerRoot, seen)) return false;
+    const val = effective(triggerRoot.tag_key, triggerRoot.auto_fill_field_id);
+    if (!val && !naFields.has(triggerRoot.tag_key)) return false;
+    if (f.trigger_value) {
+      const allowed: string[] = f.trigger_value.split("||");
+      const answered: string[] = val.split(", ").filter(Boolean);
+      if (!answered.some(v => allowed.includes(v))) return false;
+    }
+    return true;
+  }
+
   // ── Validate required fields (de-duplicated by join-resolved tag_key) ──
   // A field marked "Not applicable" satisfies its own requiredness — that's
   // the whole point of the button. Scoped to the documents actually being
@@ -138,6 +161,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pag
     if (!root.is_required || seenReq.has(root.tag_key)) continue;
     seenReq.add(root.tag_key);
     if (naFields.has(root.tag_key)) continue;
+    if (!isTriggerSatisfied(root)) continue;
     if (!effective(root.tag_key, root.auto_fill_field_id)) {
       return NextResponse.json({ error: `"${root.label}" is required` }, { status: 400 });
     }
