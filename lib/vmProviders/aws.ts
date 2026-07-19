@@ -89,27 +89,58 @@ async function ensureRdpSecurityGroup(client: EC2Client): Promise<string> {
   return groupId;
 }
 
+// Silently installs Microsoft Office via the Office Deployment Tool (fetched
+// from the stable https://aka.ms/ODT redirect, which always points at the
+// current ODT release -- avoids hardcoding a version-specific download
+// URL). Product ID O365ProPlusRetail is "Microsoft 365 Apps for enterprise"
+// -- standard (non-shared) licensing, since each VM here is assigned to
+// exactly one person, the same one-VM-per-user model the existing Ubuntu
+// VMs use. Whoever's assigned the VM activates Office with their own
+// Microsoft 365 account the first time they open an Office app, same as on
+// any fresh PC -- nothing here stores or injects Microsoft credentials.
+//
+// Guarded by a WINWORD.EXE existence check so it's safe to run on every
+// boot, not just first boot: without that, a VM hibernated (snapshotted)
+// before this ~5-10 minute install finished would have Office missing from
+// its snapshot permanently, since waking from a snapshot otherwise skips
+// this step entirely (see windowsRestoreUserData below) -- this makes every
+// wake self-heal that instead of silently carrying the gap forward forever.
+//
+// Explicitly forces TLS 1.2 first: PowerShell's default
+// [Net.ServicePointManager]::SecurityProtocol on a fresh Windows Server
+// Base AMI doesn't reliably include it, which silently breaks
+// Invoke-WebRequest against aka.ms/Microsoft's HTTPS-only endpoints (a
+// well-documented, common failure mode for exactly this kind of
+// automation) -- worth forcing defensively even without direct
+// confirmation it's hit this specific case, since it's harmless otherwise.
+const INSTALL_OFFICE_SNIPPET = `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+if (!(Test-Path "$env:ProgramFiles\\Microsoft Office\\root\\Office16\\WINWORD.EXE")) {
+  $officeDir = "C:\\OfficeDeploy"
+  New-Item -ItemType Directory -Path $officeDir -Force | Out-Null
+  Invoke-WebRequest -Uri "https://aka.ms/ODT" -OutFile "$officeDir\\odtsetup.exe"
+  Start-Process -FilePath "$officeDir\\odtsetup.exe" -ArgumentList "/quiet /extract:$officeDir" -Wait
+  @'
+<Configuration>
+  <Add OfficeClientEdition="64" Channel="Current">
+    <Product ID="O365ProPlusRetail">
+      <Language ID="en-us" />
+    </Product>
+  </Add>
+  <Display Level="None" AcceptEULA="TRUE" />
+</Configuration>
+'@ | Out-File -FilePath "$officeDir\\configuration.xml" -Encoding ascii
+  Start-Process -FilePath "$officeDir\\setup.exe" -ArgumentList "/configure \`"$officeDir\\configuration.xml\`"" -Wait
+}`;
+
 // Windows EC2 instances run this automatically via EC2Launch v2 on first
 // boot only (no <persist>true</persist>, so it won't re-run and reset the
-// password on later reboots). Two things happen:
-//
-// 1. Set the built-in Administrator's password to one we generate and
-//    already know -- unlike the typical EC2 Windows flow (random password +
-//    keypair + GetPasswordData decryption), this keeps parity with the
-//    DigitalOcean adapter's UX where the password is simply known upfront.
-//    RDP + the firewall rule for it are enabled by default on the stock AMI;
-//    set explicitly anyway as a hedge against the base AMI's defaults ever
-//    changing.
-// 2. Silently install Microsoft Office via the Office Deployment Tool
-//    (fetched from the stable https://aka.ms/ODT redirect, which always
-//    points at the current ODT release -- avoids hardcoding a version-
-//    specific download URL). Product ID O365ProPlusRetail is "Microsoft 365
-//    Apps for enterprise" -- standard (non-shared) licensing, since each VM
-//    here is assigned to exactly one person, the same one-VM-per-user model
-//    the existing Ubuntu VMs use. Whoever's assigned the VM activates Office
-//    with their own Microsoft 365 account the first time they open an
-//    Office app, same as on any fresh PC -- nothing here stores or injects
-//    Microsoft credentials.
+// password on later reboots). Sets the built-in Administrator's password to
+// one we generate and already know -- unlike the typical EC2 Windows flow
+// (random password + keypair + GetPasswordData decryption), this keeps
+// parity with the DigitalOcean adapter's UX where the password is simply
+// known upfront. RDP + the firewall rule for it are enabled by default on
+// the stock AMI; set explicitly anyway as a hedge against the base AMI's
+// defaults ever changing. Also installs Office (see INSTALL_OFFICE_SNIPPET).
 function windowsUserData(password: string): string {
   const escapedPassword = password.replace(/"/g, '`"').replace(/\$/g, "`$");
   const script = `<powershell>
@@ -130,40 +161,30 @@ reg load HKU\\DefaultUser "C:\\Users\\Default\\NTUSER.DAT"
 reg add "HKU\\DefaultUser\\Software\\Google\\Chrome\\Profile" /v high-dpi-support /t REG_DWORD /d 1 /f
 reg unload HKU\\DefaultUser
 
-$officeDir = "C:\\OfficeDeploy"
-New-Item -ItemType Directory -Path $officeDir -Force | Out-Null
-Invoke-WebRequest -Uri "https://aka.ms/ODT" -OutFile "$officeDir\\odtsetup.exe"
-Start-Process -FilePath "$officeDir\\odtsetup.exe" -ArgumentList "/quiet /extract:$officeDir" -Wait
-@'
-<Configuration>
-  <Add OfficeClientEdition="64" Channel="Current">
-    <Product ID="O365ProPlusRetail">
-      <Language ID="en-us" />
-    </Product>
-  </Add>
-  <Display Level="None" AcceptEULA="TRUE" />
-</Configuration>
-'@ | Out-File -FilePath "$officeDir\\configuration.xml" -Encoding ascii
-Start-Process -FilePath "$officeDir\\setup.exe" -ArgumentList "/configure \`"$officeDir\\configuration.xml\`"" -Wait
+${INSTALL_OFFICE_SNIPPET}
 </powershell>`;
   return Buffer.from(script, "utf-8").toString("base64");
 }
 
 // Used instead of windowsUserData() when waking a hibernated VM from a
-// custom AMI. Office and every other first-boot step are already baked
-// into the disk, so re-running the full script would be redundant at best
-// (re-downloading/re-installing Office) and actively wrong at worst (EC2
-// Launch v2 only runs plain <powershell> on an instance's tracked "first
-// boot", which the source AMI already consumed -- without <persist>true</persist>
-// this wouldn't even run again, silently leaving the Administrator password
-// unset on the new instance). Keep this trimmed to just the idempotent
-// password/RDP steps and force it to run on every boot via <persist>.
+// custom AMI. Every other first-boot step (Chrome's DPI fix, etc.) is
+// already baked into the disk, so re-running the full script would be
+// redundant at best -- but Office is deliberately re-checked (and
+// self-healed if missing) on every wake, not treated as baked-in, since a
+// snapshot taken before that ~5-10 minute install finished would otherwise
+// carry the gap forward permanently. EC2 Launch v2 only runs plain
+// <powershell> on an instance's tracked "first boot", which the source AMI
+// already consumed -- without <persist>true</persist> this wouldn't even
+// re-run the password/RDP steps, silently leaving them unset on the new
+// instance -- so force it to run on every boot via <persist>.
 function windowsRestoreUserData(password: string): string {
   const escapedPassword = password.replace(/"/g, '`"').replace(/\$/g, "`$");
   const script = `<powershell>
 net user Administrator "${escapedPassword}"
 Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 Set-ItemProperty -Path "HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server" -Name "fDenyTSConnections" -Value 0
+
+${INSTALL_OFFICE_SNIPPET}
 </powershell>
 <persist>true</persist>`;
   return Buffer.from(script, "utf-8").toString("base64");
