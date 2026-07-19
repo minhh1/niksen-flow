@@ -17,12 +17,15 @@ export interface VmSizeOption {
 // Shape depends on provider -- see supabase/company_cloud_credentials.sql.
 export type ProviderCredentials = Record<string, string>;
 
+export type VmOs = "linux" | "windows";
+
 export interface CreateInstanceParams {
   credentials: ProviderCredentials;
   name: string;
   sizeSlug: string;
   region: string;
   protocol: VmProtocol;
+  os: VmOs;
   remoteUsername: string;
   remotePassword: string;
 }
@@ -41,6 +44,13 @@ export interface InstanceStatus {
 export interface VmProvider {
   id: CloudProviderId;
   createInstance(params: CreateInstanceParams): Promise<CreateInstanceResult>;
-  getInstance(credentials: ProviderCredentials, providerInstanceId: string): Promise<InstanceStatus>;
-  destroyInstance(credentials: ProviderCredentials, providerInstanceId: string): Promise<void>;
+  // `region` is unused by DigitalOcean (droplet IDs are looked up without it)
+  // but required by AWS -- EC2 API calls are per-region regardless of an
+  // instance ID's global uniqueness, so the region a VM was launched in has
+  // to be threaded back through on every later call. Callers pass the
+  // virtual_computers row's own `region` column, not the credential's
+  // stored default region, since a company can launch VMs into a different
+  // region than their credential's default.
+  getInstance(credentials: ProviderCredentials, providerInstanceId: string, region: string): Promise<InstanceStatus>;
+  destroyInstance(credentials: ProviderCredentials, providerInstanceId: string, region: string): Promise<void>;
 }

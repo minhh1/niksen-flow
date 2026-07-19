@@ -1,14 +1,17 @@
 // lib/vmProviders/registry.ts
 import type { CloudProviderId, VmProvider } from "./types";
 import { digitalOceanProvider } from "./digitalocean";
+import { awsProvider } from "./aws";
 
-// Only DigitalOcean is provisionable in Phase 1. AWS/GCP still appear in the
-// admin cost-comparison table (see lib/vmProviders/pricing.ts) but aren't
-// selectable for creation until their adapters land in Phase 2.
-export const PROVISIONABLE_PROVIDERS: CloudProviderId[] = ["digitalocean"];
+// AWS is Windows-only here (see aws.ts) -- added specifically so Microsoft
+// Office can be preinstalled, not as general-purpose AWS Linux support.
+// GCP still appears in the admin cost-comparison table (see
+// lib/vmProviders/pricing.ts) but isn't selectable until an adapter lands.
+export const PROVISIONABLE_PROVIDERS: CloudProviderId[] = ["digitalocean", "aws"];
 
 const PROVIDERS: Partial<Record<CloudProviderId, VmProvider>> = {
   digitalocean: digitalOceanProvider,
+  aws: awsProvider,
 };
 
 export function getProvider(id: CloudProviderId): VmProvider {

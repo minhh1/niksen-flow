@@ -13,6 +13,14 @@ export function getPlatformCredentials(provider: CloudProviderId): ProviderCrede
       if (!token) throw new Error("DIGITALOCEAN_PLATFORM_API_TOKEN is not configured.");
       return { api_token: token };
     }
+    case "aws": {
+      const accessKeyId = process.env.AWS_PLATFORM_ACCESS_KEY_ID;
+      const secretAccessKey = process.env.AWS_PLATFORM_SECRET_ACCESS_KEY;
+      if (!accessKeyId || !secretAccessKey) {
+        throw new Error("AWS_PLATFORM_ACCESS_KEY_ID / AWS_PLATFORM_SECRET_ACCESS_KEY are not configured.");
+      }
+      return { access_key_id: accessKeyId, secret_access_key: secretAccessKey };
+    }
     default:
       throw new Error(`Platform-billed VMs are not configured for provider "${provider}" yet.`);
   }

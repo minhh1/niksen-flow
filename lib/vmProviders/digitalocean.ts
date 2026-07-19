@@ -201,7 +201,7 @@ export const digitalOceanProvider: VmProvider = {
     return { providerInstanceId: String(data.droplet.id), ipAddress: null };
   },
 
-  async getInstance(credentials: ProviderCredentials, providerInstanceId: string): Promise<InstanceStatus> {
+  async getInstance(credentials: ProviderCredentials, providerInstanceId: string, _region: string): Promise<InstanceStatus> {
     const res = await doFetch(credentials, `/droplets/${providerInstanceId}`);
     await throwIfNotOk(res, "droplet lookup");
     const data = await res.json();
@@ -215,7 +215,7 @@ export const digitalOceanProvider: VmProvider = {
     };
   },
 
-  async destroyInstance(credentials: ProviderCredentials, providerInstanceId: string): Promise<void> {
+  async destroyInstance(credentials: ProviderCredentials, providerInstanceId: string, _region: string): Promise<void> {
     const res = await doFetch(credentials, `/droplets/${providerInstanceId}`, { method: "DELETE" });
     if (res.status === 404) return;
     await throwIfNotOk(res, "droplet deletion");

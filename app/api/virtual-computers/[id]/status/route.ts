@@ -21,7 +21,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       const credentials = await resolveCredentials(admin, vm);
       if (credentials) {
         const adapter = getProvider(vm.provider as CloudProviderId);
-        const instance = await adapter.getInstance(credentials, vm.provider_instance_id);
+        const instance = await adapter.getInstance(credentials, vm.provider_instance_id, vm.region);
         const updates: Record<string, unknown> = { updated_at: new Date().toISOString(), status: instance.status };
         if (instance.ipAddress) updates.ip_address = instance.ipAddress;
         await admin.from("virtual_computers").update(updates).eq("id", id);

@@ -16,8 +16,8 @@ import { getProvider, PROVISIONABLE_PROVIDERS } from "@/lib/vmProviders/registry
 import { PRICING } from "@/lib/vmProviders/pricing";
 import { getPlatformCredentials } from "@/lib/vmProviders/platformCredentials";
 import { PLANS, isPlanId } from "@/lib/billing/plans";
-import { generateRemotePassword } from "../_lib";
-import type { CloudProviderId, ProviderCredentials, VmProtocol } from "@/lib/vmProviders/types";
+import { generateRemotePassword, generateWindowsPassword } from "../_lib";
+import type { CloudProviderId, ProviderCredentials, VmOs, VmProtocol } from "@/lib/vmProviders/types";
 
 export async function POST(req: NextRequest) {
   const auth = await authorizeCompanyMember();
@@ -41,6 +41,14 @@ export async function POST(req: NextRequest) {
   if (billingMode === "byo" && !credentialId) {
     return NextResponse.json({ error: "credentialId is required for bring-your-own billing" }, { status: 400 });
   }
+
+  // AWS is Windows-only here (see lib/vmProviders/aws.ts), added specifically
+  // to preinstall Microsoft Office. Platform-billed Windows VMs are gated to
+  // the Pro plan only (see lib/billing/plans.ts) via the generic
+  // allowedSizes check below -- no special-casing needed here since a plan
+  // without an "aws" entry in allowedSizes already rejects every AWS
+  // sizeSlug the same way it would reject an unlisted DigitalOcean one.
+  const os: VmOs = provider === "aws" ? "windows" : "linux";
 
   const sizeOption = PRICING[provider as CloudProviderId]?.find((s) => s.slug === sizeSlug);
   if (!sizeOption) return NextResponse.json({ error: "Unknown sizeSlug for provider" }, { status: 400 });
@@ -108,8 +116,8 @@ export async function POST(req: NextRequest) {
     credentials = credential.credentials;
   }
 
-  const remoteUsername = "vcuser";
-  const remotePassword = generateRemotePassword();
+  const remoteUsername = os === "windows" ? "Administrator" : "vcuser";
+  const remotePassword = os === "windows" ? generateWindowsPassword() : generateRemotePassword();
 
   const { data: row, error: insertError } = await admin
     .from("virtual_computers")
@@ -119,6 +127,7 @@ export async function POST(req: NextRequest) {
       name,
       provider,
       protocol,
+      os,
       size_slug: sizeSlug,
       region,
       credential_id: billingMode === "byo" ? credentialId : null,
@@ -141,6 +150,7 @@ export async function POST(req: NextRequest) {
       sizeSlug,
       region,
       protocol: protocol as VmProtocol,
+      os,
       remoteUsername,
       remotePassword,
     });

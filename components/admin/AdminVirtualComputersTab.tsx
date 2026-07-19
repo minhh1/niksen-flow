@@ -30,6 +30,7 @@ interface Vm {
   name: string;
   provider: CloudProviderId;
   protocol: VmProtocol;
+  os: "linux" | "windows";
   size_slug: string;
   region: string;
   status: string;
@@ -421,10 +422,12 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
               <select
                 value={vmProvider}
                 onChange={(e) => {
-                  setVmProvider(e.target.value as CloudProviderId);
+                  const nextProvider = e.target.value as CloudProviderId;
+                  setVmProvider(nextProvider);
                   setVmSizeSlug("");
                   setVmCredentialId("");
                   setVmRegion("");
+                  if (nextProvider === "aws") setVmProtocol("rdp");
                 }}
                 className="px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400"
               >
@@ -434,14 +437,18 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
                   </option>
                 ))}
               </select>
-              <select
-                value={vmProtocol}
-                onChange={(e) => setVmProtocol(e.target.value as VmProtocol)}
-                className="px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400"
-              >
-                <option value="vnc">VNC</option>
-                <option value="rdp">RDP</option>
-              </select>
+              {vmProvider === "aws" ? (
+                <div className="px-3 py-2 border border-slate-200 rounded-full text-[12px] text-slate-500">RDP</div>
+              ) : (
+                <select
+                  value={vmProtocol}
+                  onChange={(e) => setVmProtocol(e.target.value as VmProtocol)}
+                  className="px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400"
+                >
+                  <option value="vnc">VNC</option>
+                  <option value="rdp">RDP</option>
+                </select>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <select
@@ -523,6 +530,11 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <p className="text-[12px] font-medium text-slate-800 truncate">{vm.name}</p>
+                    {vm.os === "windows" && (
+                      <span className="shrink-0 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide bg-sky-50 text-sky-600">
+                        Windows + Office
+                      </span>
+                    )}
                     {vm.billing_mode === "platform" && (
                       <span className="shrink-0 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wide bg-indigo-50 text-indigo-600">
                         Platform-billed

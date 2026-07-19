@@ -24,7 +24,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       const credentials = await resolveCredentials(admin, vm);
       if (credentials) {
         const adapter = getProvider(vm.provider as CloudProviderId);
-        await adapter.destroyInstance(credentials, vm.provider_instance_id);
+        await adapter.destroyInstance(credentials, vm.provider_instance_id, vm.region);
       }
     } catch (err) {
       // Don't fall through to marking the row destroyed -- if we can't

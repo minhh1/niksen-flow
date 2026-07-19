@@ -35,7 +35,14 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     name: "Pro",
     priceUsdDisplay: 399,
     includedVmSlots: 10,
-    allowedSizes: { digitalocean: ["s-2vcpu-4gb", "s-4vcpu-8gb", "s-8vcpu-16gb"] },
+    // Windows (AWS) VMs are Pro-only -- AWS Windows Server licensing costs
+    // noticeably more than the flat DigitalOcean droplet pricing the other
+    // tiers assume (see lib/vmProviders/pricing.ts), so it's gated to the
+    // plan that already has the most headroom.
+    allowedSizes: {
+      digitalocean: ["s-2vcpu-4gb", "s-4vcpu-8gb", "s-8vcpu-16gb"],
+      aws: ["t3.medium", "t3.xlarge", "m5.2xlarge"],
+    },
   },
 };
 

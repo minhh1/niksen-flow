@@ -1,0 +1,185 @@
+// lib/vmProviders/aws.ts
+// AWS EC2 adapter -- Windows-only (see lib/vmProviders/registry.ts and the
+// "AWS (Windows + Office)" label in pricing.ts). DigitalOcean's adapter
+// avoids any SDK because its REST API is a simple bearer token; AWS requires
+// SigV4 request signing, which isn't practical to hand-roll, so this uses
+// the official @aws-sdk/client-ec2 / @aws-sdk/client-ssm packages instead.
+// Credentials are passed inline per call (never read from env/~/.aws) since
+// each request may be a different company's own BYO AWS keys -- see
+// supabase/company_cloud_credentials.sql's documented `aws` credentials
+// shape: { access_key_id, secret_access_key, region }.
+import {
+  EC2Client,
+  RunInstancesCommand,
+  DescribeInstancesCommand,
+  TerminateInstancesCommand,
+  DescribeSecurityGroupsCommand,
+  CreateSecurityGroupCommand,
+  AuthorizeSecurityGroupIngressCommand,
+  type _InstanceType as InstanceType,
+} from "@aws-sdk/client-ec2";
+import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
+import type {
+  CreateInstanceParams,
+  CreateInstanceResult,
+  InstanceStatus,
+  ProviderCredentials,
+  VmProvider,
+} from "./types";
+
+// The standard, Microsoft-documented way to avoid hardcoding a Windows AMI
+// ID (which differs per region and changes with every patch Tuesday) --
+// this SSM public parameter always resolves to the latest Windows Server
+// 2022 Base AMI in whichever region it's queried against.
+const WINDOWS_AMI_SSM_PARAMETER = "/aws/service/ami-windows-latest/Windows_Server-2022-English-Full-Base";
+
+const RDP_SECURITY_GROUP_NAME = "niksen-vm-rdp";
+
+function ec2Client(credentials: ProviderCredentials, region: string): EC2Client {
+  return new EC2Client({
+    region,
+    credentials: { accessKeyId: credentials.access_key_id, secretAccessKey: credentials.secret_access_key },
+  });
+}
+
+async function resolveWindowsAmiId(credentials: ProviderCredentials, region: string): Promise<string> {
+  const ssm = new SSMClient({
+    region,
+    credentials: { accessKeyId: credentials.access_key_id, secretAccessKey: credentials.secret_access_key },
+  });
+  const res = await ssm.send(new GetParameterCommand({ Name: WINDOWS_AMI_SSM_PARAMETER }));
+  const amiId = res.Parameter?.Value;
+  if (!amiId) throw new Error(`Could not resolve a Windows AMI in region "${region}".`);
+  return amiId;
+}
+
+// EC2's default security group doesn't allow inbound RDP from the internet,
+// so without this, Guacamole would never be able to reach the instance at
+// all -- ensure a dedicated group exists (idempotent: reused across every
+// Windows VM this company creates) rather than opening the account's
+// default group, which may be used by unrelated resources.
+async function ensureRdpSecurityGroup(client: EC2Client): Promise<string> {
+  const existing = await client.send(
+    new DescribeSecurityGroupsCommand({ Filters: [{ Name: "group-name", Values: [RDP_SECURITY_GROUP_NAME] }] })
+  );
+  const existingId = existing.SecurityGroups?.[0]?.GroupId;
+  if (existingId) return existingId;
+
+  const created = await client.send(
+    new CreateSecurityGroupCommand({
+      GroupName: RDP_SECURITY_GROUP_NAME,
+      Description: "Inbound RDP (3389) for niksen-flow Windows virtual computers",
+    })
+  );
+  const groupId = created.GroupId;
+  if (!groupId) throw new Error("AWS did not return a security group ID after creation.");
+
+  await client.send(
+    new AuthorizeSecurityGroupIngressCommand({
+      GroupId: groupId,
+      IpPermissions: [{ IpProtocol: "tcp", FromPort: 3389, ToPort: 3389, IpRanges: [{ CidrIp: "0.0.0.0/0" }] }],
+    })
+  );
+  return groupId;
+}
+
+// Windows EC2 instances run this automatically via EC2Launch v2 on first
+// boot only (no <persist>true</persist>, so it won't re-run and reset the
+// password on later reboots). Two things happen:
+//
+// 1. Set the built-in Administrator's password to one we generate and
+//    already know -- unlike the typical EC2 Windows flow (random password +
+//    keypair + GetPasswordData decryption), this keeps parity with the
+//    DigitalOcean adapter's UX where the password is simply known upfront.
+//    RDP + the firewall rule for it are enabled by default on the stock AMI;
+//    set explicitly anyway as a hedge against the base AMI's defaults ever
+//    changing.
+// 2. Silently install Microsoft Office via the Office Deployment Tool
+//    (fetched from the stable https://aka.ms/ODT redirect, which always
+//    points at the current ODT release -- avoids hardcoding a version-
+//    specific download URL). Product ID O365ProPlusRetail is "Microsoft 365
+//    Apps for enterprise" -- standard (non-shared) licensing, since each VM
+//    here is assigned to exactly one person, the same one-VM-per-user model
+//    the existing Ubuntu VMs use. Whoever's assigned the VM activates Office
+//    with their own Microsoft 365 account the first time they open an
+//    Office app, same as on any fresh PC -- nothing here stores or injects
+//    Microsoft credentials.
+function windowsUserData(password: string): string {
+  const escapedPassword = password.replace(/"/g, '`"').replace(/\$/g, "`$");
+  const script = `<powershell>
+net user Administrator "${escapedPassword}"
+Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+Set-ItemProperty -Path "HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server" -Name "fDenyTSConnections" -Value 0
+
+$officeDir = "C:\\OfficeDeploy"
+New-Item -ItemType Directory -Path $officeDir -Force | Out-Null
+Invoke-WebRequest -Uri "https://aka.ms/ODT" -OutFile "$officeDir\\odtsetup.exe"
+Start-Process -FilePath "$officeDir\\odtsetup.exe" -ArgumentList "/quiet /extract:$officeDir" -Wait
+@'
+<Configuration>
+  <Add OfficeClientEdition="64" Channel="Current">
+    <Product ID="O365ProPlusRetail">
+      <Language ID="en-us" />
+    </Product>
+  </Add>
+  <Display Level="None" AcceptEULA="TRUE" />
+</Configuration>
+'@ | Out-File -FilePath "$officeDir\\configuration.xml" -Encoding ascii
+Start-Process -FilePath "$officeDir\\setup.exe" -ArgumentList "/configure \`"$officeDir\\configuration.xml\`"" -Wait
+</powershell>`;
+  return Buffer.from(script, "utf-8").toString("base64");
+}
+
+export const awsProvider: VmProvider = {
+  id: "aws",
+
+  async createInstance(params: CreateInstanceParams): Promise<CreateInstanceResult> {
+    const client = ec2Client(params.credentials, params.region);
+    const [amiId, securityGroupId] = await Promise.all([
+      resolveWindowsAmiId(params.credentials, params.region),
+      ensureRdpSecurityGroup(client),
+    ]);
+
+    const res = await client.send(
+      new RunInstancesCommand({
+        ImageId: amiId,
+        InstanceType: params.sizeSlug as InstanceType,
+        MinCount: 1,
+        MaxCount: 1,
+        SecurityGroupIds: [securityGroupId],
+        UserData: windowsUserData(params.remotePassword),
+        TagSpecifications: [{ ResourceType: "instance", Tags: [{ Key: "Name", Value: params.name }] }],
+      })
+    );
+    const instance = res.Instances?.[0];
+    if (!instance?.InstanceId) throw new Error("AWS did not return an instance ID after launch.");
+    return { providerInstanceId: instance.InstanceId, ipAddress: instance.PublicIpAddress ?? null };
+  },
+
+  async getInstance(credentials: ProviderCredentials, providerInstanceId: string, region: string): Promise<InstanceStatus> {
+    const client = ec2Client(credentials, region);
+    const res = await client.send(new DescribeInstancesCommand({ InstanceIds: [providerInstanceId] }));
+    const instance = res.Reservations?.[0]?.Instances?.[0];
+    if (!instance) throw new Error(`Instance "${providerInstanceId}" not found.`);
+
+    const state = instance.State?.Name;
+    return {
+      providerInstanceId,
+      status: state === "running" ? "running" : state === "pending" ? "provisioning" : "error",
+      ipAddress: instance.PublicIpAddress ?? null,
+    };
+  },
+
+  async destroyInstance(credentials: ProviderCredentials, providerInstanceId: string, region: string): Promise<void> {
+    const client = ec2Client(credentials, region);
+    try {
+      await client.send(new TerminateInstancesCommand({ InstanceIds: [providerInstanceId] }));
+    } catch (err) {
+      // Mirrors the DigitalOcean adapter tolerating a 404 -- already gone is
+      // a successful destroy, not an error.
+      const code = (err as { name?: string })?.name;
+      if (code === "InvalidInstanceID.NotFound") return;
+      throw err;
+    }
+  },
+};

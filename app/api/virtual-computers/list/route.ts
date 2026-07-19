@@ -12,7 +12,7 @@ export async function GET() {
   let query = admin
     .from("virtual_computers")
     .select(
-      "id, name, provider, protocol, size_slug, region, status, error_message, assigned_user_id, billing_mode, hourly_usd_at_creation, created_at"
+      "id, name, provider, protocol, os, size_slug, region, status, error_message, assigned_user_id, billing_mode, hourly_usd_at_creation, created_at"
     )
     .eq("company_id", companyId)
     .neq("status", "destroyed")

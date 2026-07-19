@@ -22,4 +22,12 @@ export const REGIONS: Partial<Record<CloudProviderId, { slug: string; label: str
     { slug: "blr1", label: "Bangalore 1" },
     { slug: "syd1", label: "Sydney 1" },
   ],
+  aws: [
+    { slug: "us-east-1", label: "N. Virginia" },
+    { slug: "us-west-2", label: "Oregon" },
+    { slug: "eu-west-1", label: "Ireland" },
+    { slug: "eu-central-1", label: "Frankfurt" },
+    { slug: "ap-southeast-1", label: "Singapore" },
+    { slug: "ap-southeast-2", label: "Sydney" },
+  ],
 };
