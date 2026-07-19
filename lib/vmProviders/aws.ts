@@ -117,6 +117,19 @@ net user Administrator "${escapedPassword}"
 Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
 Set-ItemProperty -Path "HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server" -Name "fDenyTSConnections" -Value 0
 
+# Chrome's own high-DPI awareness defaults to off (registry key absent) --
+# separate from anything Guacamole/RDP negotiates, and the actual cause of
+# Chrome page content rendering blurry over RDP while natively DPI-aware
+# apps (File Explorer) look fine (confirmed against Chromium developers'
+# own description of this setting, since chrome://flags can't reach it --
+# Chrome needs it before profiles/settings even initialize). This runs as
+# SYSTEM before Administrator ever logs in and creates a real profile, so
+# there's no HKCU to write to yet -- load the Default user template hive
+# instead, which Windows copies into every new profile going forward.
+reg load HKU\\DefaultUser "C:\\Users\\Default\\NTUSER.DAT"
+reg add "HKU\\DefaultUser\\Software\\Google\\Chrome\\Profile" /v high-dpi-support /t REG_DWORD /d 1 /f
+reg unload HKU\\DefaultUser
+
 $officeDir = "C:\\OfficeDeploy"
 New-Item -ItemType Directory -Path $officeDir -Force | Out-Null
 Invoke-WebRequest -Uri "https://aka.ms/ODT" -OutFile "$officeDir\\odtsetup.exe"
