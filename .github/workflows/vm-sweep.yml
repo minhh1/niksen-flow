@@ -1,0 +1,23 @@
+name: VM hibernate sweep
+
+# Vercel Cron on the Hobby plan only supports once-daily jobs, and the
+# Claude Code scheduled-routine mechanism used elsewhere in this project
+# has a 1-hour minimum interval -- neither is frequent enough for the
+# virtual-computer hibernate lifecycle's sweep route (see
+# app/api/virtual-computers/sweep/route.ts), which needs to run every
+# 5-10 minutes to resolve in-progress snapshots, catch the evening
+# heartbeat fallback / midnight backstop, and pre-warm scheduled VMs with
+# enough lead time. This workflow just curls that endpoint on a schedule.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger sweep
+        run: |
+          curl -sf -X GET "https://niksen-flow.vercel.app/api/virtual-computers/sweep" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
