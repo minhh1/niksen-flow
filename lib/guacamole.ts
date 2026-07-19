@@ -80,20 +80,22 @@ export async function getGuacamoleSession(params: GuacamoleConnectionParams): Pr
           // Lets an already-open session adapt if the browser window
           // resizes, instead of requiring a full reconnect to change size.
           "resize-method": "display-update",
-          // Defaults chosen for responsiveness over visual fidelity --
-          // reduced color depth is the single biggest bandwidth/encode-time
-          // lever, and disabling desktop-effects toggles is the standard
-          // "performance mode" RDP config. VNC has no equivalent toggle set
+          // Only disable toggles that are purely decorative/behavioral --
+          // wallpaper and menu/drag animations -- not anything that touches
+          // how text or color actually renders. An earlier version of this
+          // also set color-depth to 16 and turned off font-smoothing and
+          // desktop-composition for bandwidth; in practice that made real
+          // application content (anti-aliased text, gradients) visibly
+          // blurry -- confirmed directly (Gmail in a VM session: taskbar/
+          // icons were fine, but on-screen text wasn't rendering cleanly).
+          // Reduced color depth causes banding on anti-aliased edges, and
+          // disabling font-smoothing directly disables ClearType -- neither
+          // is worth the bandwidth savings. VNC has no equivalent toggle set
           // (raw framebuffer protocol), so nothing extra applies there.
           ...(protocol === "rdp"
             ? {
                 "ignore-cert": "true",
-                "color-depth": "16",
                 "enable-wallpaper": "false",
-                "enable-theming": "false",
-                "enable-font-smoothing": "false",
-                "enable-full-window-drag": "false",
-                "enable-desktop-composition": "false",
                 "enable-menu-animations": "false",
               }
             : {}),
