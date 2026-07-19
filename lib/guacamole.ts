@@ -123,11 +123,23 @@ export async function getGuacamoleSession(params: GuacamoleConnectionParams): Pr
           // disabling font-smoothing directly disables ClearType -- neither
           // is worth the bandwidth savings. VNC has no equivalent toggle set
           // (raw framebuffer protocol), so nothing extra applies there.
+          //
+          // enable-font-smoothing defaults to false in Guacamole (RDP itself
+          // renders text with rough edges by default, to cut the color
+          // count/bandwidth text needs) -- simply not setting it to "false"
+          // still leaves it off. That's the actual cause of a second,
+          // narrower blur regression seen after the devicePixelRatio/DPI fix
+          // below: native GDI-rendered shell UI (File Explorer) looked fine,
+          // but anti-aliased page content inside Chrome was still visibly
+          // rough -- exactly Guacamole's documented default behavior, not a
+          // leftover from the color-depth/font-smoothing settings already
+          // reverted above. Needs to be explicitly turned on.
           ...(protocol === "rdp"
             ? {
                 "ignore-cert": "true",
                 "enable-wallpaper": "false",
                 "enable-menu-animations": "false",
+                "enable-font-smoothing": "true",
               }
             : {}),
         },
