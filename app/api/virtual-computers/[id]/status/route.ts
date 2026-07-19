@@ -35,5 +35,13 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
     }
   }
 
-  return NextResponse.json({ id: vm.id, status: vm.status, errorMessage: vm.error_message, ipAddress: vm.ip_address });
+  return NextResponse.json({
+    id: vm.id,
+    status: vm.status,
+    errorMessage: vm.error_message,
+    ipAddress: vm.ip_address,
+    os: vm.os,
+    createdAt: vm.created_at,
+    hibernateDeadline: vm.hibernate_deadline,
+  });
 }

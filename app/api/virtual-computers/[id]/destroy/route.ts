@@ -3,7 +3,7 @@
 import { NextResponse } from "next/server";
 import { authorizeCompanyMember } from "@/lib/documentTemplateAuth";
 import { getProvider } from "@/lib/vmProviders/registry";
-import { loadVm, resolveCredentials } from "../../_lib";
+import { loadVm, resolveCredentials, closeUsageEvent } from "../../_lib";
 import type { CloudProviderId } from "@/lib/vmProviders/types";
 
 export async function POST(_req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -42,6 +42,7 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
     }
   }
 
+  await closeUsageEvent(admin, id);
   await admin
     .from("virtual_computers")
     .update({ status: "destroyed", destroyed_at: new Date().toISOString(), updated_at: new Date().toISOString() })

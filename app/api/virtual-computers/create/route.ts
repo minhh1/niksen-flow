@@ -16,7 +16,8 @@ import { getProvider, PROVISIONABLE_PROVIDERS } from "@/lib/vmProviders/registry
 import { PRICING } from "@/lib/vmProviders/pricing";
 import { getPlatformCredentials } from "@/lib/vmProviders/platformCredentials";
 import { PLANS, isPlanId } from "@/lib/billing/plans";
-import { generateRemotePassword, generateWindowsPassword } from "../_lib";
+import { generateRemotePassword, generateWindowsPassword, openUsageEvent, getCompanySchedule } from "../_lib";
+import { nextLocalMidnight } from "@/lib/vmProviders/scheduling";
 import type { CloudProviderId, ProviderCredentials, VmOs, VmProtocol } from "@/lib/vmProviders/types";
 
 export async function POST(req: NextRequest) {
@@ -154,11 +155,16 @@ export async function POST(req: NextRequest) {
       remoteUsername,
       remotePassword,
     });
+    await openUsageEvent(admin, { id: row.id, company_id: companyId, hourly_usd_at_creation: sizeOption.hourlyUsd });
+    const schedule = await getCompanySchedule(admin, companyId);
+    const deadline = nextLocalMidnight(new Date(), schedule.timezone);
     await admin
       .from("virtual_computers")
       .update({
         provider_instance_id: result.providerInstanceId,
         ip_address: result.ipAddress,
+        last_seen_at: new Date().toISOString(),
+        hibernate_deadline: deadline.toISOString(),
         updated_at: new Date().toISOString(),
       })
       .eq("id", row.id);

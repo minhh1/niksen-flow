@@ -41,12 +41,17 @@ export async function POST(req: NextRequest) {
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 
+  // Metered/usage-type Stripe Prices (the payg plan) reject an explicit
+  // quantity -- usage is reported later via meter events (see
+  // lib/billing/usageReporting.ts), not set up front like the flat tiers.
+  const lineItem = planId === "payg" ? { price: getStripePriceId(planId) } : { price: getStripePriceId(planId), quantity: 1 };
+
   const session = await stripe.checkout.sessions.create({
     mode: "subscription",
     customer: stripeCustomerId,
     client_reference_id: companyId,
     metadata: { companyId, planId },
-    line_items: [{ price: getStripePriceId(planId), quantity: 1 }],
+    line_items: [lineItem],
     success_url: `${appUrl}/dashboard/billing?checkout=success`,
     cancel_url: `${appUrl}/dashboard/billing?checkout=cancel`,
   });

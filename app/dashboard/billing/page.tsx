@@ -17,6 +17,7 @@ interface Plan {
   name: string;
   priceUsdDisplay: number;
   includedVmSlots: number;
+  meteredServiceFeeUsdPerHour?: number;
 }
 
 interface Subscription {
@@ -45,6 +46,7 @@ export default function BillingPage() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [plans, setPlans] = useState<Plan[]>([]);
+  const [usageThisMonthUsd, setUsageThisMonthUsd] = useState<number | null>(null);
   const [subscribingPlanId, setSubscribingPlanId] = useState<string | null>(null);
   const [openingPortal, setOpeningPortal] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +56,7 @@ export default function BillingPage() {
     const json = await res.json();
     setSubscription(json.subscription);
     setPlans(json.plans || []);
+    setUsageThisMonthUsd(typeof json.usageThisMonthUsd === "number" ? json.usageThisMonthUsd : null);
   }, []);
 
   useEffect(() => {
@@ -169,6 +172,11 @@ export default function BillingPage() {
                 Renews {new Date(subscription.currentPeriodEnd).toLocaleDateString()}
               </p>
             )}
+            {subscription.planId === "payg" && usageThisMonthUsd !== null && (
+              <p className="text-[11px] text-indigo-500 font-medium">
+                ~${usageThisMonthUsd.toFixed(2)} accrued this month so far (real cloud cost + $0.02/hr service fee)
+              </p>
+            )}
           </div>
           <span
             className={`inline-flex items-center px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide ${
@@ -189,17 +197,33 @@ export default function BillingPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {plans.map((plan) => {
           const isCurrent = subscription?.planId === plan.id && subscription?.status !== "canceled";
+          const isMetered = plan.id === "payg";
           return (
             <div key={plan.id} className="bg-white border border-slate-200 rounded-[32px] p-6 flex flex-col">
               <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2">{plan.name}</p>
-              <p className="text-2xl font-bold text-slate-800 mb-1">
-                ${plan.priceUsdDisplay}
-                <span className="text-[12px] font-medium text-slate-400">/mo</span>
-              </p>
-              <p className="text-[12px] text-slate-500 mb-6">{plan.includedVmSlots} virtual computer{plan.includedVmSlots !== 1 ? "s" : ""} included</p>
+              {isMetered ? (
+                <>
+                  <p className="text-2xl font-bold text-slate-800 mb-1">
+                    +${plan.meteredServiceFeeUsdPerHour?.toFixed(2)}
+                    <span className="text-[12px] font-medium text-slate-400">/vm-hr</span>
+                  </p>
+                  <p className="text-[11px] text-slate-400 mb-6">
+                    No base fee -- real cloud cost plus this service fee, billed only for actual hours running (VMs
+                    hibernate when idle).
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-2xl font-bold text-slate-800 mb-1">
+                    ${plan.priceUsdDisplay}
+                    <span className="text-[12px] font-medium text-slate-400">/mo</span>
+                  </p>
+                  <p className="text-[12px] text-slate-500 mb-6">{plan.includedVmSlots} virtual computer{plan.includedVmSlots !== 1 ? "s" : ""} included</p>
+                </>
+              )}
               {isAdmin && (
                 <button
                   onClick={() => subscribe(plan.id)}

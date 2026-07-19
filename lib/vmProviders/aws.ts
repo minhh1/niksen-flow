@@ -16,6 +16,8 @@ import {
   DescribeSecurityGroupsCommand,
   CreateSecurityGroupCommand,
   AuthorizeSecurityGroupIngressCommand,
+  CreateImageCommand,
+  DescribeImagesCommand,
   type _InstanceType as InstanceType,
 } from "@aws-sdk/client-ec2";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
@@ -24,6 +26,8 @@ import type {
   CreateInstanceResult,
   InstanceStatus,
   ProviderCredentials,
+  SnapshotStatus,
+  StartSnapshotResult,
   VmProvider,
 } from "./types";
 
@@ -130,13 +134,33 @@ Start-Process -FilePath "$officeDir\\setup.exe" -ArgumentList "/configure \`"$of
   return Buffer.from(script, "utf-8").toString("base64");
 }
 
+// Used instead of windowsUserData() when waking a hibernated VM from a
+// custom AMI. Office and every other first-boot step are already baked
+// into the disk, so re-running the full script would be redundant at best
+// (re-downloading/re-installing Office) and actively wrong at worst (EC2
+// Launch v2 only runs plain <powershell> on an instance's tracked "first
+// boot", which the source AMI already consumed -- without <persist>true</persist>
+// this wouldn't even run again, silently leaving the Administrator password
+// unset on the new instance). Keep this trimmed to just the idempotent
+// password/RDP steps and force it to run on every boot via <persist>.
+function windowsRestoreUserData(password: string): string {
+  const escapedPassword = password.replace(/"/g, '`"').replace(/\$/g, "`$");
+  const script = `<powershell>
+net user Administrator "${escapedPassword}"
+Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+Set-ItemProperty -Path "HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server" -Name "fDenyTSConnections" -Value 0
+</powershell>
+<persist>true</persist>`;
+  return Buffer.from(script, "utf-8").toString("base64");
+}
+
 export const awsProvider: VmProvider = {
   id: "aws",
 
   async createInstance(params: CreateInstanceParams): Promise<CreateInstanceResult> {
     const client = ec2Client(params.credentials, params.region);
     const [amiId, securityGroupId] = await Promise.all([
-      resolveWindowsAmiId(params.credentials, params.region),
+      params.fromSnapshotId ? Promise.resolve(params.fromSnapshotId) : resolveWindowsAmiId(params.credentials, params.region),
       ensureRdpSecurityGroup(client),
     ]);
 
@@ -147,7 +171,9 @@ export const awsProvider: VmProvider = {
         MinCount: 1,
         MaxCount: 1,
         SecurityGroupIds: [securityGroupId],
-        UserData: windowsUserData(params.remotePassword),
+        UserData: params.fromSnapshotId
+          ? windowsRestoreUserData(params.remotePassword)
+          : windowsUserData(params.remotePassword),
         TagSpecifications: [{ ResourceType: "instance", Tags: [{ Key: "Name", Value: params.name }] }],
       })
     );
@@ -181,5 +207,36 @@ export const awsProvider: VmProvider = {
       if (code === "InvalidInstanceID.NotFound") return;
       throw err;
     }
+  },
+
+  async startSnapshot(credentials: ProviderCredentials, providerInstanceId: string, region: string): Promise<StartSnapshotResult> {
+    const client = ec2Client(credentials, region);
+    // NoReboot defaults to false deliberately -- AWS reboots the instance
+    // first to flush buffers before snapshotting, which is what guarantees
+    // a filesystem-consistent image. NoReboot:true is explicitly not
+    // integrity-guaranteed by AWS and isn't worth the risk for a full
+    // desktop OS with Office and user files on it.
+    const res = await client.send(
+      new CreateImageCommand({ InstanceId: providerInstanceId, Name: `hibernate-${providerInstanceId}-${Date.now()}` })
+    );
+    if (!res.ImageId) throw new Error("AWS did not return an image ID after CreateImage.");
+    // For AWS, the task handle and the eventual snapshot ID are the same
+    // value -- DescribeImages polls the same ImageId CreateImage returned.
+    return { snapshotTaskId: res.ImageId };
+  },
+
+  async getSnapshotStatus(
+    credentials: ProviderCredentials,
+    _providerInstanceId: string,
+    region: string,
+    snapshotTaskId: string
+  ): Promise<SnapshotStatus> {
+    const client = ec2Client(credentials, region);
+    const res = await client.send(new DescribeImagesCommand({ ImageIds: [snapshotTaskId] }));
+    const image = res.Images?.[0];
+    if (!image) return { status: "pending", snapshotId: null };
+    if (image.State === "available") return { status: "completed", snapshotId: snapshotTaskId };
+    if (image.State === "failed" || image.State === "error") return { status: "error", snapshotId: null };
+    return { status: "pending", snapshotId: null };
   },
 };

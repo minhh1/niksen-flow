@@ -15,6 +15,7 @@ import NewProjectModal from "./NewProjectModal";
 import NewEntityModal from "./NewEntityModal";
 import { useCustomTables } from "@/lib/hooks/useCustomTables";
 import { useCompany } from "@/components/CompanyContext";
+import { useVmSession } from "@/components/VmSessionContext";
 import type { ActiveFilter } from "@/lib/types/filters";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -520,6 +521,19 @@ export default function Sidebar() {
   // Use shared company context — avoids duplicate auth call with GenericMasterTable
   const { companyId: ctxCompanyId, companyName: ctxCompanyName, isAdmin: ctxIsAdmin, loading: ctxLoading } = useCompany();
 
+  // While a virtual computer session is active, navigating anywhere else in
+  // the app is the primary disconnect signal the app relies on (see
+  // components/VmSessionContext.tsx) -- block it here and point the user
+  // back at the session's own log-off action instead of silently leaving.
+  const vmSession = useVmSession();
+  const [showVmGuardPrompt, setShowVmGuardPrompt] = useState(false);
+  const guardNav = (e: React.MouseEvent): boolean => {
+    if (!vmSession.active) return false;
+    e.preventDefault();
+    setShowVmGuardPrompt(true);
+    return true;
+  };
+
   const [profile, setProfile] = useState<any>(null);
   const [profileLoading, setProfileLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -863,7 +877,7 @@ export default function Sidebar() {
           {visibleSystemTables.map(({ slug, label, icon: Icon }) => (
             <button
               key={slug}
-              onClick={() => router.push(`/dashboard/${slug}`)}
+              onClick={(e) => { if (!guardNav(e)) router.push(`/dashboard/${slug}`); }}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
                 isTableActive(slug)
                   ? 'bg-slate-900 text-white'
@@ -880,7 +894,7 @@ export default function Sidebar() {
             return (
               <button
                 key={table.id}
-                onClick={() => router.push(`/dashboard/${table.slug}`)}
+                onClick={(e) => { if (!guardNav(e)) router.push(`/dashboard/${table.slug}`); }}
                 className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
                   isTableActive(table.slug)
                     ? 'bg-slate-900 text-white'
@@ -911,6 +925,7 @@ export default function Sidebar() {
         {/* Gmail */}
         <Link
           href="/dashboard/gmail"
+          onClick={guardNav}
           className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
             pathname.includes('/gmail')
               ? 'bg-slate-900 text-white'
@@ -924,6 +939,7 @@ export default function Sidebar() {
         {/* PDF editor */}
         <Link
           href="/dashboard/pdf-editor"
+          onClick={guardNav}
           className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
             pathname.includes('/pdf-editor')
               ? 'bg-slate-900 text-white'
@@ -937,6 +953,7 @@ export default function Sidebar() {
         {/* Virtual computers */}
         <Link
           href="/dashboard/virtual-computers"
+          onClick={guardNav}
           className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
             pathname.includes('/virtual-computers')
               ? 'bg-slate-900 text-white'
@@ -950,6 +967,7 @@ export default function Sidebar() {
         {/* Schema map */}
         <Link
           href="/dashboard/schema"
+          onClick={guardNav}
           className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
             pathname.includes('/schema')
               ? 'bg-slate-900 text-white'
@@ -963,6 +981,7 @@ export default function Sidebar() {
         {/* Settings */}
         <Link
           href="/dashboard/settings"
+          onClick={guardNav}
           className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
             pathname.includes('/settings')
               ? 'bg-slate-900 text-white'
@@ -977,6 +996,7 @@ export default function Sidebar() {
         {isAdmin && (
           <Link
             href="/dashboard/admin"
+            onClick={guardNav}
             className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
               pathname.includes('/admin')
                 ? 'bg-amber-600 text-white'
@@ -992,6 +1012,7 @@ export default function Sidebar() {
         {isAdmin && (
           <Link
             href="/dashboard/billing"
+            onClick={guardNav}
             className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
               pathname.includes('/billing')
                 ? 'bg-slate-900 text-white'
@@ -1080,6 +1101,7 @@ export default function Sidebar() {
             <Link
               key={item.id}
               href={`/dashboard/${mode}?id=${item.id}`}
+              onClick={guardNav}
               className={`flex items-center px-3 py-2 rounded-2xl text-[12px] transition-all ${
                 currentId === item.id
                   ? 'bg-indigo-600 text-white font-bold'
@@ -1169,7 +1191,7 @@ export default function Sidebar() {
                 return (
                   <button
                     key={m.company_id}
-                    onClick={() => handleSwitchCompany(m.company_id)}
+                    onClick={(e) => { if (!guardNav(e)) handleSwitchCompany(m.company_id); }}
                     disabled={isActive || switchingCompany}
                     className={`w-full flex items-center gap-3 px-5 py-3 text-left transition-colors disabled:cursor-default ${
                       isActive ? 'bg-slate-50' : 'hover:bg-slate-50'
@@ -1205,15 +1227,37 @@ export default function Sidebar() {
 
         {/* Sign out */}
         <button
-          onClick={() => supabase.auth.signOut().then(
-            () => window.location.replace("/login")
-          )}
+          onClick={(e) => {
+            if (guardNav(e)) return;
+            supabase.auth.signOut().then(() => window.location.replace("/login"));
+          }}
           className="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[12px] font-medium text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all"
         >
           <LogOut size={15} className="shrink-0" />
           Sign out
         </button>
       </div>
+
+      {showVmGuardPrompt && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 px-6" onClick={() => setShowVmGuardPrompt(false)}>
+          <div
+            className="bg-white rounded-3xl p-6 max-w-sm w-full shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-[14px] font-bold text-slate-900 mb-2">Log off your virtual computer first</p>
+            <p className="text-[12px] text-slate-500 mb-4">
+              You need to log off the virtual computer session before navigating elsewhere -- use the back button on
+              that page to log off.
+            </p>
+            <button
+              onClick={() => setShowVmGuardPrompt(false)}
+              className="w-full py-2.5 bg-slate-900 text-white rounded-full text-[12px] font-bold hover:bg-black transition-all"
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
 
       <NewProjectModal
         isOpen={isProjOpen}

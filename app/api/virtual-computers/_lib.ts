@@ -3,7 +3,9 @@
 // (no exported HTTP method handlers), so Next.js ignores it for routing.
 import crypto from "crypto";
 import { getPlatformCredentials } from "@/lib/vmProviders/platformCredentials";
-import type { CloudProviderId, ProviderCredentials } from "@/lib/vmProviders/types";
+import { getProvider } from "@/lib/vmProviders/registry";
+import { nextLocalMidnight } from "@/lib/vmProviders/scheduling";
+import type { CloudProviderId, ProviderCredentials, VmOs, VmProtocol } from "@/lib/vmProviders/types";
 
 // Classic VNC auth (TigerVNC) truncates passwords to 8 characters, so keep
 // the generated password short -- used for the Linux VNC/xrdp path only.
@@ -46,6 +48,41 @@ export async function loadVm(admin: any, companyId: string, id: string) {
   return data;
 }
 
+export interface CompanyVmSchedule {
+  enabled: boolean;
+  days: number[];
+  start_time: string;
+  end_time: string;
+  timezone: string;
+  enforce_end_time: boolean;
+}
+
+const DEFAULT_SCHEDULE: CompanyVmSchedule = {
+  enabled: false,
+  days: [1, 2, 3, 4, 5],
+  start_time: "09:00",
+  end_time: "17:00",
+  timezone: "UTC",
+  enforce_end_time: false,
+};
+
+// Companies without a configured schedule (payg companies aren't required
+// to have one -- see supabase/company_vm_schedules.sql) fall back to a
+// disabled default so callers can always evaluate against a schedule shape
+// without a null check at every call site.
+export async function getCompanySchedule(admin: any, companyId: string): Promise<CompanyVmSchedule> {
+  const { data } = await admin.from("company_vm_schedules").select("*").eq("company_id", companyId).maybeSingle();
+  if (!data) return DEFAULT_SCHEDULE;
+  return {
+    enabled: data.enabled,
+    days: data.days ?? DEFAULT_SCHEDULE.days,
+    start_time: data.start_time ?? DEFAULT_SCHEDULE.start_time,
+    end_time: data.end_time ?? DEFAULT_SCHEDULE.end_time,
+    timezone: data.timezone ?? DEFAULT_SCHEDULE.timezone,
+    enforce_end_time: data.enforce_end_time ?? false,
+  };
+}
+
 // Resolves the credentials to hand a provider adapter for a given VM row,
 // branching on billing_mode. Platform-billed rows have credential_id = NULL
 // by design -- routes that only checked `vm.credential_id` before calling
@@ -66,4 +103,127 @@ export async function resolveCredentials(
     .eq("id", vm.credential_id)
     .maybeSingle();
   return data?.credentials ?? null;
+}
+
+// Usage ledger (see supabase/virtual_computer_usage_events.sql) -- opens a
+// row whenever a VM starts running (create or wake) and closes it whenever
+// it stops (hibernate, destroy, or error), regardless of billing plan.
+// Logged unconditionally since it's cheap and plan-agnostic; only
+// pay-as-you-go companies actually have it reported to Stripe (see
+// lib/billing/usageReporting.ts), but the history is there if a company
+// switches plans later.
+export async function openUsageEvent(admin: any, vm: { id: string; company_id: string; hourly_usd_at_creation: number | null }): Promise<void> {
+  await admin.from("virtual_computer_usage_events").insert({
+    vm_id: vm.id,
+    company_id: vm.company_id,
+    started_at: new Date().toISOString(),
+    hourly_usd_at_start: vm.hourly_usd_at_creation ?? 0,
+  });
+}
+
+export async function closeUsageEvent(admin: any, vmId: string): Promise<void> {
+  await admin
+    .from("virtual_computer_usage_events")
+    .update({ ended_at: new Date().toISOString() })
+    .eq("vm_id", vmId)
+    .is("ended_at", null);
+}
+
+// Shared by the explicit logoff route and the sweep cron's inferred-disconnect
+// paths (evening heartbeat fallback, midnight backstop, schedule end-of-day)
+// -- starts (but doesn't wait out) the snapshot, since it can take far
+// longer than one request should block for. The sweep route's own
+// 'snapshotting' pass is what polls this to completion and destroys the
+// instance once the snapshot is durable.
+export async function startHibernate(admin: any, vm: { id: string; provider: string; provider_instance_id: string; region: string; billing_mode: string; credential_id: string | null }): Promise<void> {
+  try {
+    const credentials = await resolveCredentials(admin, vm);
+    if (!credentials) throw new Error("Missing credentials for this virtual computer.");
+    const adapter = getProvider(vm.provider as CloudProviderId);
+    const { snapshotTaskId } = await adapter.startSnapshot(credentials, vm.provider_instance_id, vm.region);
+    await admin
+      .from("virtual_computers")
+      .update({
+        status: "snapshotting",
+        snapshot_task_id: snapshotTaskId,
+        last_seen_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", vm.id);
+  } catch (err) {
+    // Note: the underlying instance is presumably still running here (the
+    // snapshot never started) -- deliberately NOT closing the usage event,
+    // since the VM is still actually accruing cost, just no longer mid an
+    // active hibernate attempt.
+    await admin
+      .from("virtual_computers")
+      .update({
+        status: "error",
+        error_message: err instanceof Error ? err.message : "Could not start snapshot",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", vm.id);
+  }
+}
+
+// Shared by the wake route and the sweep cron's schedule wake-ahead pass --
+// relaunches a hibernated VM from its saved snapshot.
+export async function wakeVm(
+  admin: any,
+  vm: {
+    id: string;
+    company_id: string;
+    provider: string;
+    name: string;
+    size_slug: string;
+    region: string;
+    protocol: string;
+    os: VmOs;
+    remote_username: string;
+    remote_password: string;
+    snapshot_id: string;
+    billing_mode: string;
+    credential_id: string | null;
+    hourly_usd_at_creation: number | null;
+  }
+): Promise<void> {
+  await admin.from("virtual_computers").update({ status: "provisioning", updated_at: new Date().toISOString() }).eq("id", vm.id);
+  try {
+    const credentials = await resolveCredentials(admin, vm);
+    if (!credentials) throw new Error("Missing credentials for this virtual computer.");
+    const adapter = getProvider(vm.provider as CloudProviderId);
+    const result = await adapter.createInstance({
+      credentials,
+      name: vm.name,
+      sizeSlug: vm.size_slug,
+      region: vm.region,
+      protocol: vm.protocol as VmProtocol,
+      os: vm.os,
+      remoteUsername: vm.remote_username,
+      remotePassword: vm.remote_password,
+      fromSnapshotId: vm.snapshot_id,
+    });
+    await openUsageEvent(admin, vm);
+    const schedule = await getCompanySchedule(admin, vm.company_id);
+    const deadline = nextLocalMidnight(new Date(), schedule.timezone);
+    await admin
+      .from("virtual_computers")
+      .update({
+        provider_instance_id: result.providerInstanceId,
+        ip_address: result.ipAddress,
+        last_seen_at: new Date().toISOString(),
+        hibernate_deadline: deadline.toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", vm.id);
+  } catch (err) {
+    await admin
+      .from("virtual_computers")
+      .update({
+        status: "error",
+        error_message: err instanceof Error ? err.message : "Could not wake this virtual computer",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", vm.id);
+  }
 }

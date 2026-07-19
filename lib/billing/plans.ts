@@ -5,7 +5,7 @@
 // DB table wouldn't be the real source of truth anyway.
 import type { CloudProviderId } from "@/lib/vmProviders/types";
 
-export type PlanId = "starter" | "standard" | "pro";
+export type PlanId = "starter" | "standard" | "pro" | "payg";
 
 export interface PlanConfig {
   id: PlanId;
@@ -13,9 +13,29 @@ export interface PlanConfig {
   priceUsdDisplay: number; // display only -- Stripe is the source of truth for actual charges
   includedVmSlots: number;
   allowedSizes: Partial<Record<CloudProviderId, string[]>>;
+  // Only set for the pay-as-you-go plan: no flat priceUsdDisplay, billed on
+  // real VM uptime (see supabase/virtual_computer_usage_events.sql) plus
+  // this flat per-hour platform fee stacked on the real provider rate.
+  // Doesn't require a company_vm_schedules row the way the flat tiers do --
+  // real usage is what's billed regardless of hours.
+  meteredServiceFeeUsdPerHour?: number;
 }
 
 export const PLANS: Record<PlanId, PlanConfig> = {
+  payg: {
+    id: "payg",
+    name: "Pay-as-you-go",
+    priceUsdDisplay: 0,
+    // Not a flat-fee slot budget to protect (cost passthrough is the whole
+    // model) -- still capped as a safety net against runaway cost from a
+    // mistake or compromised account, same order of magnitude as Pro.
+    includedVmSlots: 10,
+    allowedSizes: {
+      digitalocean: ["s-2vcpu-4gb", "s-4vcpu-8gb", "s-8vcpu-16gb"],
+      aws: ["t3.medium", "t3.xlarge", "m5.2xlarge"],
+    },
+    meteredServiceFeeUsdPerHour: 0.02,
+  },
   starter: {
     id: "starter",
     name: "Starter",

@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
-import { Monitor, Plus, X, KeyRound, Trash2, CreditCard } from "lucide-react";
+import { Monitor, Plus, X, KeyRound, Trash2, CreditCard, Loader2 } from "lucide-react";
 import CostComparisonTable from "@/components/virtualcomputers/CostComparisonTable";
 import VmStatusBadge from "@/components/virtualcomputers/VmStatusBadge";
 import { REGIONS } from "@/lib/vmProviders/regions";
@@ -64,6 +64,17 @@ interface BillingStatus {
   plan: PlatformPlan | null;
 }
 
+interface Schedule {
+  enabled: boolean;
+  days: number[];
+  start_time: string;
+  end_time: string;
+  timezone: string;
+  enforce_end_time: boolean;
+}
+
+const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
 const PROVIDER_CREDENTIAL_FIELDS: Record<CloudProviderId, { key: string; label: string; type?: string }[]> = {
   digitalocean: [{ key: "api_token", label: "API token", type: "password" }],
   aws: [
@@ -103,24 +114,39 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
   const [vmAssignedUserId, setVmAssignedUserId] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [destroyingIds, setDestroyingIds] = useState<Set<string>>(new Set());
+  const [wakingIds, setWakingIds] = useState<Set<string>>(new Set());
+  const [actionMessage, setActionMessage] = useState<{ type: "info" | "success" | "error"; text: string } | null>(null);
+  const [schedule, setSchedule] = useState<Schedule | null>(null);
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+
+  const notify = useCallback((type: "info" | "success" | "error", text: string, autoDismissMs = 6000) => {
+    setActionMessage({ type, text });
+    if (autoDismissMs) {
+      setTimeout(() => setActionMessage((cur) => (cur?.text === text ? null : cur)), autoDismissMs);
+    }
+  }, []);
 
   const load = useCallback(async () => {
-    const [credRes, vmRes, pricingRes, billingRes] = await Promise.all([
+    const [credRes, vmRes, pricingRes, billingRes, scheduleRes] = await Promise.all([
       fetch("/api/virtual-computers/credentials"),
       fetch("/api/virtual-computers/list"),
       fetch("/api/virtual-computers/pricing"),
       fetch("/api/billing/status"),
+      fetch("/api/virtual-computers/schedule"),
     ]);
-    const [credJson, vmJson, pricingJson, billingJson] = await Promise.all([
+    const [credJson, vmJson, pricingJson, billingJson, scheduleJson] = await Promise.all([
       credRes.json(),
       vmRes.json(),
       pricingRes.json(),
       billingRes.json(),
+      scheduleRes.json(),
     ]);
     setCredentials(credJson.credentials || []);
     setVms(vmJson.virtualComputers || []);
     setPricingData(pricingJson.pricing ? pricingJson : null);
     setBillingStatus(billingJson);
+    setSchedule(scheduleJson.schedule || null);
 
     const { data: ms } = await supabase.from("company_memberships").select("user_id").eq("company_id", companyId);
     if (ms?.length) {
@@ -137,7 +163,7 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
   }, [load]);
 
   useEffect(() => {
-    if (!vms.some((vm) => vm.status === "provisioning")) return;
+    if (!vms.some((vm) => vm.status === "provisioning" || vm.status === "snapshotting")) return;
     const interval = setInterval(load, 4000);
     return () => clearInterval(interval);
   }, [vms, load]);
@@ -188,12 +214,20 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
       setCreateError("Credential is required for bring-your-own billing");
       return;
     }
+    const trimmedName = vmName.trim();
     setCreating(true);
+    notify(
+      "info",
+      `Creating "${trimmedName}"... ${
+        vmProvider === "aws" ? "Windows + Office setup can take 10-15 minutes." : "This usually takes about a minute."
+      }`,
+      0
+    );
     const res = await fetch("/api/virtual-computers/create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        name: vmName.trim(),
+        name: trimmedName,
         provider: vmProvider,
         sizeSlug: vmSizeSlug,
         region: vmRegion.trim(),
@@ -206,9 +240,12 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
     const json = await res.json();
     setCreating(false);
     if (!res.ok) {
-      setCreateError(json.error || "Could not create virtual computer");
+      const message = json.error || "Could not create virtual computer";
+      setCreateError(message);
+      notify("error", `Could not create "${trimmedName}": ${message}`);
       return;
     }
+    notify("success", `"${trimmedName}" is being set up now -- watch its status below.`);
     setVmName("");
     setVmSizeSlug("");
     setVmRegion("");
@@ -228,9 +265,62 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
   };
 
   const destroyVm = async (id: string) => {
+    const vm = vms.find((v) => v.id === id);
     if (!confirm("Destroy this virtual computer? This can't be undone.")) return;
-    await fetch(`/api/virtual-computers/${id}/destroy`, { method: "POST" });
+    const label = vm?.name || "virtual computer";
+    setDestroyingIds((prev) => new Set(prev).add(id));
+    notify("info", `Destroying "${label}"...`, 0);
+    const res = await fetch(`/api/virtual-computers/${id}/destroy`, { method: "POST" });
+    setDestroyingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      notify("error", `Could not destroy "${label}": ${json.error || "Unknown error"}`);
+    } else {
+      notify("success", `"${label}" destroyed.`);
+    }
     load();
+  };
+
+  const wakeVm = async (id: string) => {
+    const vm = vms.find((v) => v.id === id);
+    const label = vm?.name || "virtual computer";
+    setWakingIds((prev) => new Set(prev).add(id));
+    notify("info", `Waking "${label}" from its saved snapshot...`, 0);
+    const res = await fetch(`/api/virtual-computers/${id}/wake`, { method: "POST" });
+    setWakingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    if (!res.ok) {
+      const json = await res.json().catch(() => ({}));
+      notify("error", `Could not wake "${label}": ${json.error || "Unknown error"}`);
+    } else {
+      notify("success", `"${label}" is waking up -- watch its status below.`);
+    }
+    load();
+  };
+
+  const saveSchedule = async (next: Schedule) => {
+    setSchedule(next);
+    setScheduleSaving(true);
+    await fetch("/api/virtual-computers/schedule", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: next.enabled,
+        days: next.days,
+        startTime: next.start_time,
+        endTime: next.end_time,
+        timezone: next.timezone,
+        enforceEndTime: next.enforce_end_time,
+      }),
+    });
+    setScheduleSaving(false);
   };
 
   if (loading) return <p className="text-[11px] text-slate-400">Loading...</p>;
@@ -341,6 +431,87 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
         </div>
       )}
 
+      {/* VM schedule */}
+      {schedule && (
+        <div className="bg-white border border-slate-200 rounded-[32px] p-6">
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Business hours</p>
+            <button
+              type="button"
+              onClick={() => saveSchedule({ ...schedule, enabled: !schedule.enabled })}
+              className={`px-4 py-1.5 text-[11px] font-bold rounded-full transition-colors ${
+                schedule.enabled ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-500"
+              }`}
+            >
+              {schedule.enabled ? "Enabled" : "Disabled"}
+            </button>
+          </div>
+
+          {activePlan && activePlan.id !== "payg" && !schedule.enabled && (
+            <p className="text-[12px] text-amber-700 bg-amber-50 rounded-2xl px-4 py-3 mb-4">
+              {`The ${activePlan.name} plan is priced assuming bounded business-hours usage -- turn this on so idle hours outside your team's schedule don't run up cost. Pay-as-you-go plans can leave this off.`}
+            </p>
+          )}
+
+          <div className="space-y-3">
+            <div className="flex gap-1.5 flex-wrap">
+              {DAY_LABELS.map((label, idx) => {
+                const selected = schedule.days.includes(idx);
+                return (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() =>
+                      saveSchedule({
+                        ...schedule,
+                        days: selected ? schedule.days.filter((d) => d !== idx) : [...schedule.days, idx].sort(),
+                      })
+                    }
+                    className={`w-10 py-1.5 text-[11px] font-bold rounded-full transition-colors ${
+                      selected ? "bg-indigo-600 text-white" : "bg-slate-50 text-slate-400 hover:bg-slate-100"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <input
+                type="time"
+                value={schedule.start_time}
+                onChange={(e) => saveSchedule({ ...schedule, start_time: e.target.value })}
+                className="px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400"
+              />
+              <input
+                type="time"
+                value={schedule.end_time}
+                onChange={(e) => saveSchedule({ ...schedule, end_time: e.target.value })}
+                className="px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400"
+              />
+              <input
+                value={schedule.timezone}
+                onChange={(e) => saveSchedule({ ...schedule, timezone: e.target.value })}
+                placeholder="Timezone (e.g. Australia/Sydney)"
+                className="px-3 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400"
+              />
+            </div>
+
+            <label className="flex items-center gap-2 text-[12px] text-slate-500">
+              <input
+                type="checkbox"
+                checked={schedule.enforce_end_time}
+                onChange={(e) => saveSchedule({ ...schedule, enforce_end_time: e.target.checked })}
+              />
+              End time is a hard stop (log everyone off exactly then, even mid-session). Off by default -- VMs
+              stay up as long as someone&rsquo;s using them, with a midnight safety cutoff either way.
+            </label>
+            {scheduleSaving && <p className="text-[10px] text-slate-300">Saving...</p>}
+          </div>
+        </div>
+      )}
+
       {/* Create + list virtual computers */}
       <div className="bg-white border border-slate-200 rounded-[32px] p-6">
         <div className="flex items-center justify-between mb-4">
@@ -349,6 +520,24 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
             <Plus size={14} />
           </button>
         </div>
+
+        {actionMessage && (
+          <div
+            className={`flex items-start gap-2 px-4 py-2.5 rounded-2xl text-[12px] mb-4 ${
+              actionMessage.type === "error"
+                ? "bg-red-50 text-red-600"
+                : actionMessage.type === "success"
+                ? "bg-emerald-50 text-emerald-600"
+                : "bg-indigo-50 text-indigo-600"
+            }`}
+          >
+            {actionMessage.type === "info" && <Loader2 size={13} className="shrink-0 mt-0.5 animate-spin" />}
+            <span className="flex-1">{actionMessage.text}</span>
+            <button onClick={() => setActionMessage(null)} className="shrink-0 opacity-60 hover:opacity-100">
+              <X size={12} />
+            </button>
+          </div>
+        )}
 
         {showCreateForm && (
           <div className="space-y-3 pb-4 mb-4 border-b border-slate-100">
@@ -544,11 +733,19 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
                   <p className="text-[10px] text-slate-400 truncate">
                     {vm.provider} · {vm.protocol.toUpperCase()} · {vm.size_slug} · {vm.region}
                   </p>
+                  {vm.status === "provisioning" && !destroyingIds.has(vm.id) && (
+                    <p className="text-[10px] text-indigo-400 truncate mt-0.5">
+                      {vm.os === "windows"
+                        ? "Booting instance and installing Office -- can take 10-15 minutes."
+                        : "Booting instance -- usually ready within a minute."}
+                    </p>
+                  )}
                 </div>
                 <select
                   value={vm.assigned_user_id || ""}
                   onChange={(e) => reassignVm(vm.id, e.target.value)}
-                  className="px-2 py-1.5 border border-slate-200 rounded-full text-[11px] outline-none focus:border-indigo-400"
+                  disabled={destroyingIds.has(vm.id)}
+                  className="px-2 py-1.5 border border-slate-200 rounded-full text-[11px] outline-none focus:border-indigo-400 disabled:opacity-40"
                 >
                   <option value="" disabled>
                     Unassigned
@@ -559,9 +756,29 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
                     </option>
                   ))}
                 </select>
-                <VmStatusBadge status={vm.status} />
-                <button onClick={() => destroyVm(vm.id)} className="p-1.5 text-slate-300 hover:text-red-500 transition-colors">
-                  <X size={13} />
+                {destroyingIds.has(vm.id) ? (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide bg-slate-100 text-slate-500">
+                    <Loader2 size={11} className="animate-spin" />
+                    Destroying...
+                  </span>
+                ) : (
+                  <VmStatusBadge status={vm.status} />
+                )}
+                {vm.status === "hibernated" && (
+                  <button
+                    onClick={() => wakeVm(vm.id)}
+                    disabled={wakingIds.has(vm.id)}
+                    className="px-3 py-1.5 bg-sky-600 text-white text-[11px] font-bold rounded-full hover:bg-sky-700 disabled:opacity-40 transition-colors"
+                  >
+                    {wakingIds.has(vm.id) ? "Waking..." : "Wake now"}
+                  </button>
+                )}
+                <button
+                  onClick={() => destroyVm(vm.id)}
+                  disabled={destroyingIds.has(vm.id)}
+                  className="p-1.5 text-slate-300 hover:text-red-500 transition-colors disabled:opacity-30 disabled:hover:text-slate-300"
+                >
+                  {destroyingIds.has(vm.id) ? <Loader2 size={13} className="animate-spin" /> : <X size={13} />}
                 </button>
               </div>
             ))}

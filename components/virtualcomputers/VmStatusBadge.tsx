@@ -7,6 +7,8 @@ const STATUS_STYLES: Record<string, string> = {
   error: "bg-red-50 text-red-600",
   destroying: "bg-slate-100 text-slate-500",
   destroyed: "bg-slate-100 text-slate-400",
+  snapshotting: "bg-amber-50 text-amber-600",
+  hibernated: "bg-sky-50 text-sky-600",
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -15,6 +17,8 @@ const STATUS_LABELS: Record<string, string> = {
   error: "Error",
   destroying: "Destroying...",
   destroyed: "Destroyed",
+  snapshotting: "Saving snapshot...",
+  hibernated: "Hibernated",
 };
 
 export default function VmStatusBadge({ status }: { status: string }) {

@@ -8,6 +8,8 @@ import type {
   CreateInstanceResult,
   InstanceStatus,
   ProviderCredentials,
+  SnapshotStatus,
+  StartSnapshotResult,
   VmProtocol,
   VmProvider,
 } from "./types";
@@ -185,14 +187,24 @@ export const digitalOceanProvider: VmProvider = {
   id: "digitalocean",
 
   async createInstance(params: CreateInstanceParams): Promise<CreateInstanceResult> {
+    // Restoring from a snapshot: the disk already has the desktop/VNC/RDP
+    // server and extra apps installed, so re-running the full cloud-init
+    // provisioning script would be redundant (and, per the systemd-unit
+    // gotchas documented above, has a history of subtly breaking things
+    // when run more than once). Just re-set the password so the stored
+    // remote_password still works, nothing else.
+    const userData = params.fromSnapshotId
+      ? `#cloud-config\nruncmd:\n  - echo '${params.remoteUsername.replace(/'/g, "'\\''")}:${params.remotePassword.replace(/'/g, "'\\''")}' | chpasswd\n`
+      : cloudInitScript(params.protocol, params.remoteUsername, params.remotePassword);
+
     const res = await doFetch(params.credentials, "/droplets", {
       method: "POST",
       body: JSON.stringify({
         name: toDropletHostname(params.name),
         region: params.region,
         size: params.sizeSlug,
-        image: DROPLET_IMAGE,
-        user_data: cloudInitScript(params.protocol, params.remoteUsername, params.remotePassword),
+        image: params.fromSnapshotId || DROPLET_IMAGE,
+        user_data: userData,
         ipv6: false,
       }),
     });
@@ -219,5 +231,41 @@ export const digitalOceanProvider: VmProvider = {
     const res = await doFetch(credentials, `/droplets/${providerInstanceId}`, { method: "DELETE" });
     if (res.status === 404) return;
     await throwIfNotOk(res, "droplet deletion");
+  },
+
+  async startSnapshot(credentials: ProviderCredentials, providerInstanceId: string, _region: string): Promise<StartSnapshotResult> {
+    const res = await doFetch(credentials, `/droplets/${providerInstanceId}/actions`, {
+      method: "POST",
+      body: JSON.stringify({ type: "snapshot", name: `hibernate-${providerInstanceId}-${Date.now()}` }),
+    });
+    await throwIfNotOk(res, "droplet snapshot");
+    const data = await res.json();
+    return { snapshotTaskId: String(data.action.id) };
+  },
+
+  // DO's action-status response doesn't include the resulting snapshot's
+  // image ID directly -- once the action itself reports "completed", the
+  // new snapshot has to be looked up separately via the droplet's
+  // snapshot_ids (the newest one is the one this action just created).
+  async getSnapshotStatus(
+    credentials: ProviderCredentials,
+    providerInstanceId: string,
+    _region: string,
+    snapshotTaskId: string
+  ): Promise<SnapshotStatus> {
+    const actionRes = await doFetch(credentials, `/actions/${snapshotTaskId}`);
+    await throwIfNotOk(actionRes, "snapshot action lookup");
+    const actionData = await actionRes.json();
+    const actionStatus: string = actionData.action.status;
+    if (actionStatus === "errored") return { status: "error", snapshotId: null };
+    if (actionStatus !== "completed") return { status: "pending", snapshotId: null };
+
+    const dropletRes = await doFetch(credentials, `/droplets/${providerInstanceId}`);
+    await throwIfNotOk(dropletRes, "droplet lookup");
+    const dropletData = await dropletRes.json();
+    const snapshotIds: number[] = dropletData.droplet.snapshot_ids ?? [];
+    const newest = snapshotIds[snapshotIds.length - 1];
+    if (!newest) return { status: "pending", snapshotId: null };
+    return { status: "completed", snapshotId: String(newest) };
   },
 };

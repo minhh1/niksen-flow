@@ -28,6 +28,26 @@ export interface CreateInstanceParams {
   os: VmOs;
   remoteUsername: string;
   remotePassword: string;
+  // Set when waking a hibernated VM: launch from this saved snapshot/image
+  // instead of the provider's base image, and skip whatever first-boot
+  // provisioning is already baked into it (see createSnapshot below).
+  fromSnapshotId?: string;
+}
+
+export interface StartSnapshotResult {
+  // Opaque provider-specific handle to poll via getSnapshotStatus. For AWS
+  // this IS the eventual AMI/image ID (DescribeImages polls the same ID
+  // that CreateImage returns); for DigitalOcean it's a droplet action ID,
+  // which resolves to a *different* value (the new snapshot's image ID)
+  // once the action completes.
+  snapshotTaskId: string;
+}
+
+export interface SnapshotStatus {
+  status: "pending" | "completed" | "error";
+  // Only set once status is "completed" -- the value to store as
+  // virtual_computers.snapshot_id and later pass back as `fromSnapshotId`.
+  snapshotId: string | null;
 }
 
 export interface CreateInstanceResult {
@@ -53,4 +73,19 @@ export interface VmProvider {
   // region than their credential's default.
   getInstance(credentials: ProviderCredentials, providerInstanceId: string, region: string): Promise<InstanceStatus>;
   destroyInstance(credentials: ProviderCredentials, providerInstanceId: string, region: string): Promise<void>;
+  // Snapshotting a running instance takes anywhere from several minutes to
+  // ~40+ minutes (DigitalOcean scales with used disk; AWS Windows AMIs
+  // commonly take 10-20 min) -- far longer than a single serverless
+  // function invocation should block for. So this is split into a
+  // fire-and-forget start plus a cheap, repeatable status check: the sweep
+  // route (app/api/virtual-computers/sweep/route.ts) calls startSnapshot
+  // once, then calls getSnapshotStatus on subsequent cron passes until it
+  // reports "completed", only then calling destroyInstance.
+  startSnapshot(credentials: ProviderCredentials, providerInstanceId: string, region: string): Promise<StartSnapshotResult>;
+  getSnapshotStatus(
+    credentials: ProviderCredentials,
+    providerInstanceId: string,
+    region: string,
+    snapshotTaskId: string
+  ): Promise<SnapshotStatus>;
 }
