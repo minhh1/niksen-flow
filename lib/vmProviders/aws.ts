@@ -89,15 +89,13 @@ async function ensureRdpSecurityGroup(client: EC2Client): Promise<string> {
   return groupId;
 }
 
-// Silently installs Microsoft Office via the Office Deployment Tool (fetched
-// from the stable https://aka.ms/ODT redirect, which always points at the
-// current ODT release -- avoids hardcoding a version-specific download
-// URL). Product ID O365ProPlusRetail is "Microsoft 365 Apps for enterprise"
-// -- standard (non-shared) licensing, since each VM here is assigned to
-// exactly one person, the same one-VM-per-user model the existing Ubuntu
-// VMs use. Whoever's assigned the VM activates Office with their own
-// Microsoft 365 account the first time they open an Office app, same as on
-// any fresh PC -- nothing here stores or injects Microsoft credentials.
+// Silently installs Microsoft Office via the Office Deployment Tool. Product
+// ID O365ProPlusRetail is "Microsoft 365 Apps for enterprise" -- standard
+// (non-shared) licensing, since each VM here is assigned to exactly one
+// person, the same one-VM-per-user model the existing Ubuntu VMs use.
+// Whoever's assigned the VM activates Office with their own Microsoft 365
+// account the first time they open an Office app, same as on any fresh PC
+// -- nothing here stores or injects Microsoft credentials.
 //
 // Guarded by a WINWORD.EXE existence check so it's safe to run on every
 // boot, not just first boot: without that, a VM hibernated (snapshotted)
@@ -109,15 +107,31 @@ async function ensureRdpSecurityGroup(client: EC2Client): Promise<string> {
 // Explicitly forces TLS 1.2 first: PowerShell's default
 // [Net.ServicePointManager]::SecurityProtocol on a fresh Windows Server
 // Base AMI doesn't reliably include it, which silently breaks
-// Invoke-WebRequest against aka.ms/Microsoft's HTTPS-only endpoints (a
+// Invoke-WebRequest against Microsoft's HTTPS-only endpoints (a
 // well-documented, common failure mode for exactly this kind of
 // automation) -- worth forcing defensively even without direct
 // confirmation it's hit this specific case, since it's harmless otherwise.
+//
+// The ODT installer itself is resolved by scraping the current real
+// download.microsoft.com URL out of the stable Download Center page
+// (id=49117) rather than hardcoding either a version-specific
+// download.microsoft.com URL (goes stale every time Microsoft ships a new
+// ODT build -- confirmed directly: the URL changed between two lookups
+// made minutes apart) or the old https://aka.ms/ODT shortlink (confirmed
+// directly, on a real VM: this now redirects to a Microsoft Learn *docs*
+// page, not the binary -- Invoke-WebRequest silently downloaded that HTML
+// as if it were the installer, and Start-Process then failed with "not a
+// valid application for this OS platform" since the ~65KB "exe" was
+// actually a webpage). The real link is present in the page's static
+// server-rendered HTML (confirmed via a plain curl, no JS execution
+// needed), so a regex match on the fetched content is enough.
 const INSTALL_OFFICE_SNIPPET = `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 if (!(Test-Path "$env:ProgramFiles\\Microsoft Office\\root\\Office16\\WINWORD.EXE")) {
   $officeDir = "C:\\OfficeDeploy"
   New-Item -ItemType Directory -Path $officeDir -Force | Out-Null
-  Invoke-WebRequest -Uri "https://aka.ms/ODT" -OutFile "$officeDir\\odtsetup.exe"
+  $odtPage = Invoke-WebRequest -Uri "https://www.microsoft.com/en-us/download/details.aspx?id=49117" -UseBasicParsing
+  $odtUrl = ([regex]'https://download\\.microsoft\\.com/download/[^"]*officedeploymenttool[^"]*\\.exe').Match($odtPage.Content).Value
+  Invoke-WebRequest -Uri $odtUrl -OutFile "$officeDir\\odtsetup.exe"
   Start-Process -FilePath "$officeDir\\odtsetup.exe" -ArgumentList "/quiet /extract:$officeDir" -Wait
   @'
 <Configuration>
