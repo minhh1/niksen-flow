@@ -2,6 +2,18 @@
 # entirely via env vars (it bundles the JSON auth extension already). Set the
 # secret with `fly secrets set -a niksenflow-guacamole-sin JSON_SECRET_KEY=...`
 # before first deploy -- see README.md.
+# CAUTION: fly deploy on a fresh app's first deploy auto-creates a second
+# "HA/zero-downtime" machine here, running alongside the first -- fine for
+# a stateless app, but Guacamole keeps session state in-memory per
+# instance with no shared store, so two machines behind the load
+# balancer silently break login (a token minted on one machine gets
+# rejected when a later request lands on the other). Confirmed directly:
+# this happened on first deploy and caused real login failures for two
+# users before being caught. After any redeploy, verify with
+# `fly status -a niksenflow-guacamole-sin` that exactly one
+# machine is running -- if a second one appears, `fly scale count 1 -a
+# niksenflow-guacamole-sin` to remove it, matching how
+# niksenflow-guacamole (syd) has always run.
 app = "niksenflow-guacamole-sin"
 primary_region = "sin"
 
