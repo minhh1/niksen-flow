@@ -19,6 +19,13 @@
 // a self-hosted model that doesn't also output 1024 dims will fail the
 // insert below, which is caught per-company and recorded as an error
 // rather than crashing the whole run.
+//
+// Both models are asymmetric retrieval models that need an instruction
+// prefix on the *query* side only (see lib/ai/embeddings.ts, used by
+// app/api/ai/chat/route.ts) -- document/passage text, which is all this
+// worker ever embeds, intentionally gets no prefix per each model's own
+// card. Don't add one here to "match" the query side; that would make
+// retrieval worse, not better.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const db = createClient(
