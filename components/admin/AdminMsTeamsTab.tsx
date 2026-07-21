@@ -8,11 +8,40 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { Users2, Trash2, Loader2, ExternalLink, CheckCircle2, HelpCircle } from "lucide-react";
+import { Users2, Trash2, Loader2, ExternalLink, CheckCircle2, HelpCircle, Bot, Copy, Check } from "lucide-react";
 import CredentialsHelpDrawer from "./CredentialsHelpDrawer";
 import { APP_URL } from "@/lib/config";
 
 const CONSENT_CALLBACK_URL = `${APP_URL}/api/teams/admin-consent-callback`;
+
+// Last verified against learn.microsoft.com's "Create a bot for Teams" and
+// "Create an Azure Bot resource" docs on 2026-07-21.
+const BOT_HELP_STEPS = [
+  {
+    title: "Create an Azure Bot resource",
+    description:
+      "In the Azure Portal, search for \"Azure Bot\" and create one. This is a separate resource from the Azure AD app registration used for the read-only sync above -- creating it generates its own Application (client) ID and lets you generate its own client secret (\"password\"), under the resource's Configuration page.",
+    linkLabel: "portal.azure.com",
+    linkUrl: "https://portal.azure.com",
+  },
+  {
+    title: "Set the messaging endpoint",
+    description:
+      "On the bot resource's Configuration page, set \"Messaging endpoint\" to the URL shown below (once you've saved credentials here, it includes this company's ID).",
+  },
+  {
+    title: "Enable the Microsoft Teams channel",
+    description:
+      "On the bot resource's Channels page, add Microsoft Teams as a channel -- without this, the bot can never receive a message from Teams no matter how it's configured elsewhere.",
+  },
+  {
+    title: "Create and sideload a Teams app package",
+    description:
+      "Package a Teams app manifest referencing this bot's Application ID (via the Teams Developer Portal is the simplest route) and sideload it into your tenant, or publish it to your org's app catalog. This is a one-time manual step for your Microsoft 365 admin -- it can't be pushed here automatically.",
+    linkLabel: "dev.teams.microsoft.com",
+    linkUrl: "https://dev.teams.microsoft.com",
+  },
+];
 
 // Last verified against learn.microsoft.com's Azure AD app registration +
 // v2 admin-consent-endpoint docs on 2026-07-21 -- if a step no longer
@@ -57,6 +86,13 @@ interface Connection {
   client_id: string;
 }
 
+interface BotConnection {
+  id: string;
+  enabled: boolean;
+  created_at: string;
+  bot_app_id: string;
+}
+
 export default function AdminMsTeamsTab({ companyId }: Props) {
   const searchParams = useSearchParams();
   const [connection, setConnection] = useState<Connection | null>(null);
@@ -69,8 +105,19 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
 
+  const [botConnection, setBotConnection] = useState<BotConnection | null>(null);
+  const [botLoading, setBotLoading] = useState(true);
+  const [showBotForm, setShowBotForm] = useState(false);
+  const [botAppId, setBotAppId] = useState("");
+  const [botAppPassword, setBotAppPassword] = useState("");
+  const [botSaving, setBotSaving] = useState(false);
+  const [botError, setBotError] = useState<string | null>(null);
+  const [botHelpOpen, setBotHelpOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+
   const consentResult = searchParams.get("msTeamsConsent");
   const consentMessage = searchParams.get("message");
+  const messagingEndpointUrl = `${APP_URL}/api/teams/bot/${companyId}`;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -80,9 +127,63 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
     setLoading(false);
   }, []);
 
+  const loadBot = useCallback(async () => {
+    setBotLoading(true);
+    const res = await fetch("/api/teams/bot/credentials");
+    const json = await res.json();
+    setBotConnection(json.connection ?? null);
+    setBotLoading(false);
+  }, []);
+
+  const connectBot = async () => {
+    setBotError(null);
+    if (!botAppId.trim() || !botAppPassword.trim()) {
+      setBotError("Both fields are required");
+      return;
+    }
+    setBotSaving(true);
+    const res = await fetch("/api/teams/bot/credentials", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bot_app_id: botAppId.trim(), bot_app_password: botAppPassword.trim() }),
+    });
+    const json = await res.json();
+    setBotSaving(false);
+    if (!res.ok) {
+      setBotError(json.error || "Failed to save");
+      return;
+    }
+    setBotAppId("");
+    setBotAppPassword("");
+    setShowBotForm(false);
+    loadBot();
+  };
+
+  const toggleBotEnabled = async (enabled: boolean) => {
+    await fetch("/api/teams/bot/credentials", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    loadBot();
+  };
+
+  const disconnectBot = async () => {
+    if (!confirm("Disconnect the Teams bot? Linked accounts and conversation history will be kept.")) return;
+    await fetch("/api/teams/bot/credentials", { method: "DELETE" });
+    loadBot();
+  };
+
+  const copyEndpoint = () => {
+    navigator.clipboard.writeText(messagingEndpointUrl);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
   useEffect(() => {
     load();
-  }, [load]);
+    loadBot();
+  }, [load, loadBot]);
 
   const connect = async () => {
     setError(null);
@@ -254,12 +355,121 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
         )}
       </div>
 
+      {/* ── Teams bot (chat inside Teams) ── */}
+      <div className="bg-white border border-slate-200 rounded-[32px] p-6">
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Teams bot (chat inside Teams)</p>
+          {!botConnection && !botLoading && (
+            <button onClick={() => setShowBotForm((v) => !v)} className="p-1.5 text-slate-300 hover:text-indigo-600 transition-colors">
+              <Bot size={14} />
+            </button>
+          )}
+        </div>
+
+        {botLoading ? (
+          <div className="flex items-center justify-center py-6">
+            <Loader2 size={16} className="animate-spin text-slate-300" />
+          </div>
+        ) : (
+          <>
+            {!botConnection && !showBotForm && (
+              <p className="text-[12px] text-slate-400">
+                Not connected. This is a separate Azure Bot resource from the sync app above -- lets people
+                @mention or DM the assistant directly inside Microsoft Teams, with real conversation memory
+                tied to a linked Diract account.
+              </p>
+            )}
+
+            {botConnection && (
+              <div className="space-y-2 mb-2">
+                <div className="flex items-center gap-3 px-4 py-2.5 bg-slate-50 rounded-2xl">
+                  <Bot size={13} className={botConnection.enabled ? "text-emerald-500 shrink-0" : "text-slate-400 shrink-0"} />
+                  <p className="text-[12px] font-medium text-slate-700 flex-1">Bot App ID {botConnection.bot_app_id}</p>
+                  <button
+                    onClick={() => toggleBotEnabled(!botConnection.enabled)}
+                    className={`px-3 py-1 text-[10px] font-bold rounded-full transition-colors ${
+                      botConnection.enabled ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-500"
+                    }`}
+                  >
+                    {botConnection.enabled ? "Enabled" : "Disabled"}
+                  </button>
+                  <button onClick={disconnectBot} className="p-1 text-slate-300 hover:text-red-500 transition-colors">
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {(showBotForm || botConnection) && (
+              <div className="space-y-3 pt-3 border-t border-slate-100">
+                <div className="px-4 py-3 bg-slate-50 rounded-2xl">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1.5">
+                    Messaging endpoint — paste into the Azure Bot resource&apos;s Configuration page
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 text-[11px] text-slate-600 truncate">{messagingEndpointUrl}</code>
+                    <button onClick={copyEndpoint} className="p-1 text-slate-400 hover:text-indigo-600 transition-colors shrink-0">
+                      {copied ? <Check size={13} /> : <Copy size={13} />}
+                    </button>
+                  </div>
+                </div>
+
+                {!botConnection && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setBotHelpOpen(true)}
+                      className="flex items-center gap-1.5 text-[11px] font-bold text-indigo-600 hover:underline"
+                    >
+                      <HelpCircle size={12} /> Where do I find these?
+                    </button>
+                    <input
+                      value={botAppId}
+                      onChange={(e) => setBotAppId(e.target.value)}
+                      placeholder="Bot Application (client) ID"
+                      className="w-full px-4 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400"
+                    />
+                    <input
+                      type="password"
+                      value={botAppPassword}
+                      onChange={(e) => setBotAppPassword(e.target.value)}
+                      placeholder="Bot client secret"
+                      className="w-full px-4 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400"
+                    />
+                    {botError && <p className="text-[11px] text-red-500">{botError}</p>}
+                    <div className="flex gap-2">
+                      <button
+                        onClick={connectBot}
+                        disabled={botSaving}
+                        className="px-5 py-2 bg-indigo-600 text-white text-[12px] font-bold rounded-full hover:bg-indigo-700 disabled:opacity-40 transition-colors"
+                      >
+                        {botSaving ? "Saving..." : "Connect"}
+                      </button>
+                      <button onClick={() => setShowBotForm(false)} className="px-4 py-2 text-[12px] text-slate-400 hover:text-slate-700">
+                        Cancel
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
       <CredentialsHelpDrawer
         isOpen={helpOpen}
         onClose={() => setHelpOpen(false)}
         title="Finding your Azure AD credentials"
         intro="All three values below come from an Azure AD app registration in the Azure Portal — your company's Microsoft 365 admin will need to complete the last step."
         steps={TEAMS_HELP_STEPS}
+      />
+      <CredentialsHelpDrawer
+        isOpen={botHelpOpen}
+        onClose={() => setBotHelpOpen(false)}
+        title="Setting up the Teams bot"
+        intro="This is a separate Azure resource from the sync app above -- a real Bot Framework bot registration. The last step needs your Microsoft 365 admin."
+        steps={BOT_HELP_STEPS}
       />
     </div>
   );

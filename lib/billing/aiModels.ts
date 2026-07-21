@@ -1,4 +1,6 @@
 // lib/billing/aiModels.ts
+import { PLATFORM_AI_SERVICE_FEE_USD_PER_1K_TOKENS } from "@/lib/billing/plans";
+
 // Static, hand-curated catalog of open-weight models available through the
 // platform-hosted inference provider (Together AI), mirroring
 // lib/vmProviders/pricing.ts's precedent -- a live pricing API isn't worth
@@ -60,4 +62,21 @@ export const HOSTED_MODELS: HostedModel[] = [
 
 export function findHostedModel(id: string): HostedModel | undefined {
   return HOSTED_MODELS.find((m) => m.id === id);
+}
+
+// Shared by app/api/ai/chat/route.ts and app/api/teams/bot/[companyId]/route.ts
+// -- self-hosted usage has no real per-token provider cost, so it's billed
+// at a flat platform service fee instead (see PLATFORM_AI_SERVICE_FEE_USD_PER_1K_TOKENS
+// in lib/billing/plans.ts).
+export function costUsd(
+  provider: "hosted" | "self_hosted",
+  modelId: string,
+  usage: { inputTokens: number; outputTokens: number }
+): number {
+  if (provider === "self_hosted") {
+    return ((usage.inputTokens + usage.outputTokens) / 1000) * PLATFORM_AI_SERVICE_FEE_USD_PER_1K_TOKENS;
+  }
+  const model = findHostedModel(modelId);
+  if (!model) return 0;
+  return (usage.inputTokens / 1000) * model.inputUsdPer1kTokens + (usage.outputTokens / 1000) * model.outputUsdPer1kTokens;
 }
