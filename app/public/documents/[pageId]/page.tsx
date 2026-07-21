@@ -19,12 +19,13 @@ interface Field {
   isRequired: boolean;
   autoFilled: boolean;
   isDefault: boolean;
+  isRestored: boolean;
   value: string;
   triggerTagKey: string | null;
   triggerValue: string | null;
 }
 interface DocumentInfo { id: string; name: string; description: string | null; fieldTagKeys: string[]; }
-interface PageData { title: string; heading: string; requiresCode: boolean; documents: DocumentInfo[]; fields: Field[]; }
+interface PageData { title: string; heading: string; requiresCode: boolean; documents: DocumentInfo[]; fields: Field[]; naFields?: string[]; }
 interface GeneratedFile { name: string; url: string; }
 interface ResultBatch { label: string; files: GeneratedFile[]; zipUrl: string | null }
 
@@ -95,6 +96,7 @@ export default function PublicDocumentFillPage() {
   const [submitting, setSubmitting] = useState<"all" | string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [results, setResults] = useState<ResultBatch[]>([]);
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
 
   const fetchPage = useCallback(async (code?: string) => {
     const url = code
@@ -111,6 +113,11 @@ export default function PublicDocumentFillPage() {
     const initial: Record<string, string> = {};
     (json.fields || []).forEach((f: Field) => { initial[f.tagKey] = f.value || ""; });
     setValues(initial);
+    // Restores which fields the client had previously marked "Not
+    // applicable" in a saved draft — the answered VALUES themselves are
+    // already folded into each field's `value` above (see the GET route),
+    // but N/A is a separate flag with no value of its own to carry it.
+    setNaFields(new Set(json.naFields || []));
   };
 
   const load = useCallback(async () => {
@@ -214,6 +221,31 @@ export default function PublicDocumentFillPage() {
     });
   }, [data, visibleTagKeys, values, naFields]);
 
+  // Autosaves the client's answers (debounced) so a closed tab or a
+  // different device doesn't mean retyping everything — see the draft
+  // route. `lastLoadedDataRef` distinguishes "values just changed because a
+  // fresh load/reload applied them" (skip — nothing new to save) from an
+  // actual edit the client made (save it), without needing a second effect.
+  const lastLoadedDataRef = useRef<PageData | null>(null);
+  useEffect(() => {
+    if (!data || needsCode) return;
+    if (lastLoadedDataRef.current !== data) {
+      lastLoadedDataRef.current = data;
+      return;
+    }
+    setSaveState("saving");
+    const timeout = setTimeout(() => {
+      fetch(`/api/document-templates/public/${pageId}/draft`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ values, naFields: [...naFields], code: verifiedCode }),
+      })
+        .then(res => setSaveState(res.ok ? "saved" : "idle"))
+        .catch(() => setSaveState("idle"));
+    }, 1000);
+    return () => clearTimeout(timeout);
+  }, [values, naFields, data, needsCode, pageId, verifiedCode]);
+
   const activeDoc = data?.documents.find(d => d.id === activeDocId) || null;
   const isMultiDoc = (data?.documents.length ?? 0) > 1;
   // With one document there's nothing to scope a tab to — show every field.
@@ -312,7 +344,14 @@ export default function PublicDocumentFillPage() {
         <div>
           <div className="flex items-center gap-2">
             <FileText size={18} className="text-indigo-600" />
-            <h1 className="text-[16px] font-bold text-slate-800">{data.heading}</h1>
+            <h1 className="text-[16px] font-bold text-slate-800 flex-1">{data.heading}</h1>
+            {saveState !== "idle" && (
+              <span className="flex items-center gap-1 text-[10px] text-slate-400 shrink-0">
+                {saveState === "saving"
+                  ? <><Loader2 size={10} className="animate-spin" /> Saving...</>
+                  : <><Check size={10} className="text-emerald-500" /> Answers saved</>}
+              </span>
+            )}
           </div>
           {data.title && data.title !== data.heading && (
             <p className="text-[11px] text-slate-400 mt-0.5 ml-[26px]">{data.title}</p>
@@ -354,6 +393,7 @@ export default function PublicDocumentFillPage() {
                     {f.label}{f.isRequired && !isNa && <span className="text-indigo-500"> *</span>}
                     {f.autoFilled && !isNa && <span className="ml-2 text-slate-300 normal-case font-medium tracking-normal">pre-filled</span>}
                     {f.isDefault && !isNa && <span className="ml-2 text-slate-300 normal-case font-medium tracking-normal">default</span>}
+                    {f.isRestored && !isNa && <span className="ml-2 text-emerald-500 normal-case font-medium tracking-normal">restored from your last visit</span>}
                   </p>
                   <button type="button" onClick={() => toggleNa(f.tagKey)}
                     className={`shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-widest transition-colors ${

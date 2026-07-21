@@ -11,7 +11,7 @@ import { NextResponse } from "next/server";
 export async function loadActiveFillPage(admin: any, pageId: string) {
   const { data: page } = await admin
     .from("document_fill_pages")
-    .select("id, company_id, project_id, title, client_name, expires_at, is_active, access_code")
+    .select("id, company_id, project_id, title, client_name, expires_at, is_active, access_code, draft_values, draft_na_fields")
     .eq("id", pageId).maybeSingle();
 
   const notFound = { error: NextResponse.json({ error: "This page is not available" }, { status: 404 }), page: null };

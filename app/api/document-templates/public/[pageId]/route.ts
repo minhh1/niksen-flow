@@ -95,6 +95,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
   // ── De-duplicate by (join-resolved) tag_key — a tag shared by two
   // templates by exact text, OR explicitly joined despite different text,
   // is asked once, using the root field's own label/type/required/etc. ──
+  // A returning client's own prior answers, if they saved any (see the
+  // draft route) — take priority over auto-fill/default since they reflect
+  // what the client themselves deliberately typed, not a generic fallback.
+  const draftValues: Record<string, any> = (page.draft_values && typeof page.draft_values === "object") ? page.draft_values : {};
+  const draftNaFields = new Set<string>(Array.isArray(page.draft_na_fields) ? page.draft_na_fields : []);
+
   const seen = new Set<string>();
   const fields: any[] = [];
   for (const f of fieldRows || []) {
@@ -103,9 +109,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
     seen.add(root.tag_key);
     const autoVal = root.auto_fill_field_id ? autoFillValues[root.auto_fill_field_id] ?? null : null;
     const autoFilled = autoVal !== null && autoVal !== undefined && autoVal !== "";
-    // Default value only kicks in when there's no actual project data to
-    // auto-fill from — real project data always wins over a generic fallback.
-    const isDefault = !autoFilled && !!root.default_value;
+    const isNa = draftNaFields.has(root.tag_key);
+    const hasDraft = !isNa && Object.prototype.hasOwnProperty.call(draftValues, root.tag_key) && draftValues[root.tag_key] !== "" && draftValues[root.tag_key] != null;
+    // Default value only kicks in when there's no actual project data (or
+    // saved draft answer) to fall back to instead.
+    const isDefault = !hasDraft && !autoFilled && !!root.default_value;
     // Resolve the trigger to its join-root's tag_key too, so the client only
     // ever deals in tag_keys. A trigger pointing outside this page's bundled
     // fields (dangling/cross-page edge case) just means the field always
@@ -120,7 +128,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
       isRequired: root.is_required,
       autoFilled,
       isDefault,
-      value: autoFilled ? String(autoVal) : (isDefault ? String(root.default_value) : ""),
+      isRestored: hasDraft,
+      value: isNa ? "" : (hasDraft ? String(draftValues[root.tag_key]) : (autoFilled ? String(autoVal) : (isDefault ? String(root.default_value) : ""))),
       triggerTagKey,
       triggerValue: triggerTagKey ? (root.trigger_value ?? null) : null,
     });
@@ -138,5 +147,5 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
     fieldTagKeys: [...new Set((fieldRows || []).filter((f: any) => f.template_id === t.id).map((f: any) => pageLocalRoot(f).tag_key))],
   }));
 
-  return NextResponse.json({ title: page.title, heading, requiresCode: false, documents, fields });
+  return NextResponse.json({ title: page.title, heading, requiresCode: false, documents, fields, naFields: [...draftNaFields] });
 }
