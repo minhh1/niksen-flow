@@ -5,7 +5,15 @@
 -- teams_messages) -- a Bot Framework bot is registered as its own "Azure
 -- Bot" resource with its own App ID + password.
 --
--- credentials is a jsonb blob: { "bot_app_id": "...", "bot_app_password": "..." }
+-- credentials is a jsonb blob:
+--   { "bot_app_id": "...", "bot_app_password": "...", "bot_tenant_id": "..." }
+-- bot_tenant_id is required -- Microsoft deprecated creating new
+-- multi-tenant bots after 2025-07-31 (existing ones still work, but this
+-- integration is new as of 2026), so every Azure Bot resource created now
+-- is single-tenant (or user-assigned-managed-identity, unsupported here),
+-- and single-tenant bot token requests must go through
+-- login.microsoftonline.com/{tenant_id}/... , not the generic multi-tenant
+-- botframework.com endpoint (see lib/msTeamsBot/connector.ts).
 --
 -- enabled is the actual "if admin allows it" gate -- the messaging endpoint
 -- checks this before doing anything beyond JWT-validating and acking, so a

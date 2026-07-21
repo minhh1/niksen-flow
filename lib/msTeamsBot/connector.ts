@@ -1,16 +1,26 @@
 // lib/msTeamsBot/connector.ts
 // Outbound side of the Bot Framework Connector protocol -- getting a bot
 // bearer token and sending a reply activity back into the Teams
-// conversation the inbound message came from. Verified 2026-07-21 against
-// Microsoft's "Authenticate requests with the Bot Connector API" doc:
-// plain OAuth2 client-credentials + a REST POST, no SDK needed.
+// conversation the inbound message came from.
+//
+// getBotToken uses the *single-tenant* token endpoint
+// (login.microsoftonline.com/{tenant_id}/...) rather than the generic
+// multi-tenant botframework.com one -- verified 2026-07-21 against
+// Microsoft's "Register a Bot Framework bot with Azure" doc, which states
+// multi-tenant bot creation was deprecated after 2025-07-31 (existing
+// multi-tenant bots still work, but no new one can be created that way,
+// and this integration is new as of 2026). Azure Bot resources created
+// today are single-tenant or user-assigned-managed-identity; this only
+// supports single-tenant (app ID + password + tenant ID), matching what
+// AdminMsTeamsTab.tsx's bot connect form collects.
 export interface BotCredentials {
   bot_app_id: string;
   bot_app_password: string;
+  bot_tenant_id: string;
 }
 
 export async function getBotToken(creds: BotCredentials): Promise<string> {
-  const res = await fetch("https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token", {
+  const res = await fetch(`https://login.microsoftonline.com/${creds.bot_tenant_id}/oauth2/v2.0/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({

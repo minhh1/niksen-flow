@@ -14,30 +14,40 @@ import { APP_URL } from "@/lib/config";
 
 const CONSENT_CALLBACK_URL = `${APP_URL}/api/teams/admin-consent-callback`;
 
-// Last verified against learn.microsoft.com's "Create a bot for Teams" and
-// "Create an Azure Bot resource" docs on 2026-07-21.
+// Last verified against learn.microsoft.com's "Register a Bot Framework bot
+// with Azure", "Configure an Azure AI Bot Service bot to run on one or more
+// channels", and "Connect a Bot Framework bot to Microsoft Teams" docs on
+// 2026-07-21. Important: multi-tenant bot creation was deprecated after
+// 2025-07-31 -- only "Single Tenant" or "User-Assigned Managed Identity" can
+// be created now (this integration only supports Single Tenant, hence the
+// Tenant ID field below; see lib/msTeamsBot/connector.ts).
 const BOT_HELP_STEPS = [
   {
-    title: "Create an Azure Bot resource",
+    title: "Create an Azure Bot resource (Single Tenant)",
     description:
-      "In the Azure Portal, search for \"Azure Bot\" and create one. This is a separate resource from the Azure AD app registration used for the read-only sync above -- creating it generates its own Application (client) ID and lets you generate its own client secret (\"password\"), under the resource's Configuration page.",
+      "In the Azure Portal, select Create a resource, search \"bot\", choose the Azure Bot card, and Create. This is a separate resource from the Azure AD app registration used for the read-only sync above. Fill in Project details, then under \"Microsoft App ID\" choose to create a new app ID and select type Single Tenant -- Multi Tenant can no longer be created (deprecated by Microsoft since mid-2025) and User-Assigned Managed Identity isn't supported by this integration.",
     linkLabel: "portal.azure.com",
     linkUrl: "https://portal.azure.com",
   },
   {
+    title: "Find the App ID and Tenant ID, generate a password",
+    description:
+      "On the bot resource's Configuration page, the Microsoft App ID and App Tenant ID are both shown directly. Click \"Manage\" next to Microsoft App ID to jump to Certificates & secrets, then New client secret -- copy the Value immediately, Azure only shows it once.",
+  },
+  {
     title: "Set the messaging endpoint",
     description:
-      "On the bot resource's Configuration page, set \"Messaging endpoint\" to the URL shown below (once you've saved credentials here, it includes this company's ID).",
+      "Still on the Configuration page, set \"Messaging endpoint\" to the URL shown below (once you've saved credentials here, it includes this company's ID).",
   },
   {
     title: "Enable the Microsoft Teams channel",
     description:
-      "On the bot resource's Channels page, add Microsoft Teams as a channel -- without this, the bot can never receive a message from Teams no matter how it's configured elsewhere.",
+      "On the bot resource's Channels page (under Settings), select the Microsoft Teams icon, accept the terms of service, pick a cloud environment on the Messaging tab, and Apply. Without this step the bot can never receive a message from Teams no matter how it's configured elsewhere.",
   },
   {
     title: "Create and sideload a Teams app package",
     description:
-      "Package a Teams app manifest referencing this bot's Application ID (via the Teams Developer Portal is the simplest route) and sideload it into your tenant, or publish it to your org's app catalog. This is a one-time manual step for your Microsoft 365 admin -- it can't be pushed here automatically.",
+      "A bot only reaches real users in Teams as part of a Teams app package (manifest + icons) referencing this bot's Application ID -- the Teams Developer Portal is the simplest way to build one. Sideload it into your tenant or publish it to your org's app catalog. This is a one-time manual step for your Microsoft 365 admin -- it can't be pushed here automatically.",
     linkLabel: "dev.teams.microsoft.com",
     linkUrl: "https://dev.teams.microsoft.com",
   },
@@ -91,6 +101,7 @@ interface BotConnection {
   enabled: boolean;
   created_at: string;
   bot_app_id: string;
+  bot_tenant_id: string;
 }
 
 export default function AdminMsTeamsTab({ companyId }: Props) {
@@ -110,6 +121,7 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
   const [showBotForm, setShowBotForm] = useState(false);
   const [botAppId, setBotAppId] = useState("");
   const [botAppPassword, setBotAppPassword] = useState("");
+  const [botTenantId, setBotTenantId] = useState("");
   const [botSaving, setBotSaving] = useState(false);
   const [botError, setBotError] = useState<string | null>(null);
   const [botHelpOpen, setBotHelpOpen] = useState(false);
@@ -137,15 +149,19 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
 
   const connectBot = async () => {
     setBotError(null);
-    if (!botAppId.trim() || !botAppPassword.trim()) {
-      setBotError("Both fields are required");
+    if (!botAppId.trim() || !botAppPassword.trim() || !botTenantId.trim()) {
+      setBotError("All three fields are required");
       return;
     }
     setBotSaving(true);
     const res = await fetch("/api/teams/bot/credentials", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bot_app_id: botAppId.trim(), bot_app_password: botAppPassword.trim() }),
+      body: JSON.stringify({
+        bot_app_id: botAppId.trim(),
+        bot_app_password: botAppPassword.trim(),
+        bot_tenant_id: botTenantId.trim(),
+      }),
     });
     const json = await res.json();
     setBotSaving(false);
@@ -155,6 +171,7 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
     }
     setBotAppId("");
     setBotAppPassword("");
+    setBotTenantId("");
     setShowBotForm(false);
     loadBot();
   };
@@ -384,7 +401,9 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
               <div className="space-y-2 mb-2">
                 <div className="flex items-center gap-3 px-4 py-2.5 bg-slate-50 rounded-2xl">
                   <Bot size={13} className={botConnection.enabled ? "text-emerald-500 shrink-0" : "text-slate-400 shrink-0"} />
-                  <p className="text-[12px] font-medium text-slate-700 flex-1">Bot App ID {botConnection.bot_app_id}</p>
+                  <p className="text-[12px] font-medium text-slate-700 flex-1">
+                    Bot App ID {botConnection.bot_app_id} — tenant {botConnection.bot_tenant_id}
+                  </p>
                   <button
                     onClick={() => toggleBotEnabled(!botConnection.enabled)}
                     className={`px-3 py-1 text-[10px] font-bold rounded-full transition-colors ${
@@ -427,6 +446,12 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
                       value={botAppId}
                       onChange={(e) => setBotAppId(e.target.value)}
                       placeholder="Bot Application (client) ID"
+                      className="w-full px-4 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400"
+                    />
+                    <input
+                      value={botTenantId}
+                      onChange={(e) => setBotTenantId(e.target.value)}
+                      placeholder="Bot App Tenant ID"
                       className="w-full px-4 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400"
                     />
                     <input
