@@ -4,7 +4,7 @@
 import { useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
 import {
-  Loader2, Tag, Users2, ListOrdered, Activity, Radio, Mail, Trash2, PlusCircle, MinusCircle, Inbox, Archive, Check, X, ClipboardCheck, ArrowUpDown, Clock,
+  Loader2, Tag, Users2, ListOrdered, Activity, Radio, Mail, Trash2, PlusCircle, MinusCircle, Inbox, Archive, Check, X, ClipboardCheck, ArrowUpDown, Clock, AlertTriangle, RotateCw,
 } from "lucide-react";
 
 interface AdminGmailSyncTabProps {
@@ -69,8 +69,25 @@ function describeActivity(row: ActivityRow): string {
     case "message_deleted": return `Message deleted by ${row.user_name}`;
     case "archived": return `Archived to ${row.user_name}`;
     case "email_trashed": return `Deleted from ${row.user_name}'s mailbox (archived)`;
+    case "sync_recovered": return `Recovered — ${row.user_name} is back on track`;
+    case "sync_failed": return `Persistent failure for ${row.user_name} — needs attention`;
+    case "sync_error": return `Sync failed for ${row.user_name} — quarantined, will retry automatically`;
+    case "dispatch_error": return `Couldn't reach the processor for ${row.user_name} — will retry next cycle`;
     default: return row.user_name;
   }
+}
+
+interface SyncFailure {
+  id: string;
+  job_type: string;
+  project_name: string;
+  gmail_label_name: string | null;
+  user_name: string;
+  status: string;
+  attempts: number;
+  last_error: string | null;
+  first_failed_at: string;
+  last_attempted_at: string | null;
 }
 
 interface HeartbeatRow {
@@ -110,6 +127,10 @@ const ACTION_META: Record<string, { label: string; icon: any; style: string }> =
   message_deleted: { label: "Message deleted", icon: Trash2, style: "bg-red-50 text-red-600" },
   archived: { label: "Archived", icon: PlusCircle, style: "bg-purple-50 text-purple-600" },
   email_trashed: { label: "Deleted (archived)", icon: Trash2, style: "bg-red-50 text-red-600" },
+  sync_recovered: { label: "Recovered", icon: RotateCw, style: "bg-emerald-50 text-emerald-600" },
+  sync_failed: { label: "Persistent failure", icon: AlertTriangle, style: "bg-red-50 text-red-600" },
+  sync_error: { label: "Sync error (quarantined)", icon: AlertTriangle, style: "bg-amber-50 text-amber-600" },
+  dispatch_error: { label: "Dispatch error", icon: AlertTriangle, style: "bg-amber-50 text-amber-600" },
 };
 
 // name → [human label, expected interval in ms]
@@ -119,12 +140,13 @@ const HEARTBEAT_DEFS: Record<string, { label: string; intervalMs: number }> = {
   "gmail-email-sync-cron": { label: "Email sync cron (every 15 min)", intervalMs: 15 * 60 * 1000 },
   "gmail-email-sync-worker": { label: "Email sync worker (every 1 min)", intervalMs: 60 * 1000 },
   "gmail-watch-renewal": { label: "Watch renewal (daily)", intervalMs: 24 * 60 * 60 * 1000 },
+  "gmail-sync-recovery-worker": { label: "Sync recovery worker (every 15 min)", intervalMs: 15 * 60 * 1000 },
 };
 
 const ACTIVITY_PAGE_SIZE = 50;
 
 export default function AdminGmailSyncTab({ companyId }: AdminGmailSyncTabProps) {
-  const [section, setSection] = useState<"labels" | "queue" | "activity" | "health" | "archived" | "requests">("labels");
+  const [section, setSection] = useState<"labels" | "queue" | "activity" | "health" | "archived" | "requests" | "failures">("labels");
   const [loading, setLoading] = useState(true);
 
   const [sharedLabels, setSharedLabels] = useState<SharedLabel[]>([]);
@@ -152,6 +174,7 @@ export default function AdminGmailSyncTab({ companyId }: AdminGmailSyncTabProps)
   const [projectNameById, setProjectNameById] = useState<Map<string, string>>(new Map());
 
   const [heartbeats, setHeartbeats] = useState<HeartbeatRow[]>([]);
+  const [syncFailures, setSyncFailures] = useState<SyncFailure[]>([]);
 
   useEffect(() => { load(); }, [companyId]);
   useEffect(() => { loadActivity(true); }, [companyId, activityFilter, activityRange, activityCustomFrom, activityCustomTo, activitySortAsc]);
@@ -159,7 +182,7 @@ export default function AdminGmailSyncTab({ companyId }: AdminGmailSyncTabProps)
   const load = async () => {
     setLoading(true);
 
-    const [{ data: memberships }, { data: labels }, { data: archived }, { data: jobs }, { data: archiveJobs }, { data: hb }, { data: comp }, { data: requests }] = await Promise.all([
+    const [{ data: memberships }, { data: labels }, { data: archived }, { data: jobs }, { data: archiveJobs }, { data: hb }, { data: comp }, { data: requests }, { data: failures }] = await Promise.all([
       supabase.from("company_memberships").select("user_id").eq("company_id", companyId),
       supabase.from("project_gmail_labels")
         .select("project_id, gmail_label_name, label_code")
@@ -185,6 +208,11 @@ export default function AdminGmailSyncTab({ companyId }: AdminGmailSyncTabProps)
         .select("id, project_id, requested_by, created_at, error")
         .eq("company_id", companyId).eq("status", "pending")
         .order("created_at", { ascending: false }),
+      supabase.from("gmail_sync_failures")
+        .select("id, job_id, job_type, project_id, user_id, status, attempts, last_error, first_failed_at, last_attempted_at")
+        .eq("company_id", companyId)
+        .in("status", ["pending_retry", "persistent_failure"])
+        .order("first_failed_at", { ascending: false }),
     ]);
 
     setArchiveEmails(comp?.gmail_archive_emails || []);
@@ -213,6 +241,7 @@ export default function AdminGmailSyncTab({ companyId }: AdminGmailSyncTabProps)
       ...(jobs || []).map((j: any) => j.project_id),
       ...(archived || []).map((a: any) => a.project_id),
       ...(requests || []).map((r: any) => r.project_id),
+      ...(failures || []).map((f: any) => f.project_id),
     ]));
     let projectNameById = new Map<string, string>();
     if (projectIds.length) {
@@ -287,6 +316,35 @@ export default function AdminGmailSyncTab({ companyId }: AdminGmailSyncTabProps)
       error: r.error,
     })));
     setSelectedRequestIds(new Set());
+
+    // Resolve label names (via each failure's parent job) + user names for the Persistent Failures tab
+    const failureJobIds = Array.from(new Set((failures || []).map((f: any) => f.job_id).filter(Boolean)));
+    let labelNameByJobId = new Map<string, string>();
+    if (failureJobIds.length) {
+      const { data: failureJobs } = await supabase.from("gmail_sync_jobs").select("id, gmail_label_name").in("id", failureJobIds);
+      labelNameByJobId = new Map((failureJobs || []).map((j: any) => [j.id, j.gmail_label_name]));
+    }
+    const failureUserIds = Array.from(new Set((failures || []).map((f: any) => f.user_id).filter(Boolean)));
+    const missingFailureUserIds = failureUserIds.filter(id => !nameByUserId.has(id));
+    let failureNameByUserId = nameByUserId;
+    if (missingFailureUserIds.length) {
+      const { data: profiles } = await supabase.from("profiles").select("id, full_name, email").in("id", missingFailureUserIds);
+      const merged = new Map(failureNameByUserId);
+      for (const p of (profiles || [])) merged.set(p.id, p.full_name || p.email || "Unknown");
+      failureNameByUserId = merged;
+    }
+    setSyncFailures((failures || []).map((f: any) => ({
+      id: f.id,
+      job_type: f.job_type,
+      project_name: projectNameById.get(f.project_id) || f.project_id,
+      gmail_label_name: labelNameByJobId.get(f.job_id) || null,
+      user_name: f.user_id ? (failureNameByUserId.get(f.user_id) || "Unknown") : "Unknown",
+      status: f.status,
+      attempts: f.attempts,
+      last_error: f.last_error,
+      first_failed_at: f.first_failed_at,
+      last_attempted_at: f.last_attempted_at,
+    })));
 
     setHeartbeats(hb || []);
     setLoading(false);
@@ -444,6 +502,7 @@ export default function AdminGmailSyncTab({ companyId }: AdminGmailSyncTabProps)
     { id: "requests" as const, label: `Requests${archiveRequests.length ? ` (${archiveRequests.length})` : ""}`, icon: ClipboardCheck },
     { id: "archived" as const, label: "Archived", icon: Archive },
     { id: "queue" as const, label: "Live queue", icon: ListOrdered },
+    { id: "failures" as const, label: `Failures${syncFailures.length ? ` (${syncFailures.length})` : ""}`, icon: AlertTriangle },
     { id: "activity" as const, label: "Activity log", icon: Activity },
     { id: "health" as const, label: "System health", icon: Radio },
   ];
@@ -700,6 +759,56 @@ export default function AdminGmailSyncTab({ companyId }: AdminGmailSyncTabProps)
         </div>
       )}
 
+      {section === "failures" && (
+        <div className="space-y-3">
+          <div className="bg-red-50 border border-red-100 rounded-2xl px-4 py-3 text-[11px] text-red-700">
+            A user's account failed to sync and was quarantined so it couldn't block the rest of the queue.
+            gmail-sync-recovery-worker retries it every 15 minutes; anything still failing after 3 retries shows as a
+            persistent failure and needs the account owner to fix it (usually reconnecting Gmail, or waiting out a rate limit).
+          </div>
+          {syncFailures.length === 0 ? (
+            <p className="text-center text-slate-300 text-[11px] uppercase font-bold tracking-widest py-16">
+              No failures — everything syncing cleanly
+            </p>
+          ) : (
+            syncFailures.map(f => (
+              <div key={f.id} className="bg-white border border-slate-100 rounded-[28px] p-5 flex items-start gap-4">
+                <div className={`h-10 w-10 rounded-2xl flex items-center justify-center shrink-0 ${
+                  f.status === "persistent_failure" ? "bg-red-50" : "bg-amber-50"
+                }`}>
+                  <AlertTriangle size={16} className={f.status === "persistent_failure" ? "text-red-600" : "text-amber-600"} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${
+                      f.status === "persistent_failure" ? "bg-red-50 text-red-600" : "bg-amber-50 text-amber-600"
+                    }`}>
+                      {f.status === "persistent_failure" ? "Persistent failure" : "Retrying"}
+                    </span>
+                    <span className="px-2 py-0.5 rounded-full text-[9px] font-bold uppercase bg-slate-100 text-slate-500">
+                      {f.job_type === "label_sync" ? "Label sync" : f.job_type === "email_sync" ? "Email sync" : f.job_type}
+                    </span>
+                  </div>
+                  <p className="text-[13px] font-bold text-slate-800 truncate mt-1">{f.project_name}</p>
+                  {f.gmail_label_name && (
+                    <p className="text-[11px] text-slate-400 truncate mt-0.5">{f.gmail_label_name}</p>
+                  )}
+                  <p className="text-[11px] text-slate-500 font-medium mt-1.5">{f.user_name}</p>
+                  {f.last_error && (
+                    <p className="text-[11px] text-red-500 mt-1 break-words">{f.last_error}</p>
+                  )}
+                  <p className="text-[10px] text-slate-300 mt-1.5">
+                    First failed {new Date(f.first_failed_at).toLocaleString()}
+                    {f.last_attempted_at && <> — last retried {new Date(f.last_attempted_at).toLocaleString()}</>}
+                    {" "}— {f.attempts} recovery attempt{f.attempts !== 1 ? "s" : ""}
+                  </p>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
       {section === "activity" && (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
@@ -818,22 +927,36 @@ export default function AdminGmailSyncTab({ companyId }: AdminGmailSyncTabProps)
             const hb = heartbeats.find(h => h.name === name);
             const lastRunMs = hb ? new Date(hb.last_run_at).getTime() : 0;
             const isLive = lastRunMs > 0 && (Date.now() - lastRunMs) < def.intervalMs * 2;
+            const resultEntries = hb?.last_result && typeof hb.last_result === "object"
+              ? Object.entries(hb.last_result)
+              : [];
             return (
-              <div key={name} className="bg-white border border-slate-100 rounded-[28px] p-5 flex items-center gap-4">
-                <div className={`h-10 w-10 rounded-2xl flex items-center justify-center shrink-0 ${isLive ? "bg-emerald-50" : "bg-red-50"}`}>
-                  <Radio size={16} className={isLive ? "text-emerald-600" : "text-red-500"} />
+              <div key={name} className="bg-white border border-slate-100 rounded-[28px] p-5">
+                <div className="flex items-center gap-4">
+                  <div className={`h-10 w-10 rounded-2xl flex items-center justify-center shrink-0 ${isLive ? "bg-emerald-50" : "bg-red-50"}`}>
+                    <Radio size={16} className={isLive ? "text-emerald-600" : "text-red-500"} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[13px] font-bold text-slate-800">{def.label}</p>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      {hb ? `Last ran ${new Date(hb.last_run_at).toLocaleString()}` : "Never ran"}
+                    </p>
+                  </div>
+                  <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase shrink-0 ${
+                    isLive ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-600"
+                  }`}>
+                    {isLive ? "Live" : "Down"}
+                  </span>
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-[13px] font-bold text-slate-800">{def.label}</p>
-                  <p className="text-[11px] text-slate-400 mt-0.5">
-                    {hb ? `Last ran ${new Date(hb.last_run_at).toLocaleString()}` : "Never ran"}
-                  </p>
-                </div>
-                <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase shrink-0 ${
-                  isLive ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-600"
-                }`}>
-                  {isLive ? "Live" : "Down"}
-                </span>
+                {resultEntries.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-3 pt-3 border-t border-slate-100">
+                    {resultEntries.map(([key, value]) => (
+                      <span key={key} className="px-2.5 py-1 rounded-full text-[10px] font-medium bg-slate-50 text-slate-500">
+                        <span className="text-slate-400">{key}:</span> {String(value)}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}

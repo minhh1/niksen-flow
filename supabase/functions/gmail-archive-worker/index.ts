@@ -235,12 +235,47 @@ function respond(data: any, status = 200): Response {
   });
 }
 
+// ── Overlap guard ────────────────────────────────────────────────
+// Runs on both pg_cron and a GitHub Actions backup trigger — this table
+// (shared with the label/email dispatchers) makes a second trigger source
+// firing mid-run a safe no-op. Especially important here since this worker
+// trashes emails; two concurrent invocations racing on the same job's
+// confirmation/purge phases is worth avoiding even though the phase checks
+// are individually idempotent.
+
+const LOCK_NAME = "gmail-archive-worker";
+const LOCK_TTL_MS = 170_000;
+
+async function acquireLock(): Promise<boolean> {
+  const { data } = await db.from("dispatcher_locks")
+    .update({ locked_until: new Date(Date.now() + LOCK_TTL_MS).toISOString() })
+    .eq("name", LOCK_NAME).lt("locked_until", new Date().toISOString()).select();
+  return !!data && data.length > 0;
+}
+
+async function releaseLock(): Promise<void> {
+  try { await db.from("dispatcher_locks").update({ locked_until: new Date().toISOString() }).eq("name", LOCK_NAME); } catch (_) {}
+}
+
 // ── Function ──────────────────────────────────────────────────────
 
 Deno.serve(async (_req) => {
   console.log("[archive-worker] START");
   const t0 = Date.now();
 
+  if (!(await acquireLock())) {
+    console.log("[archive-worker] Previous tick still running — skipping");
+    return respond({ ok: true, skipped: "already_running" });
+  }
+
+  try {
+    return await runArchive(t0);
+  } finally {
+    await releaseLock();
+  }
+});
+
+async function runArchive(t0: number): Promise<Response> {
   const { data: jobs } = await db.from("gmail_sync_jobs")
     .select("*")
     .eq("job_type", "archive")
@@ -437,4 +472,4 @@ Deno.serve(async (_req) => {
   console.log(`[archive-worker] DONE in ${Date.now() - t0}ms — processed=${processed} remaining=${remaining}`);
   await heartbeat("gmail-archive-worker", Date.now() - t0, { processed, remaining });
   return respond({ ok: true, processed, remaining });
-});
+}

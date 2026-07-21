@@ -1,0 +1,30 @@
+name: Gmail sync worker backup trigger
+
+# pg_cron is the primary trigger for these four workers (schedules live in
+# supabase/*.sql). This is a backup path only -- it protects against
+# pg_cron/pg_net or the whole Supabase project going down, not against bugs
+# inside the functions themselves (each worker has its own overlap guard via
+# the dispatcher_locks table, so a second trigger source firing mid-run is a
+# safe no-op rather than a double-run).
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        function:
+          - gmail-label-sync-worker
+          - gmail-email-sync-worker
+          - gmail-sync-recovery-worker
+          - gmail-archive-worker
+    steps:
+      - name: Trigger ${{ matrix.function }}
+        run: |
+          curl -sf -X POST "https://txzzgtwrrokomiphairy.supabase.co/functions/v1/${{ matrix.function }}" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            --max-time 160
