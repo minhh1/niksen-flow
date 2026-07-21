@@ -125,23 +125,28 @@ async function collectCrmCandidates(companyId: string, since: string): Promise<E
   return candidates;
 }
 
+// gmail_activity_log (referenced in an earlier version of this function) was
+// never real -- its own migration file was superseded by
+// gmail_sync_log_reconcile.sql, which deliberately drops it as a duplicate
+// of gmail_sync_log. project_emails is the actual first-class table Gmail
+// sync writes per-message rows to (subject/snippet/from_name/project_id),
+// 2,300+ real rows as of 2026-07-21 -- use that instead.
 async function collectGmailCandidates(companyId: string, since: string): Promise<EmbedCandidate[]> {
   const { data, error } = await db
-    .from("gmail_activity_log")
-    .select("id, project_id, email_subject, email_snippet, created_at")
+    .from("project_emails")
+    .select("id, project_id, subject, snippet, from_name, created_at")
     .eq("company_id", companyId)
-    .eq("action", "new_email")
     .gt("created_at", since)
     .order("created_at", { ascending: true })
     .limit(BATCH_SIZE);
   if (error || !data) return [];
 
   return data
-    .filter((row) => row.email_subject || row.email_snippet)
+    .filter((row) => row.subject || row.snippet)
     .map((row) => ({
       sourceId: row.id,
       sourceUrl: row.project_id ? `/dashboard/projects?id=${row.project_id}` : null,
-      content: [row.email_subject, row.email_snippet].filter(Boolean).join("\n"),
+      content: [row.from_name ? `From: ${row.from_name}` : null, row.subject, row.snippet].filter(Boolean).join("\n"),
       createdAt: row.created_at,
     }));
 }
@@ -191,59 +196,91 @@ async function embedAndStore(companyId: string, sourceType: string, candidates: 
 
   const embeddings = await embedTexts(candidates.map((c) => c.content), ollamaUrl);
 
-  const rows = candidates
+  // Only candidates whose embedding actually succeeded count toward
+  // advancing the cursor -- previously the cursor advanced past every
+  // candidate in the batch regardless, so a missing/misconfigured
+  // embedding provider (e.g. TOGETHER_API_KEY not set on Supabase, which
+  // is a separate secrets store from Vercel's env vars) silently discarded
+  // whole batches of real data forever: embedTexts() returned null for
+  // everything, nothing got stored, but the cursor still moved past them.
+  const succeeded = candidates
     .map((c, i) => ({ c, embedding: embeddings[i] }))
-    .filter(({ embedding }) => embedding !== null)
-    .map(({ c, embedding }) => ({
-      company_id: companyId,
-      source_type: sourceType,
-      source_id: c.sourceId,
-      source_url: c.sourceUrl,
-      content: c.content,
-      embedding,
-    }));
+    .filter((x): x is { c: EmbedCandidate; embedding: number[] } => x.embedding !== null);
 
-  if (rows.length > 0) {
-    await db.from("ai_document_chunks").upsert(rows, { onConflict: "company_id,source_type,source_id" });
-  }
+  if (succeeded.length === 0) return;
 
-  const latest = candidates.reduce((max, c) => (c.createdAt > max ? c.createdAt : max), candidates[0].createdAt);
+  const rows = succeeded.map(({ c, embedding }) => ({
+    company_id: companyId,
+    source_type: sourceType,
+    source_id: c.sourceId,
+    source_url: c.sourceUrl,
+    content: c.content,
+    embedding,
+  }));
+  await db.from("ai_document_chunks").upsert(rows, { onConflict: "company_id,source_type,source_id" });
+
+  const latest = succeeded.reduce((max, { c }) => (c.createdAt > max ? c.createdAt : max), succeeded[0].c.createdAt);
   await saveCursor(companyId, sourceType, latest);
 }
 
 Deno.serve(async () => {
+  try {
+    return await runEmbedPass();
+  } catch (err) {
+    // A crash outside the per-company try/catch (e.g. the initial
+    // companies/settings queries) used to surface as a bare "Internal
+    // Server Error" with no way to tell what broke -- always return
+    // diagnosable JSON instead.
+    const message = err instanceof Error ? err.message : String(err);
+    return new Response(JSON.stringify({ error: message }), { status: 500, headers: { "Content-Type": "application/json" } });
+  }
+});
+
+async function runEmbedPass(): Promise<Response> {
   const started = Date.now();
+
+  // ai_chat_settings only gets a row once a company's admin actually saves a
+  // change on the AI Assistant tab (see app/api/ai/settings/route.ts's POST
+  // handler) -- just viewing the tab doesn't create one. Iterating only over
+  // existing settings rows meant no company ever got embedded until someone
+  // happened to save a settings change, even with sources fully connected.
+  // Iterate every company instead, and default missing settings to "all
+  // sources enabled" -- same !== false fallback app/api/ai/chat/route.ts uses.
+  const { data: companies } = await db.from("companies").select("id");
   const { data: settingsRows } = await db
     .from("ai_chat_settings")
     .select("company_id, source_crm, source_gmail, source_whatsapp, source_teams, self_hosted_ollama_url");
+  const settingsByCompany = new Map((settingsRows ?? []).map((s) => [s.company_id, s]));
 
   const results: Record<string, string> = {};
 
-  for (const settings of settingsRows ?? []) {
+  for (const company of companies ?? []) {
+    const companyId = company.id as string;
+    const settings = settingsByCompany.get(companyId);
+    const ollamaUrl = settings?.self_hosted_ollama_url ?? null;
+
     try {
-      const companyId = settings.company_id as string;
-      const ollamaUrl = settings.self_hosted_ollama_url ?? null;
       let embeddedCount = 0;
 
-      if (settings.source_crm) {
+      if (settings?.source_crm !== false) {
         const since = await getCursor(companyId, "crm_record");
         const candidates = await collectCrmCandidates(companyId, since);
         await embedAndStore(companyId, "crm_record", candidates, ollamaUrl);
         embeddedCount += candidates.length;
       }
-      if (settings.source_gmail) {
+      if (settings?.source_gmail !== false) {
         const since = await getCursor(companyId, "gmail");
         const candidates = await collectGmailCandidates(companyId, since);
         await embedAndStore(companyId, "gmail", candidates, ollamaUrl);
         embeddedCount += candidates.length;
       }
-      if (settings.source_whatsapp) {
+      if (settings?.source_whatsapp !== false) {
         const since = await getCursor(companyId, "whatsapp");
         const candidates = await collectWhatsAppCandidates(companyId, since);
         await embedAndStore(companyId, "whatsapp", candidates, ollamaUrl);
         embeddedCount += candidates.length;
       }
-      if (settings.source_teams) {
+      if (settings?.source_teams !== false) {
         const since = await getCursor(companyId, "teams");
         const candidates = await collectTeamsCandidates(companyId, since);
         await embedAndStore(companyId, "teams", candidates, ollamaUrl);
@@ -252,7 +289,7 @@ Deno.serve(async () => {
 
       results[companyId] = `ok: ${embeddedCount} candidates processed`;
     } catch (err) {
-      results[settings.company_id as string] = `error: ${err instanceof Error ? err.message : String(err)}`;
+      results[companyId] = `error: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
 
@@ -264,4 +301,4 @@ Deno.serve(async () => {
   return new Response(JSON.stringify({ companies: Object.keys(results).length, results }), {
     headers: { "Content-Type": "application/json" },
   });
-});
+}

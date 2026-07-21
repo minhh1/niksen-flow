@@ -6,7 +6,7 @@
 --
 -- source_type spans the four data sources the user asked for:
 --   'crm_record' -> a row in properties/entities/projects (source_id = that row's id)
---   'gmail'      -> a gmail_activity_log 'new_email' row (subject + snippet, not full body --
+--   'gmail'      -> a project_emails row (subject + snippet + sender, not full body --
 --                   this repo doesn't store full email bodies, they're fetched live from Gmail)
 --   'whatsapp'   -> a whatsapp_messages row
 --   'teams'      -> a teams_messages row
