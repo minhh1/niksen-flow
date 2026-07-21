@@ -41,7 +41,7 @@ export default function TemplateDownload({ mode, sectionKey }: Props) {
     const blob = new Blob([csvContent], { type: 'text/csv' });
     const a = document.createElement('a');
     a.href = window.URL.createObjectURL(blob);
-    a.download = `niksen_${section.key}_template.csv`;
+    a.download = `diract_${section.key}_template.csv`;
     a.click();
     window.URL.revokeObjectURL(a.href);
 

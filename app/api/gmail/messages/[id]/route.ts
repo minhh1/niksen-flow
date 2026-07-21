@@ -55,8 +55,8 @@ export async function GET(
       .eq('user_id', user.id)
       .single();
 
-    let niksenLabels: string[] = [];
-    let niksenProjectIds: string[] = [];
+    let diractLabels: string[] = [];
+    let diractProjectIds: string[] = [];
 
     if (pe?.project_id) {
       // Get label name from project_gmail_labels
@@ -67,11 +67,11 @@ export async function GET(
         .single();
 
       const labelName = pgl?.gmail_label_name || pe.project_id;
-      niksenLabels = [labelName];
-      niksenProjectIds = [pe.project_id];
+      diractLabels = [labelName];
+      diractProjectIds = [pe.project_id];
     }
 
-    console.log('[LABEL STEP 2 - API] message:', id, 'project_emails found:', !!pe, 'niksenLabels:', niksenLabels);
+    console.log('[LABEL STEP 2 - API] message:', id, 'project_emails found:', !!pe, 'diractLabels:', diractLabels);
 
     // Get full message body
     const msgRes = await fetch(
@@ -89,8 +89,8 @@ export async function GET(
       id: msgData.id,
       body,
       labelIds: msgData.labelIds || [],
-      niksenLabels,
-      niksenProjectIds,
+      diractLabels,
+      diractProjectIds,
     });
 
   } catch (err: any) {

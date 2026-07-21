@@ -1,7 +1,7 @@
 // lib/config.ts
 export const APP_URL = 
   process.env.NEXT_PUBLIC_APP_URL ?? 
-  'https://niksen-flow.vercel.app';
+  'https://diract.io';
 
 export const GMAIL_REDIRECT_URI = `${APP_URL}/api/gmail/callback`;
 

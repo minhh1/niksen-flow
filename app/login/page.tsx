@@ -362,7 +362,7 @@ function LoginPageInner() {
           <div className="mx-auto w-14 h-14 bg-black rounded-[22px] flex items-center justify-center mb-5 shadow-2xl shadow-black/20">
             <Fingerprint className="text-white" size={28} />
           </div>
-          <h1 className="text-3xl font-black italic tracking-tighter text-slate-900">niksen-flow</h1>
+          <h1 className="text-3xl font-black italic tracking-tighter text-slate-900">Diract</h1>
           <p className="text-slate-400 text-[10px] font-black uppercase tracking-[0.3em] mt-3">
             {mode === 'register'
               ? isJoinInvite ? `Join ${tokenData?.company_name || 'Company'}` : 'New Company Enrolment'
@@ -559,7 +559,7 @@ function LoginPageInner() {
         >
           {mode === 'login'
             ? isJoinInvite
-              ? "New to niksen? Create an account instead"
+              ? "New to Diract? Create an account instead"
               : "New here? Create an account"
             : isJoinInvite
               ? "Already have an account? Sign in instead"
@@ -569,7 +569,7 @@ function LoginPageInner() {
       </div>
 
       <div className="fixed bottom-8 text-[10px] font-black text-slate-300 uppercase tracking-[0.5em] pointer-events-none">
-        Niksen Time Pty Ltd • Asset Management
+        Diract • Asset Management
       </div>
     </div>
   );

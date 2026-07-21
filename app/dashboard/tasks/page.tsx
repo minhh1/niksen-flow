@@ -27,7 +27,7 @@ export default function AllTasksPage() {
   return (
     <div className="p-8 md:p-14 bg-[#fcfcfd] min-h-screen">
       <header className="mb-14 flex flex-col lg:flex-row lg:items-end justify-between gap-8">
-        <div><h1 className="text-5xl font-black tracking-tighter text-slate-900 italic mb-3">Task Master</h1><p className="text-slate-500 font-medium max-w-md">Your responsibilities across Niksen Time.</p></div>
+        <div><h1 className="text-5xl font-black tracking-tighter text-slate-900 italic mb-3">Task Master</h1><p className="text-slate-500 font-medium max-w-md">Your responsibilities across Diract.</p></div>
         <div className="flex p-1.5 bg-slate-200/50 rounded-full w-fit border border-slate-200 backdrop-blur-md">
           <button onClick={() => setView("active")} className={`px-8 py-2.5 rounded-full text-[12px] font-black uppercase tracking-widest transition-all ${view === "active" ? "bg-white text-black shadow-lg" : "text-slate-400 hover:text-slate-600"}`}>Active</button>
           <button onClick={() => setView("archived")} className={`px-8 py-2.5 rounded-full text-[12px] font-black uppercase tracking-widest transition-all ${view === "archived" ? "bg-black text-white shadow-lg" : "text-slate-400 hover:text-slate-600"}`}>Archived</button>

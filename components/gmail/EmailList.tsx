@@ -88,9 +88,9 @@ export default function EmailList({
                     </span>
                   </div>
                 )}
-                {msg.niksenLabels && msg.niksenLabels.length > 0 && (
+                {msg.diractLabels && msg.diractLabels.length > 0 && (
                   <div className="flex items-center gap-1 mt-1.5 flex-wrap">
-                    {msg.niksenLabels.map(label => (
+                    {msg.diractLabels.map(label => (
                       <span
                         key={label}
                         className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-[9px] font-bold"

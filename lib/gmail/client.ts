@@ -1,5 +1,5 @@
 // lib/gmail/client.ts
-// Gmail client for the niksen-flow app.
+// Gmail client for the Diract app.
 // Label management always goes through project_gmail_labels (DB source of truth).
 // Never generates label codes client-side — codes are created by the Edge Function.
 

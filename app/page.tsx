@@ -46,7 +46,7 @@ export default function HomePage() {
               <rect x="0" y="14" width="110" height="110" rx="24" fill="#818cf8" fillOpacity="0.4"/>
               <rect x="14" y="0" width="110" height="110" rx="24" fill="#4f46e5"/>
             </svg>
-            <span className="font-medium text-slate-900 tracking-tight">Flow</span>
+            <span className="font-medium text-slate-900 tracking-tight">Diract</span>
           </div>
           <div className="flex items-center gap-6">
             <Link href="/privacy" className="text-[12px] text-slate-400 hover:text-slate-700 transition-colors">Privacy</Link>
@@ -70,7 +70,7 @@ export default function HomePage() {
             <span className="text-indigo-600">finally in sync.</span>
           </h1>
           <p className="text-lg text-slate-500 font-light max-w-xl mx-auto mb-10 leading-relaxed">
-            Flow connects your Gmail and project management into one system.
+            Diract connects your Gmail and project management into one system.
             Assign emails to matters, sync labels across your team, and keep everyone on the same page.
           </p>
           <div className="flex items-center justify-center gap-4">
@@ -107,7 +107,7 @@ export default function HomePage() {
         <div className="max-w-3xl mx-auto bg-indigo-600 rounded-[40px] px-12 py-16 text-center">
           <h2 className="text-3xl font-light text-white tracking-tight mb-4">Works right inside Gmail</h2>
           <p className="text-indigo-200 text-base leading-relaxed mb-8 max-w-lg mx-auto">
-            The Flow Gmail Add-on lets you create projects, assign emails, and manage labels without ever leaving your inbox.
+            The Diract Gmail Add-on lets you create projects, assign emails, and manage labels without ever leaving your inbox.
           </p>
           <a href="https://workspace.google.com/marketplace" target="_blank" rel="noopener noreferrer"
             className="inline-flex items-center gap-2 px-7 py-3.5 bg-white text-indigo-600 text-sm font-medium rounded-full hover:bg-indigo-50 transition-colors">
@@ -124,12 +124,12 @@ export default function HomePage() {
               <rect x="0" y="14" width="110" height="110" rx="24" fill="#818cf8" fillOpacity="0.4"/>
               <rect x="14" y="0" width="110" height="110" rx="24" fill="#4f46e5"/>
             </svg>
-            <span className="text-sm text-slate-500">Flow — Management Central</span>
+            <span className="text-sm text-slate-500">Diract</span>
           </div>
           <div className="flex items-center gap-6 text-[12px] text-slate-400">
             <Link href="/privacy" className="hover:text-slate-700 transition-colors">Privacy Policy</Link>
             <Link href="/terms" className="hover:text-slate-700 transition-colors">Terms of Service</Link>
-            <span>© {new Date().getFullYear()} Niksen Time Pty Ltd</span>
+            <span>© {new Date().getFullYear()} Diract</span>
           </div>
         </div>
       </footer>

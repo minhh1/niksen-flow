@@ -236,26 +236,26 @@ export default function GmailPage() {
 
   const handleSelectMessage = async (msg: GmailMessage) => {
     console.log('[LABEL STEP 1] Selecting message:', msg.id);
-    console.log('[LABEL STEP 1] niksenLabels from list:', msg.niksenLabels);
+    console.log('[LABEL STEP 1] diractLabels from list:', msg.diractLabels);
     console.log('[LABEL STEP 1] labelIds from list:', msg.labelIds);
 
     setSelectedMessage(msg);
     setEmailBody(null);
-    setSelectedLabelIds(msg.niksenLabels || []);
+    setSelectedLabelIds(msg.diractLabels || []);
     setProjectSearch('');
     setLoadingBody(true);
     try {
       const res = await fetch(`/api/gmail/messages/${msg.id}`);
       const data = await res.json();
-      console.log('[LABEL STEP 2] Detail fetch response niksenLabels:', data.niksenLabels);
+      console.log('[LABEL STEP 2] Detail fetch response diractLabels:', data.diractLabels);
       console.log('[LABEL STEP 2] Detail fetch response labelIds:', data.labelIds);
       setEmailBody(data.body || null);
       // Only update if detail returns labels — don't wipe list values
-      if (data.niksenLabels && data.niksenLabels.length > 0) {
+      if (data.diractLabels && data.diractLabels.length > 0) {
         console.log('[LABEL STEP 2] Updating selectedLabelIds from detail fetch');
-        setSelectedLabelIds(data.niksenLabels);
+        setSelectedLabelIds(data.diractLabels);
       } else {
-        console.log('[LABEL STEP 2] Detail returned no niksenLabels — keeping list values:', msg.niksenLabels);
+        console.log('[LABEL STEP 2] Detail returned no diractLabels — keeping list values:', msg.diractLabels);
       }
     } catch (err) {
       console.error('[LABEL STEP 2] Detail fetch error:', err);
@@ -354,14 +354,14 @@ export default function GmailPage() {
       // Refresh labels on message
       const refreshRes = await fetch(`/api/gmail/messages/${messageId}`);
       const refreshData = await refreshRes.json();
-      console.log('[LABEL STEP 5] Post-assign refresh niksenLabels:', refreshData.niksenLabels);
-      if (refreshData.niksenLabels && refreshData.niksenLabels.length > 0) {
-        setSelectedLabelIds(refreshData.niksenLabels);
+      console.log('[LABEL STEP 5] Post-assign refresh diractLabels:', refreshData.diractLabels);
+      if (refreshData.diractLabels && refreshData.diractLabels.length > 0) {
+        setSelectedLabelIds(refreshData.diractLabels);
       }
       // Update message in list
       setMessages(prev => prev.map(m =>
         m.id === messageId
-          ? { ...m, niksenLabels: refreshData.niksenLabels || m.niksenLabels }
+          ? { ...m, diractLabels: refreshData.diractLabels || m.diractLabels }
           : m
       ));
     } catch (err) {
@@ -446,7 +446,7 @@ export default function GmailPage() {
         });
         setSelectedLabelIds([]);
         setMessages(prev => prev.map(m =>
-          m.id === selectedMessage.id ? { ...m, niksenLabels: [] } : m
+          m.id === selectedMessage.id ? { ...m, diractLabels: [] } : m
         ));
       } else {
         console.error('[handleRemoveLabel] API error:', data.error);

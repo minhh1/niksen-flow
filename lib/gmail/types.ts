@@ -13,7 +13,7 @@ export interface GmailMessage {
   hasAttachments: boolean;
   isRead: boolean;
   labelIds: string[];
-  niksenLabels: string[];
+  diractLabels: string[];
 }
 
 export interface GmailProject {

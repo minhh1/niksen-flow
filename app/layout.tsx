@@ -7,7 +7,7 @@ import AppLoader from "@/components/AppLoader";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "niksen-flow",
+  title: "Diract",
   description: "Property & legal ERP",
 };
 

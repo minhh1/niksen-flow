@@ -130,8 +130,8 @@ export async function GET(req: NextRequest) {
 
       // ── Check project_emails — simple DB lookup ────────────────
       const assignment = emailProjectMap.get(msg.id);
-      const niksenLabels = assignment ? [assignment.labelName] : [];
-      const niksenProjectIds = assignment ? [assignment.projectId] : [];
+      const diractLabels = assignment ? [assignment.labelName] : [];
+      const diractProjectIds = assignment ? [assignment.projectId] : [];
 
       return {
         id: msg.id,
@@ -146,12 +146,12 @@ export async function GET(req: NextRequest) {
           (p: any) => p.filename && p.filename.length > 0
         ),
         labelIds,
-        niksenLabels,
-        niksenProjectIds,
+        diractLabels,
+        diractProjectIds,
       };
     });
 
-    const labelled = parsed.filter(m => m.niksenLabels.length > 0);
+    const labelled = parsed.filter(m => m.diractLabels.length > 0);
     console.log('[LABEL STEP 1 - API] labelled messages:', labelled.length, 'of', parsed.length);
 
     return NextResponse.json({ messages: parsed });

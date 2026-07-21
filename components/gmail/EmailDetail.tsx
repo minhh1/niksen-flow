@@ -35,7 +35,7 @@ interface Props {
   onLabelSettings: () => void;
 }
 
-function NiksenLabelBadge({
+function DiractLabelBadge({
   label, isAdmin, removing, onRemove,
 }: {
   label: string;
@@ -141,7 +141,7 @@ export default function EmailDetail({
               </p>
               <div className="flex items-center gap-2 flex-wrap">
                 {selectedLabelIds.map(label => (
-                  <NiksenLabelBadge
+                  <DiractLabelBadge
                     key={label}
                     label={label}
                     isAdmin={isAdmin}

@@ -10,13 +10,13 @@ export async function GET(req: NextRequest) {
   if (error) {
     console.error('Google OAuth error:', error);
     return NextResponse.redirect(
-      'https://niksen-flow.vercel.app/dashboard/gmail?error=' + error
+      `${APP_URL}/dashboard/gmail?error=` + error
     );
   }
 
   if (!code) {
     return NextResponse.redirect(
-      'https://niksen-flow.vercel.app/dashboard/gmail?error=no_code'
+      `${APP_URL}/dashboard/gmail?error=no_code`
     );
   }
 
@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
       code,
       client_id: process.env.GOOGLE_CLIENT_ID!,
       client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-      redirect_uri: 'https://niksen-flow.vercel.app/api/gmail/callback',
+      redirect_uri: GMAIL_REDIRECT_URI,
       grant_type: 'authorization_code',
     }),
   });
@@ -42,7 +42,7 @@ export async function GET(req: NextRequest) {
 
   if (tokens.error) {
     return NextResponse.redirect(
-      'https://niksen-flow.vercel.app/dashboard/gmail?error=' + tokens.error
+      `${APP_URL}/dashboard/gmail?error=` + tokens.error
     );
   }
 

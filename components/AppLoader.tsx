@@ -59,7 +59,7 @@ export default function AppLoader({ children }: { children: ReactNode }) {
           fontStyle: 'italic', fontSize: 24, letterSpacing: '-0.04em',
           color: '#fff', marginBottom: 28,
         }}>
-          niksen-flow
+          Diract
         </h1>
         <div style={{ display: 'flex', gap: 8 }}>
           {[0, 1, 2].map(i => (

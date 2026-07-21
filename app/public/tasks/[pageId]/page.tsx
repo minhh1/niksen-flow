@@ -88,7 +88,7 @@ export default function PublicTaskPage() {
   useEffect(() => { checkAuthAndLoad(); }, [checkAuthAndLoad]);
 
   // Browser tab title — matches the on-page header instead of the generic
-  // site-wide "niksen-flow" title.
+  // site-wide "Diract" title.
   useEffect(() => {
     if (data?.scopeName) document.title = `Tasks - ${data.scopeName}`;
   }, [data?.scopeName]);

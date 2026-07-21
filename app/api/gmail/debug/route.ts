@@ -1,9 +1,10 @@
 // app/api/gmail/debug/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { GMAIL_REDIRECT_URI } from "@/lib/config";
 
 export async function GET(req: NextRequest) {
-  const redirectUri = 'https://niksen-flow.vercel.app/api/gmail/callback';
-  
+  const redirectUri = GMAIL_REDIRECT_URI;
+
   const SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/gmail.labels',

@@ -1,7 +1,7 @@
 // Flow Gmail Add-on
 // Deploy via Google Apps Script
 
-var NIKSEN_API_URL = 'https://txzzgtwrrokomiphairy.supabase.co/functions/v1/gmail-addon';
+var DIRACT_API_URL = 'https://txzzgtwrrokomiphairy.supabase.co/functions/v1/gmail-addon';
 var DATE_CALC_API_URL = 'https://txzzgtwrrokomiphairy.supabase.co/functions/v1/date-calc';
 var AU_STATES = ['NSW', 'VIC', 'QLD', 'WA', 'SA', 'TAS', 'ACT', 'NT'];
 
@@ -78,7 +78,7 @@ function getToken() {
 
 function apiGet(path, token) {
   try {
-    var res = UrlFetchApp.fetch(NIKSEN_API_URL + path, {
+    var res = UrlFetchApp.fetch(DIRACT_API_URL + path, {
       headers: {
         'X-User-Email': getUserEmail(),
         'X-Gmail-Access-Token': token || getToken(),
@@ -133,7 +133,7 @@ function invalidateTaskCache(companyId) {
 
 function apiPost(path, body, token) {
   try {
-    var res = UrlFetchApp.fetch(NIKSEN_API_URL + path, {
+    var res = UrlFetchApp.fetch(DIRACT_API_URL + path, {
       method: 'POST',
       contentType: 'application/json',
       headers: {
@@ -307,7 +307,7 @@ function openFlowSidebar(e) {
   if (!webAppUrl) {
     return CardService.newUniversalActionResponseBuilder()
       .displayAddOnCards([CardService.newCardBuilder()
-        .setHeader(CardService.newCardHeader().setTitle('Flow').setSubtitle('Web app not deployed'))
+        .setHeader(CardService.newCardHeader().setTitle('Diract').setSubtitle('Web app not deployed'))
         .addSection(CardService.newCardSection()
           .addWidget(CardService.newTextParagraph()
             .setText('Please deploy this script as a Web App first:\nDeploy → New deployment → Web App')))
@@ -450,7 +450,7 @@ function buildMainCard(messageId, accessToken, allTasksOffset) {
   if (!ctx) {
     var testRes = apiGet('/user-context', token);
     return CardService.newCardBuilder()
-      .setHeader(CardService.newCardHeader().setTitle('Flow').setSubtitle('Not connected'))
+      .setHeader(CardService.newCardHeader().setTitle('Diract').setSubtitle('Not connected'))
       .addSection(CardService.newCardSection()
         .addWidget(CardService.newTextParagraph()
           .setText('Could not connect to Flow.\n\nEmail: ' + (getUserEmail() || 'NOT FOUND') +
@@ -482,7 +482,7 @@ function buildMainCard(messageId, accessToken, allTasksOffset) {
   var card = CardService.newCardBuilder()
     .setName('main')
     .setHeader(CardService.newCardHeader()
-      .setTitle('Flow')
+      .setTitle('Diract')
       .setSubtitle(activeCompanyName));
 
   // ── Company switcher ──────────────────────────────────────────
@@ -1412,7 +1412,7 @@ function buildProjectsForTasksCard(params, formInputs) {
   var card = CardService.newCardBuilder()
     .setName('projectsForTasks')
     .setHeader(CardService.newCardHeader()
-      .setTitle('Flow')
+      .setTitle('Diract')
       .setSubtitle('Select a project (' + projects.length + ')'));
 
   card.addSection(CardService.newCardSection()
@@ -2243,7 +2243,7 @@ function buildImportCard(params, formInputs) {
   var card = CardService.newCardBuilder()
     .setName('importProjects')
     .setHeader(CardService.newCardHeader()
-      .setTitle('Flow')
+      .setTitle('Diract')
       .setSubtitle('Import labels — ' + projects.length + ' shown'));
 
   card.addSection(CardService.newCardSection()
@@ -2426,7 +2426,7 @@ function buildFilteredImportCard(params, formInputs, countData) {
 
   var card = CardService.newCardBuilder()
     .setName('filteredImport')
-    .setHeader(CardService.newCardHeader().setTitle('Flow').setSubtitle('Import labels'));
+    .setHeader(CardService.newCardHeader().setTitle('Diract').setSubtitle('Import labels'));
 
   card.addSection(CardService.newCardSection()
     .setHeader('Filter projects')
@@ -2546,7 +2546,7 @@ function buildDeleteCard(params, formInputs) {
   var card = CardService.newCardBuilder()
     .setName('manageProjects')
     .setHeader(CardService.newCardHeader()
-      .setTitle('Flow')
+      .setTitle('Diract')
       .setSubtitle('Labelled projects (' + projects.length + ')'));
 
   card.addSection(CardService.newCardSection()
@@ -2722,7 +2722,7 @@ function onShowAddonConfig(e) {
 
   var card = CardService.newCardBuilder()
     .setName('addonConfig')
-    .setHeader(CardService.newCardHeader().setTitle('Flow').setSubtitle('Configure display fields'));
+    .setHeader(CardService.newCardHeader().setTitle('Diract').setSubtitle('Configure display fields'));
 
   var section = CardService.newCardSection()
     .setHeader('Configure display order (up to 4 fields)')
@@ -2841,7 +2841,7 @@ function onAddAddonField(e) {
         var r = apiGet('/addon-config?companyId=' + companyId, token);
         var av = r.ok ? (r.data.availableFields || []) : [];
         var c2 = CardService.newCardBuilder().setName('addonConfig')
-          .setHeader(CardService.newCardHeader().setTitle('Flow').setSubtitle('Configure display fields'));
+          .setHeader(CardService.newCardHeader().setTitle('Diract').setSubtitle('Configure display fields'));
         var s2 = CardService.newCardSection().setHeader('Fields updated');
         for (var i2 = 0; i2 < current.length; i2++) {
           var lbl = current[i2];

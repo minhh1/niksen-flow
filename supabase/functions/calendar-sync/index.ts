@@ -59,7 +59,7 @@ async function createTasksCalendar(token: string): Promise<string | null> {
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       summary: "Tasks",
-      description: "Task due dates synced automatically from Niksen Flow.",
+      description: "Task due dates synced automatically from Diract.",
     }),
   });
   if (!res.ok) {

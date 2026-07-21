@@ -74,7 +74,7 @@ async function ensureRdpSecurityGroup(client: EC2Client): Promise<string> {
   const created = await client.send(
     new CreateSecurityGroupCommand({
       GroupName: RDP_SECURITY_GROUP_NAME,
-      Description: "Inbound RDP (3389) for niksen-flow Windows virtual computers",
+      Description: "Inbound RDP (3389) for Diract Windows virtual computers",
     })
   );
   const groupId = created.GroupId;

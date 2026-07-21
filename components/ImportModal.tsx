@@ -461,7 +461,7 @@ export default function ImportModal({ isOpen, onClose, onRefresh }: any) {
                   const blob = new Blob([allHeaders.join(',') + '\n'], { type: 'text/csv' });
                   const a = document.createElement('a');
                   a.href = URL.createObjectURL(blob);
-                  a.download = `niksen_${currentSection.key}_template.csv`;
+                  a.download = `diract_${currentSection.key}_template.csv`;
                   a.click();
                   URL.revokeObjectURL(a.href);
                 }}
