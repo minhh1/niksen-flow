@@ -3,7 +3,17 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase";
-import { preferenceService } from "@/lib/services/preferenceService";
+
+const DEFAULT_PRESET_NAME = "Default view";
+
+export type SortDirection = 'asc' | 'desc';
+export type SortMode = 'name' | 'number';
+
+export interface SortState {
+  colId: string;
+  direction: SortDirection;
+  mode?: SortMode;
+}
 
 interface UsePresetTableOptions {
   tableSlug: string;
@@ -11,18 +21,10 @@ interface UsePresetTableOptions {
   defaultExpandCols?: string[];
   defaultExpandRelations?: string[];
   userId?: string | null; // pass from context to skip auth call
+  companyId?: string | null; // pass from context — columns are company-wide, not personal
+  isAdmin?: boolean; // only admins may change the company's column layout
+  schemaReady?: boolean; // false while defaultCols/defaultExpandCols are still resolving
   fetchItems: (visibleColumns: string[]) => Promise<any[]>;
-}
-
-function getCachedCompanyId(): string {
-  try {
-    const keys = Object.keys(localStorage).filter(k => k.startsWith('nk_cache_profile_'));
-    for (const k of keys) {
-      const p = JSON.parse(localStorage.getItem(k) || '{}');
-      if (p?.data?.active_company_id) return p.data.active_company_id;
-    }
-  } catch {}
-  return '';
 }
 
 export function usePresetTable({
@@ -31,6 +33,9 @@ export function usePresetTable({
   defaultExpandCols = [],
   defaultExpandRelations = [],
   userId: providedUserId,
+  companyId,
+  isAdmin = false,
+  schemaReady = true,
   fetchItems,
 }: UsePresetTableOptions) {
   const [items, setItems] = useState<any[]>([]);
@@ -40,28 +45,32 @@ export function usePresetTable({
   const [expandCols, setExpandCols] = useState<string[]>(defaultExpandCols);
   const [colWidths, setColWidths] = useState<Record<string, number>>({});
   const [expandRelations, setExpandRelations] = useState<string[]>(defaultExpandRelations);
-
-  const [presets, setPresets] = useState<any[]>([]);
-  const [activePreset, setActivePreset] = useState("Default view");
-  const [isBusy, setIsBusy] = useState(false);
+  const [activePreset, setActivePreset] = useState(DEFAULT_PRESET_NAME);
+  const [sort, setSort] = useState<SortState | null>(null);
 
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
 
-  // Guard against re-running init when fetchItems ref changes due to
-  // upstream dependency array instability
-  const initRanRef = useRef(false);
   const fetchItemsRef = useRef(fetchItems);
   fetchItemsRef.current = fetchItems; // always latest without being a dep
 
+  // Most callers already have the user id via context (providedUserId) —
+  // only hit auth.getUser() when that isn't available.
+  const resolveUserId = useCallback(async (): Promise<string | null> => {
+    if (providedUserId) return providedUserId;
+    const { data: { user } } = await supabase.auth.getUser();
+    return user?.id ?? null;
+  }, [providedUserId]);
+
+  // Columns/widths are company-wide (set by admins, shared by every member) —
+  // wait for companyId from context rather than re-resolving it here, so we
+  // don't duplicate the identity fetch GenericMasterTable already does.
   const init = useCallback(async () => {
+    if (!companyId || !schemaReady) return;
     setLoading(true);
 
-    // ── Step 1: show cache immediately ────────────────────────────
-    // Get cached company to scope the cache key
-    const cachedCompanyId = getCachedCompanyId();
-    const companyScopedKey = `nk_cache_rows_${cachedCompanyId}_${tableSlug}`;
-
+    // ── Step 1: show cached rows immediately ─────────────────────
+    const companyScopedKey = `nk_cache_rows_${companyId}_${tableSlug}`;
     let hasCachedData = false;
     try {
       const raw = localStorage.getItem(companyScopedKey);
@@ -75,63 +84,33 @@ export function usePresetTable({
       }
     } catch {}
 
-    // ── Step 2: load preferences (columns/presets) ────────────────
-    let userId = providedUserId;
-    if (!userId) {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { setLoading(false); return; }
-      userId = user.id;
-    }
-
-    const saved = await preferenceService.getByTable(userId!, tableSlug);
-
+    // ── Step 2: load the company's column layout (single source of truth) ──
     let resolvedTableCols = defaultCols;
     let resolvedExpandCols = defaultExpandCols;
+    let resolvedWidths: Record<string, number> = {};
+    let resolvedPresetName = DEFAULT_PRESET_NAME;
+    let resolvedSort: SortState | null = null;
 
-    if (saved?.length) {
-      setPresets(saved);
-      const active = saved.find((p: any) => p.is_active) || saved[0];
-      resolvedTableCols = active.columns || defaultCols;
-      resolvedExpandCols = active.expansion_columns || defaultExpandCols;
-      setTableCols(resolvedTableCols);
-      setExpandCols(resolvedExpandCols);
-      setColWidths(active.column_widths || {});
-      setExpandRelations(active.expand_relations || defaultExpandRelations);
-      setActivePreset(active.preset_name);
-    } else {
-      // No user preferences yet — check for company default view
-      setPresets([]);
-      const { data: profile } = await supabase
-        .from('profiles').select('active_company_id').eq('id', userId!).single();
-      if (profile?.active_company_id) {
-        const { data: companyDefault } = await supabase
-          .from('company_default_views')
-          .select('*')
-          .eq('company_id', profile.active_company_id)
-          .eq('table_slug', tableSlug)
-          .single();
-        if (companyDefault) {
-          console.log(`[usePresetTable] Applying company default view for ${tableSlug}`);
-          resolvedTableCols = companyDefault.columns || defaultCols;
-          resolvedExpandCols = companyDefault.expansion_columns || defaultExpandCols;
-          setTableCols(resolvedTableCols);
-          setExpandCols(resolvedExpandCols);
-          setColWidths(companyDefault.column_widths || {});
-          setActivePreset(companyDefault.preset_name || 'Default view');
-          // Save as user's own preference so it persists
-          await supabase.from('user_column_preferences').insert({
-            user_id: userId,
-            table_slug: tableSlug,
-            columns: resolvedTableCols,
-            expansion_columns: resolvedExpandCols,
-            column_widths: companyDefault.column_widths || {},
-            filters: companyDefault.filters || [],
-            preset_name: companyDefault.preset_name || 'Default view',
-            is_active: true,
-          });
-        }
-      }
+    const { data: companyView } = await supabase
+      .from('company_default_views')
+      .select('*')
+      .eq('company_id', companyId)
+      .eq('table_slug', tableSlug)
+      .maybeSingle();
+
+    if (companyView) {
+      resolvedTableCols = companyView.columns?.length ? companyView.columns : defaultCols;
+      resolvedExpandCols = companyView.expansion_columns || defaultExpandCols;
+      resolvedWidths = companyView.column_widths || {};
+      resolvedPresetName = companyView.preset_name || DEFAULT_PRESET_NAME;
+      resolvedSort = companyView.sort || null;
     }
+
+    setTableCols(resolvedTableCols);
+    setExpandCols(resolvedExpandCols);
+    setColWidths(resolvedWidths);
+    setActivePreset(resolvedPresetName);
+    setSort(resolvedSort);
 
     // ── Step 3: fetch fresh data ──────────────────────────────────
     // If we had cached data, fetch in background and only update if changed
@@ -145,153 +124,85 @@ export function usePresetTable({
       if (data?.length) setItems(data);
       setLoading(false);
     }
-  }, [tableSlug]); // fetchItems accessed via ref — stable dep array
+  }, [tableSlug, companyId, schemaReady]); // fetchItems/defaultCols accessed via closure — recreated only when identity/company/schema readiness changes
 
   useEffect(() => { init(); }, [init]);
 
-  const autoSave = async (
+  // Persists the company-wide column layout (+ sort). Admin-only — every
+  // member reads this same row, so an admin's change is immediately
+  // "hardcoded" for the team.
+  const saveCompanyColumns = async (
     t: string[] = tableCols, e: string[] = expandCols,
-    w: Record<string, number> = colWidths, r: string[] = expandRelations
+    w: Record<string, number> = colWidths,
+    s: SortState | null = sort,
   ) => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    await preferenceService.save({
-      user_id: user.id, table_slug: tableSlug, preset_name: activePreset,
-      columns: t, expansion_columns: e, column_widths: w, expand_relations: r, is_active: true
-    });
-  };
-
-  const handleSelectPreset = async (p: any) => {
-    setIsBusy(true);
-    setTableCols(p.columns);
-    setExpandCols(p.expansion_columns || []);
-    setColWidths(p.column_widths || {});
-    setExpandRelations(p.expand_relations || []);
-    setActivePreset(p.preset_name);
-
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) await preferenceService.setActive(user.id, tableSlug, p.preset_name);
-
-    // Show cached data immediately — no blank flash while switching presets
-    try {
-      const cacheKey = `nk_cache_rows_${getCachedCompanyId()}_${tableSlug}`;
-      const raw = localStorage.getItem(cacheKey);
-      if (raw) {
-        const entry = JSON.parse(raw);
-        if (entry?.data?.length) {
-          setItems(entry.data);
-          setIsBusy(false);
-          // Refetch in background to get any new columns this preset needs
-          fetchItemsRef.current([...(p.columns || []), ...(p.expansion_columns || [])])
-            .then(fresh => { if (fresh?.length) setItems(fresh); });
-          return;
-        }
-      }
-    } catch {}
-
-    // No cache — must wait for fresh data
-    const data = await fetchItemsRef.current([...(p.columns || []), ...(p.expansion_columns || [])]);
-    if (data?.length) setItems(data);
-    setIsBusy(false);
-  };
-
-  const handleSaveAsNew = async () => {
-    const name = prompt("Name for this new view configuration:");
-    if (!name) return;
-    setIsBusy(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    const { data: saved } = await preferenceService.save({
-      user_id: user?.id!, table_slug: tableSlug, preset_name: name,
-      columns: tableCols, expansion_columns: expandCols, column_widths: colWidths,
-      expand_relations: expandRelations, is_active: true
-    });
-    if (saved) {
-      setActivePreset(saved.preset_name);
-      setPresets(prev => {
-        const withoutNew = prev.filter(pr => pr.preset_name !== saved.preset_name);
-        return [...withoutNew, saved].sort((a, b) => a.preset_name.localeCompare(b.preset_name));
-      });
-    }
-    setIsBusy(false);
-  };
-
-  const handleDeletePreset = async (p: any) => {
-    if (!window.confirm(`Delete the saved view "${p.preset_name}"? This can't be undone.`)) return;
-
-    setIsBusy(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { setIsBusy(false); return; }
-
-    const { error } = await preferenceService.remove(user.id, tableSlug, p.preset_name);
-    if (error) {
-      alert("Couldn't delete this view. Please try again.");
-      setIsBusy(false);
-      return;
-    }
-
-    const remaining = presets.filter(pr => pr.preset_name !== p.preset_name);
-    setPresets(remaining);
-
-    if (activePreset === p.preset_name && remaining.length > 0) {
-      const fallback = remaining.find(r => r.preset_name === "Default view") || remaining[0];
-      await preferenceService.setActive(user.id, tableSlug, fallback.preset_name);
-      setTableCols(fallback.columns);
-      setExpandCols(fallback.expansion_columns || []);
-      setColWidths(fallback.column_widths || {});
-      setExpandRelations(fallback.expand_relations || []);
-      setActivePreset(fallback.preset_name);
-
-      // Show cached data immediately then refetch in background
-      try {
-        const cacheKey = `nk_cache_rows_${getCachedCompanyId()}_${tableSlug}`;
-        const raw = localStorage.getItem(cacheKey);
-        if (raw) {
-          const entry = JSON.parse(raw);
-          if (entry?.data?.length) setItems(entry.data);
-        }
-      } catch {}
-      fetchItemsRef.current([...(fallback.columns || []), ...(fallback.expansion_columns || [])])
-        .then(fresh => { if (fresh?.length) setItems(fresh); });
-    }
-
-    setIsBusy(false);
+    if (!isAdmin || !companyId) return;
+    const userId = await resolveUserId();
+    await supabase.from('company_default_views').upsert({
+      company_id: companyId,
+      table_slug: tableSlug,
+      columns: t,
+      expansion_columns: e,
+      column_widths: w,
+      sort: s,
+      preset_name: activePreset,
+      created_by: userId,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'company_id,table_slug' });
   };
 
   const startResizing = (colId: string, e: React.MouseEvent) => {
+    if (!isAdmin) return;
     const startX = e.pageX;
     const startWidth = colWidths[colId] || 250;
+    // Track the latest widths outside React state so the save-on-mouseup
+    // call is a plain statement, not a side effect inside a setState
+    // updater — React (Strict Mode) may invoke updater functions twice.
+    let latestWidths = colWidths;
     const onMouseMove = (mE: MouseEvent) => {
       const newWidth = Math.max(150, startWidth + (mE.pageX - startX));
-      setColWidths(prev => ({ ...prev, [colId]: newWidth }));
+      setColWidths(prev => {
+        latestWidths = { ...prev, [colId]: newWidth };
+        return latestWidths;
+      });
     };
     const onMouseUp = () => {
       document.removeEventListener("mousemove", onMouseMove);
       document.removeEventListener("mouseup", onMouseUp);
-      setColWidths(curr => { autoSave(tableCols, expandCols, curr, expandRelations); return curr; });
+      saveCompanyColumns(tableCols, expandCols, latestWidths, sort);
     };
     document.addEventListener("mousemove", onMouseMove);
     document.addEventListener("mouseup", onMouseUp);
   };
 
   const handleReorder = (next: string[]) => {
+    if (!isAdmin) return;
     setTableCols(next);
-    autoSave(next, expandCols, colWidths, expandRelations);
+    saveCompanyColumns(next, expandCols, colWidths);
   };
 
   const handleToggleColumn = (fieldId: string, target: 'table' | 'expand' | 'none') => {
+    if (!isAdmin) return;
     const nt = tableCols.filter(c => c !== fieldId);
     const ne = expandCols.filter(c => c !== fieldId);
     if (target === 'table') nt.push(fieldId);
     if (target === 'expand') ne.push(fieldId);
     setTableCols(nt);
     setExpandCols(ne);
-    autoSave(nt, ne, colWidths, expandRelations);
+    saveCompanyColumns(nt, ne, colWidths);
   };
 
-  const handleToggleRelation = (key: string, on: boolean) => {
-    const next = on ? [...expandRelations, key] : expandRelations.filter(k => k !== key);
-    setExpandRelations(next);
-    autoSave(tableCols, expandCols, colWidths, next);
+  // Sorting itself is free for everyone (session-only, applied client-side) —
+  // but when an admin sorts, that choice also becomes the durable company
+  // default, same as column changes. Mirrors how filters work: instant for
+  // everyone, permanent only through the admin-authored / saved-view path.
+  const handleSort = (colId: string, direction: SortDirection, mode?: SortMode) => {
+    const next: SortState | null =
+      (sort?.colId === colId && sort?.direction === direction && sort?.mode === mode)
+        ? null
+        : { colId, direction, mode };
+    setSort(next);
+    if (isAdmin) saveCompanyColumns(tableCols, expandCols, colWidths, next);
   };
 
   const toggleExpandRow = (id: string) => {
@@ -300,11 +211,10 @@ export function usePresetTable({
 
   return {
     items, setItems, loading, refresh: init,
-    tableCols, setTableCols, expandCols, setExpandCols, colWidths, setColWidths,
+    tableCols, expandCols, colWidths,
     expandRelations, setExpandRelations,
     draggedIdx, setDraggedIdx, expandedRow, toggleExpandRow,
-    presets, activePreset, isBusy,
-    handleSelectPreset, handleSaveAsNew, handleDeletePreset,
-    handleToggleColumn, handleReorder, startResizing, handleToggleRelation,
+    activePreset, sort, handleSort,
+    handleToggleColumn, handleReorder, startResizing,
   };
 }

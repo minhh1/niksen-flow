@@ -7,10 +7,10 @@ import { Search, Settings2, LayoutGrid, X } from "lucide-react";
 
 import MasterTable from "@/components/MasterTable";
 import ColumnConfigDrawer from "@/components/ColumnConfigDrawer";
-import ViewPresets from "@/components/ViewPresets";
 import UniversalSelectionModal from "@/components/UniversalSelectionModal";
 
 import { usePresetTable } from "@/lib/hooks/usePresetTable";
+import type { SortDirection, SortMode } from "@/lib/hooks/usePresetTable";
 import { useTableSchema } from "@/lib/hooks/useTableSchema";
 import { useRelationalEditFields } from "@/lib/hooks/useRelationalEditFields";
 import { useTableRealtime } from "@/lib/hooks/useTableRealtime";
@@ -26,6 +26,7 @@ import type { ActiveFilter } from "@/lib/types/filters";
 import { useInvalidateRows } from "@/lib/hooks/useTableRows";
 import { swr, clearCache } from "@/lib/queryCache";
 import { useCompany } from "@/components/CompanyContext";
+import { savedViewsService } from "@/lib/services/savedViewsService";
 
 
 interface GenericMasterTableProps {
@@ -33,15 +34,6 @@ interface GenericMasterTableProps {
   pageTitle: string;
   newButtonLabel: string;
   renderDashboard?: (id: string, onBack: () => void, initialRecord?: any) => React.ReactNode;
-}
-
-type SortDirection = 'asc' | 'desc';
-type SortMode = 'name' | 'number';
-
-interface SortState {
-  colId: string;
-  direction: SortDirection;
-  mode?: SortMode;
 }
 
 const PROPERTY_CATEGORY_KEYS = ['council', 'electricity', 'water', 'land_tax', 'gas'];
@@ -136,6 +128,7 @@ function GenericMasterTableInner({
   const router = useRouter();
   const searchParams = useSearchParams();
   const selectedId = searchParams.get("id");
+  const viewId = searchParams.get("view");
 
   // Use shared company context — avoids duplicate auth call with Sidebar
   const { companyId: ctxCompanyId, isAdmin: ctxIsAdmin, userId: ctxUserId } = useCompany();
@@ -144,10 +137,9 @@ function GenericMasterTableInner({
   const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [companyId, setCompanyId] = useState<string | null>(null);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [sort, setSort] = useState<SortState | null>(null);
   const [addressSortOpen, setAddressSortOpen] = useState(false);
   const [filters, setFilters] = useState<ActiveFilter[]>([]);
+  const [activeViewName, setActiveViewName] = useState<string | null>(null);
   const [isSpreadsheetOpen, setIsSpreadsheetOpen] = useState(false);
 
   const schema = useTableSchema(tableName);
@@ -206,7 +198,6 @@ function GenericMasterTableInner({
     if (ctxCompanyId) {
       companyIdRef.current = ctxCompanyId;
       setCompanyId(ctxCompanyId);
-      setIsAdmin(ctxIsAdmin);
       return;
     }
     try {
@@ -221,7 +212,7 @@ function GenericMasterTableInner({
         }
       }
     } catch {}
-  }, [ctxCompanyId, ctxIsAdmin]);
+  }, [ctxCompanyId]);
 
   const fetchItems = useCallback(async (visibleColumns: string[]) => {
     const tFetch0 = performance.now();
@@ -235,12 +226,6 @@ function GenericMasterTableInner({
       cid = prof?.active_company_id || null;
       companyIdRef.current = cid;
       setCompanyId(cid);
-      // Check admin status
-      if (user) {
-        const { data: mem } = await supabase.from('company_memberships')
-          .select('role').eq('user_id', user.id).eq('company_id', cid).single();
-        setIsAdmin(mem?.role === 'company_admin');
-      }
       console.log(`[MasterTable:${tableName}] auth+profile (first load): ${(performance.now()-tFetch0).toFixed(0)}ms`);
     } else {
       console.log(`[MasterTable:${tableName}] auth+profile (cached): 0ms`);
@@ -355,58 +340,43 @@ function GenericMasterTableInner({
     tableSlug: tableName,
     defaultCols: schema.defaultTableCols,
     userId: ctxUserId,
+    companyId: ctxCompanyId,
+    isAdmin: ctxIsAdmin,
+    schemaReady: !schema.loading,
     fetchItems,
   });
 
-  // ── Filter persistence ─────────────────────────────────────────────
+  // ── Filter persistence (saved views) ────────────────────────────────
+  // Filters live on the selected saved view (?view=<id>, created from the
+  // Sidebar) rather than an implicit per-table default. With no view
+  // selected, filters are session-only — nothing to persist into.
 
   useEffect(() => {
-    const loadFilters = async () => {
-      if (!t.activePreset) return;
+    const loadView = async () => {
       filtersReadyToSave.current = false;  // ← block saves during load
 
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      const { data } = await supabase
-        .from('user_column_preferences')
-        .select('filters')
-        .eq('user_id', user.id)
-        .eq('table_slug', tableName)
-        .eq('preset_name', t.activePreset)
-        .eq('is_active', true)
-        .single();
+      if (!viewId) {
+        setFilters([]);
+        setActiveViewName(null);
+        filtersReadyToSave.current = true;
+        return;
+      }
 
-      setFilters(data?.filters || []);
+      const view = await savedViewsService.get(viewId);
+      setFilters(view?.filters || []);
+      setActiveViewName(view?.view_name || null);
       // Only allow saves after state has settled
       setTimeout(() => { filtersReadyToSave.current = true; }, 100);
     };
-    loadFilters();
-  }, [t.activePreset, tableName]);
+    loadView();
+  }, [viewId]);
 
   useEffect(() => {
-    if (!t.activePreset) return;
+    if (!viewId) return;
     if (!filtersReadyToSave.current) return;  // ← skip saves during load
 
-    const saveFilters = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      // Use update only — upsert would create duplicate preset rows
-      // First check the row exists
-      const { data: existing } = await supabase
-        .from('user_column_preferences')
-        .select('id')
-        .eq('user_id', user.id)
-        .eq('table_slug', tableName)
-        .eq('preset_name', t.activePreset)
-        .single();
-      if (!existing) return; // no preset row yet — filters will save on next preset save
-      await supabase
-        .from('user_column_preferences')
-        .update({ filters })
-        .eq('id', existing.id);
-    };
-    saveFilters();
-  }, [filters, t.activePreset, tableName]);
+    savedViewsService.updateFilters(viewId, filters);
+  }, [filters, viewId]);
 
   // ── Realtime ───────────────────────────────────────────────────────
 
@@ -454,14 +424,13 @@ function GenericMasterTableInner({
   });
 
   // ── Sort ───────────────────────────────────────────────────────────
+  // Sort state/persistence lives in usePresetTable (company-wide when the
+  // sorter is an admin, session-only otherwise) — see handleSort there.
 
   const handleSort = useCallback((colId: string, direction: SortDirection, mode?: SortMode) => {
-    setSort(prev => {
-      if (prev?.colId === colId && prev?.direction === direction && prev?.mode === mode) return null;
-      return { colId, direction, mode };
-    });
+    t.handleSort(colId, direction, mode);
     setAddressSortOpen(false);
-  }, []);
+  }, [t.handleSort]);
 
   // ── Column toggle ──────────────────────────────────────────────────
 
@@ -653,6 +622,7 @@ function GenericMasterTableInner({
     }
 
     // Sort
+    const sort = t.sort;
     if (!sort) {
       if (tableName === 'properties') {
         return result.sort((a, b) =>
@@ -685,20 +655,7 @@ function GenericMasterTableInner({
       const cmp = va.localeCompare(vb, undefined, { numeric: true, sensitivity: 'base' });
       return sort.direction === 'asc' ? cmp : -cmp;
     });
-  }, [t.items, search, t.tableCols, resolveValue, tableName, sort, filters]);
-
-  // ── Preset handlers with filter support ────────────────────────────
-  const handleSaveAsNewWithFilters = async (name: string) => {
-    await (t.handleSaveAsNew as any)(name);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    await supabase
-      .from('user_column_preferences')
-      .update({ filters })
-      .eq('user_id', user.id)
-      .eq('table_slug', tableName)
-      .eq('preset_name', name);
-  };
+  }, [t.items, search, t.tableCols, resolveValue, tableName, t.sort, filters]);
 
   // ── Early returns ──────────────────────────────────────────────────
 
@@ -840,29 +797,6 @@ function GenericMasterTableInner({
             </div>
           )}
 
-          <ViewPresets
-            presets={t.presets}
-            activePreset={t.activePreset}
-            onSelect={t.handleSelectPreset}
-            onSaveNew={handleSaveAsNewWithFilters}
-            onDelete={t.handleDeletePreset}
-            isBusy={t.isBusy}
-            onClearView={async () => {
-              // Clear user preferences for this table
-              const { data: { user } } = await supabase.auth.getUser();
-              if (user) {
-                await supabase.from('user_column_preferences')
-                  .delete()
-                  .eq('user_id', user.id)
-                  .eq('table_slug', tableName);
-              }
-              // Clear all localStorage cache keys for this table
-              Object.keys(localStorage)
-                .filter(k => k.includes(`_${tableName}`))
-                .forEach(k => localStorage.removeItem(k));
-              window.location.reload();
-            }}
-          />
         </div>
       </header>
 
@@ -872,28 +806,12 @@ function GenericMasterTableInner({
         sections={drawerSections}
         tableCols={t.tableCols}
         expandCols={t.expandCols}
-        activePresetName={t.activePreset}
+        activePresetName={activeViewName ?? undefined}
         onToggle={handleToggleColumnWithRefetch}
         filters={filters}
         filterableFields={filterableFields}
         onFiltersChange={setFilters}
-        isAdmin={isAdmin}
-        onSetCompanyDefault={isAdmin ? async () => {
-          if (!companyId) return;
-          const { data: { user } } = await supabase.auth.getUser();
-          if (!user) return;
-          await supabase.from('company_default_views').upsert({
-            company_id: companyId,
-            table_slug: tableName,
-            columns: t.tableCols,
-            expansion_columns: t.expandCols,
-            column_widths: t.colWidths || {},
-            filters: filters,
-            preset_name: t.activePreset || 'Default view',
-            created_by: user.id,
-            updated_at: new Date().toISOString(),
-          }, { onConflict: 'company_id,table_slug' });
-        } : undefined}
+        isAdmin={ctxIsAdmin}
       />
 
       <main className={`flex-1 flex flex-col min-h-0 overflow-x-auto ${TABLE_AREA_CLASS}`}>
@@ -922,10 +840,11 @@ function GenericMasterTableInner({
           baseTable={tableName}
           parentType={schema.parentType ?? undefined}
           companyId={companyId ?? undefined}
+          isAdmin={ctxIsAdmin}
           editableCols={schema.editableCols}
           relationalEditCols={relationalEditCols}
           onRowMutated={t.refresh}
-          sort={sort}
+          sort={t.sort}
           onSort={handleSort}
           addressSortOpen={addressSortOpen}
           onAddressSortOpenChange={setAddressSortOpen}

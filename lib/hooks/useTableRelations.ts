@@ -128,6 +128,7 @@ export function useTableRelations(tableName: string): {
   const [loading, setLoading] = useState(!cache.has(tableName));
 
   useEffect(() => {
+    if (!tableName || tableName === '__skip__') { setLoading(false); return; }
     if (cache.has(tableName)) return;
     let active = true;
 

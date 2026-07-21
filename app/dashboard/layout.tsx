@@ -8,9 +8,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     <QueryProvider>
       <CompanyProvider>
         <div className="flex h-screen w-full bg-slate-50 overflow-hidden font-sans antialiased text-slate-900">
-          {/* COLUMN 1: Sidebar */}
-          <aside className="w-72 flex-shrink-0 border-r border-slate-200 bg-white">
-            <Suspense fallback={<div className="p-10 animate-pulse bg-slate-50 h-full" />}>
+          {/* COLUMN 1: Sidebar — Sidebar itself controls width so it can collapse */}
+          <aside className="flex-shrink-0">
+            <Suspense fallback={<div className="w-72 p-10 animate-pulse bg-slate-50 h-full" />}>
               <Sidebar />
             </Suspense>
           </aside>

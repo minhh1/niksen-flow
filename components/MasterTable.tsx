@@ -45,6 +45,7 @@ export interface MasterTableProps {
   baseTable?: string;
   parentType?: LogParentType;
   companyId?: string;
+  isAdmin?: boolean;
   editableCols?: string[];
   relationalEditCols?: Record<string, RelationalEditConfig>;
   onRowMutated?: () => void;
@@ -71,7 +72,7 @@ export default function MasterTable({
   expandedRow, toggleExpandRow, resolveValue, getLinkTarget,
   relations = [], expandRelations = [],
   minWidth = 1200, rowKey = (item) => item.id,
-  baseTable, parentType, companyId, editableCols, relationalEditCols, onRowMutated,
+  baseTable, parentType, companyId, isAdmin = false, editableCols, relationalEditCols, onRowMutated,
   sort, onSort, addressSortOpen, onAddressSortOpenChange, resolveColLabel,
 }: MasterTableProps) {
   const router = useRouter();
@@ -195,22 +196,25 @@ export default function MasterTable({
               return (
                 <th key={colId} style={{ width: colWidths[colId] || 250 }} className="relative border-r border-slate-100 group/header select-none p-0">
                   <div className="flex items-center h-full">
-                    <div
-                      draggable
-                      onDragStart={() => setDraggedIdx(idx)}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={() => {
-                        if (draggedIdx === null) return;
-                        const next = [...tableCols];
-                        const [moved] = next.splice(draggedIdx, 1);
-                        next.splice(idx, 0, moved);
-                        onReorder(next);
-                        setDraggedIdx(null);
-                      }}
-                      className="p-4 cursor-move opacity-0 group-hover/header:opacity-100 transition-opacity shrink-0"
-                    >
-                      <GripVertical size={14} />
-                    </div>
+                    {isAdmin && (
+                      <div
+                        draggable
+                        onDragStart={() => setDraggedIdx(idx)}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => {
+                          if (draggedIdx === null) return;
+                          const next = [...tableCols];
+                          const [moved] = next.splice(draggedIdx, 1);
+                          next.splice(idx, 0, moved);
+                          onReorder(next);
+                          setDraggedIdx(null);
+                        }}
+                        className="p-4 cursor-move opacity-0 group-hover/header:opacity-100 transition-opacity shrink-0"
+                        title="Reorder column (admin only)"
+                      >
+                        <GripVertical size={14} />
+                      </div>
+                    )}
 
                     <div className={`flex-1 py-5 px-2 uppercase text-[10px] font-bold tracking-widest truncate ${isActiveSortCol ? 'text-indigo-600' : ''}`}>
                       {resolveColLabel ? resolveColLabel(colId) : colId.replace('_id', '').replace('.', ' ')}
@@ -268,7 +272,9 @@ export default function MasterTable({
                       )
                     )}
 
-                    <div onMouseDown={(e) => startResizing(colId, e)} className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-indigo-500 z-10" />
+                    {isAdmin && (
+                      <div onMouseDown={(e) => startResizing(colId, e)} className="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-indigo-500 z-10" title="Resize column (admin only)" />
+                    )}
                   </div>
                 </th>
               );

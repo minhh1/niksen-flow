@@ -6,6 +6,7 @@ import {
   MapPin, Building2, Plus, LogOut, LayoutGrid,
   Settings, Shield, ChevronsUpDown, Loader2, Mail,
   Table2, Eye, EyeOff, X, Check, SlidersHorizontal, Network, PenSquare, Monitor, CreditCard,
+  ChevronsLeft, ChevronsRight, ChevronRight,
 } from "lucide-react";
 import * as LucideIcons from "lucide-react";
 import Link from "next/link";
@@ -16,6 +17,7 @@ import NewEntityModal from "./NewEntityModal";
 import { useCustomTables } from "@/lib/hooks/useCustomTables";
 import { useCompany } from "@/components/CompanyContext";
 import type { ActiveFilter } from "@/lib/types/filters";
+import { savedViewsService, type SavedView } from "@/lib/services/savedViewsService";
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -71,15 +73,13 @@ const SEPARATORS = [
 
 // ── DB helpers ─────────────────────────────────────────────────────
 
-async function loadTreeConfigFromDB(tableSlug: string): Promise<TreeConfig> {
+async function loadTreeConfigFromDB(tableSlug: string, userId: string | null): Promise<TreeConfig> {
+  if (!userId) return DEFAULT_TREE_CONFIG[tableSlug] || DEFAULT_TREE_CONFIG.projects;
   try {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return DEFAULT_TREE_CONFIG[tableSlug] || DEFAULT_TREE_CONFIG.projects;
-
     const { data, error } = await supabase
       .from('sidebar_tree_config')
       .select('config')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .eq('table_slug', tableSlug)
       .maybeSingle();
 
@@ -96,13 +96,12 @@ async function loadTreeConfigFromDB(tableSlug: string): Promise<TreeConfig> {
   }
 }
 
-async function saveTreeConfigToDB(tableSlug: string, config: TreeConfig): Promise<void> {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return;
+async function saveTreeConfigToDB(tableSlug: string, config: TreeConfig, userId: string | null): Promise<void> {
+  if (!userId) return;
   await supabase
     .from('sidebar_tree_config')
     .upsert({
-      user_id: user.id,
+      user_id: userId,
       table_slug: tableSlug,
       config,
       updated_at: new Date().toISOString(),
@@ -509,6 +508,36 @@ function TreeConfigPanel({
   );
 }
 
+// ── Nav link (collapses to icon-only) ───────────────────────────────
+
+function SidebarNavLink({
+  href, icon: Icon, label, active, collapsed,
+  activeClassName = 'bg-slate-900 text-white',
+  idleClassName = 'text-slate-500 hover:bg-slate-50 hover:text-slate-900',
+}: {
+  href: string;
+  icon: React.ElementType;
+  label: string;
+  active: boolean;
+  collapsed: boolean;
+  activeClassName?: string;
+  idleClassName?: string;
+}) {
+  return (
+    <Link
+      href={href}
+      title={collapsed ? label : undefined}
+      aria-label={label}
+      className={`flex items-center rounded-2xl text-[13px] font-medium transition-all ${
+        collapsed ? 'w-9 h-9 mx-auto justify-center' : 'w-full gap-3 px-3 py-2.5'
+      } ${active ? activeClassName : idleClassName}`}
+    >
+      <Icon size={16} className="shrink-0" />
+      {!collapsed && <span className="truncate">{label}</span>}
+    </Link>
+  );
+}
+
 // ── Main Sidebar ───────────────────────────────────────────────────
 
 export default function Sidebar() {
@@ -516,13 +545,13 @@ export default function Sidebar() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const currentId = searchParams.get("id");
+  const activeViewId = searchParams.get("view");
 
   // Use shared company context — avoids duplicate auth call with GenericMasterTable
-  const { companyId: ctxCompanyId, companyName: ctxCompanyName, isAdmin: ctxIsAdmin, loading: ctxLoading } = useCompany();
+  const { companyId: ctxCompanyId, companyName: ctxCompanyName, userId: ctxUserId, isAdmin: ctxIsAdmin, loading: ctxLoading } = useCompany();
 
   const [profile, setProfile] = useState<any>(null);
   const [profileLoading, setProfileLoading] = useState(true);
-  const [isAdmin, setIsAdmin] = useState(false);
   const [memberships, setMemberships] = useState<any[]>([]);
   const [showCompanySwitcher, setShowCompanySwitcher] = useState(false);
   const [switchingCompany, setSwitchingCompany] = useState(false);
@@ -538,20 +567,48 @@ export default function Sidebar() {
     pathname.includes('entities') ? 'entities' : 'projects'
   ] || DEFAULT_TREE_CONFIG.projects);
   const [customFieldCols, setCustomFieldCols] = useState<any[]>([]);
+  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
+  const [collapsed, setCollapsed] = useState(false);
+  const [treeOpen, setTreeOpen] = useState(false);
   const { tables: customTables } = useCustomTables();
 
   const mode = pathname.includes("projects") ? "projects"
     : pathname.includes("properties") ? "properties"
     : "entities";
 
+  // ── Restore collapsed state ──────────────────────────────────────
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('nk_sidebar_collapsed') === '1') setCollapsed(true);
+    } catch {}
+  }, []);
+
+  const toggleCollapsed = () => {
+    setCollapsed(prev => {
+      const next = !prev;
+      try { localStorage.setItem('nk_sidebar_collapsed', next ? '1' : '0'); } catch {}
+      return next;
+    });
+  };
+
+  // Record list is opt-in — collapse it again whenever the active table changes
+  useEffect(() => { setTreeOpen(false); }, [mode]);
+
   // ── Load tree config from DB when mode changes ─────────────────
   useEffect(() => {
+    if (!ctxUserId) return;
     const load = async () => {
-      const config = await loadTreeConfigFromDB(mode);
+      const config = await loadTreeConfigFromDB(mode, ctxUserId);
       setTreeConfig(config);
     };
     load();
-  }, [mode]);
+  }, [mode, ctxUserId]);
+
+  // ── Load saved views for the active table ───────────────────────
+  useEffect(() => {
+    if (!ctxUserId || !ctxCompanyId) return;
+    savedViewsService.listByTable(ctxUserId, ctxCompanyId, mode).then(setSavedViews);
+  }, [mode, ctxUserId, ctxCompanyId]);
 
   // ── Load custom fields for current mode ────────────────────────
   useEffect(() => {
@@ -571,8 +628,9 @@ export default function Sidebar() {
   }, [mode, treeConfig]);
 
   useEffect(() => {
+    if (!ctxUserId) return;
     fetchProfile();
-  }, []);
+  }, [ctxUserId]);
 
   useEffect(() => {
     if (!showCompanySwitcher) return;
@@ -582,69 +640,44 @@ export default function Sidebar() {
   }, [showCompanySwitcher]);
 
   // ── Profile + visibility ───────────────────────────────────────
+  // companyId/isAdmin come from CompanyContext (shared with GenericMasterTable) —
+  // this only fetches the extra fields that context doesn't carry.
   const fetchProfile = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
-    if (!user) return;
+    if (!ctxUserId) return;
 
     // Try with sidebar_visible_tables first, fall back if column doesn't exist
-    let prof: any = null;
+    let fullName: string | null = null;
     let visibleTablesData: any = null;
 
     const { data: profFull, error } = await supabase
       .from("profiles")
-      .select("id, full_name, is_admin, active_company_id, sidebar_visible_tables")
-      .eq("id", user.id)
+      .select("full_name, sidebar_visible_tables")
+      .eq("id", ctxUserId)
       .single();
 
     if (error) {
       // Column might not exist yet — fetch without it
       const { data: profBasic } = await supabase
         .from("profiles")
-        .select("id, full_name, is_admin, active_company_id")
-        .eq("id", user.id)
+        .select("full_name")
+        .eq("id", ctxUserId)
         .single();
-      prof = profBasic;
+      fullName = profBasic?.full_name ?? null;
     } else {
-      prof = profFull;
+      fullName = profFull?.full_name ?? null;
       visibleTablesData = profFull?.sidebar_visible_tables;
     }
 
-    if (!prof) return;
-
-    // Get company
-    let company = null;
-    if (prof.active_company_id) {
-      const { data: comp } = await supabase
-        .from("companies")
-        .select("id, name, status")
-        .eq("id", prof.active_company_id)
-        .single();
-      company = comp;
-    }
-
-    setProfile({ ...prof, company });
-
-    const { data: membership } = await supabase
-      .from('company_memberships')
-      .select('role')
-      .eq('user_id', user.id)
-      .eq('company_id', prof?.active_company_id)
-      .single();
-    setIsAdmin(membership?.role === 'company_admin');
+    setProfile({ full_name: fullName });
 
     // Set visible tables
-    if (visibleTablesData) {
-      setVisibleTables(visibleTablesData);
-    } else {
-      setVisibleTables(ALL_SYSTEM_TABLES.map(t => t.slug));
-    }
+    setVisibleTables(visibleTablesData || ALL_SYSTEM_TABLES.map(t => t.slug));
 
     // Get memberships
     const { data: ms } = await supabase
       .from("company_memberships")
       .select("company_id, role, company:company_id(id, name, status)")
-      .eq("user_id", user.id);
+      .eq("user_id", ctxUserId);
     setMemberships(ms || []);
 
     // Mark profile fully loaded only after all data is set
@@ -695,7 +728,9 @@ export default function Sidebar() {
       query = (query as any).order(config.sortField, { ascending: config.sortDirection === 'asc' });
     }
 
-    query = (query as any).limit(100);
+    // 100 was silently hiding records once a table grew past it (e.g. 521 matters) —
+    // raised well above current table sizes; the list only renders when expanded.
+    query = (query as any).limit(2000);
 
     const { data: baseItems } = await query;
     let items = baseItems || [];
@@ -779,25 +814,43 @@ export default function Sidebar() {
   // ── Handlers ───────────────────────────────────────────────────
   const handleTreeConfigChange = async (config: TreeConfig) => {
     setTreeConfig(config);
-    await saveTreeConfigToDB(mode, config);
+    await saveTreeConfigToDB(mode, config, ctxUserId);
   };
 
   const handleVisibilityChange = async (slugs: string[]) => {
     setVisibleTables(slugs);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return;
+    if (!ctxUserId) return;
     await supabase
       .from('profiles')
       .update({ sidebar_visible_tables: slugs })
-      .eq('id', user.id);
+      .eq('id', ctxUserId);
+  };
+
+  const handleNewView = async () => {
+    const name = prompt("Name for this new view:");
+    if (!name || !ctxUserId || !ctxCompanyId) return;
+    const created = await savedViewsService.create({
+      user_id: ctxUserId, company_id: ctxCompanyId, table_slug: mode, view_name: name, filters: [],
+    });
+    if (!created) return;
+    setSavedViews(prev => [...prev, created].sort((a, b) => a.view_name.localeCompare(b.view_name)));
+    router.push(`/dashboard/${mode}?view=${created.id}`);
+  };
+
+  const handleDeleteView = async (view: SavedView, e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!window.confirm(`Delete the saved view "${view.view_name}"? This can't be undone.`)) return;
+    await savedViewsService.remove(view.id);
+    setSavedViews(prev => prev.filter(v => v.id !== view.id));
+    if (activeViewId === view.id) router.push(`/dashboard/${mode}`);
   };
 
   const handleSwitchCompany = async (companyId: string) => {
-    if (companyId === profile?.active_company_id) return;
+    if (companyId === ctxCompanyId) return;
+    if (!ctxUserId) return;
     setSwitchingCompany(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { setSwitchingCompany(false); return; }
-    await supabase.from('profiles').update({ active_company_id: companyId }).eq('id', user.id);
+    await supabase.from('profiles').update({ active_company_id: companyId }).eq('id', ctxUserId);
     const { invalidateSchemaCache, clearCompanyIdCache } = await import('@/lib/services/schemaService');
     invalidateSchemaCache();
     clearCompanyIdCache();
@@ -820,42 +873,59 @@ export default function Sidebar() {
 
   // ── Render ─────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-screen bg-white border-r border-slate-100 font-sans select-none antialiased text-slate-600 overflow-hidden">
+    <div className={`flex flex-col h-screen bg-white border-r border-slate-100 font-sans select-none antialiased text-slate-600 overflow-hidden transition-[width] duration-200 ${collapsed ? 'w-16' : 'w-72'}`}>
 
       {/* Logo */}
-      <div className="px-6 py-6 flex items-center gap-3 border-b border-slate-100">
+      <div className={`flex items-center border-b border-slate-100 shrink-0 ${collapsed ? 'flex-col gap-2 px-2 py-4' : 'gap-3 px-6 py-6'}`}>
         <div className="h-9 w-9 rounded-xl bg-slate-900 flex items-center justify-center shadow-sm shrink-0">
           <div className="h-3.5 w-3.5 rounded-full border-2 border-white" />
         </div>
-        <span className="font-bold text-[15px] tracking-tighter text-slate-900 uppercase">
-          niksen
-        </span>
+        {!collapsed && (
+          <span className="font-bold text-[15px] tracking-tighter text-slate-900 uppercase flex-1">
+            niksen
+          </span>
+        )}
+        <button
+          onClick={toggleCollapsed}
+          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className="p-1.5 text-slate-300 hover:text-slate-600 hover:bg-slate-50 rounded-lg transition-all shrink-0"
+        >
+          {collapsed ? <ChevronsRight size={14} /> : <ChevronsLeft size={14} />}
+        </button>
       </div>
 
       {/* Nav */}
-      <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-0.5">
+      <nav className={`flex-1 overflow-y-auto py-4 space-y-0.5 ${collapsed ? 'px-2' : 'px-3'}`}>
 
         {/* Tables */}
         <div className="mb-2">
-          <div className="flex items-center justify-between px-3 mb-1">
-            <p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest">Tables</p>
-            <button
-              onClick={() => setShowTableSettings(p => !p)}
-              className="p-1 text-slate-300 hover:text-slate-600 rounded-lg hover:bg-slate-50 transition-all"
-              title="Configure visible tables"
-            >
-              <Eye size={12} />
-            </button>
-          </div>
+          {!collapsed && (
+            <div className="flex items-center justify-between px-3 mb-1">
+              <p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest">Tables</p>
+              <button
+                onClick={() => setShowTableSettings(p => !p)}
+                className="p-1 text-slate-300 hover:text-slate-600 rounded-lg hover:bg-slate-50 transition-all"
+                title="Configure visible tables"
+                aria-label="Configure visible tables"
+              >
+                <Eye size={12} />
+              </button>
+            </div>
+          )}
 
           {profileLoading ? (
             // Skeleton for table nav items
-            <div className="space-y-1 px-1">
+            <div className={collapsed ? 'space-y-1 flex flex-col items-center' : 'space-y-1 px-1'}>
               {[1,2,3].map(i => (
-                <div key={i} className="flex items-center gap-3 px-3 py-2.5 rounded-2xl">
-                  <div className="h-4 w-4 rounded bg-slate-100 animate-pulse shrink-0" />
-                  <div className={`h-3 bg-slate-100 animate-pulse rounded-full ${i === 1 ? 'w-20' : i === 2 ? 'w-16' : 'w-24'}`} />
-                </div>
+                collapsed ? (
+                  <div key={i} className="h-9 w-9 rounded-2xl bg-slate-100 animate-pulse" />
+                ) : (
+                  <div key={i} className="flex items-center gap-3 px-3 py-2.5 rounded-2xl">
+                    <div className="h-4 w-4 rounded bg-slate-100 animate-pulse shrink-0" />
+                    <div className={`h-3 bg-slate-100 animate-pulse rounded-full ${i === 1 ? 'w-20' : i === 2 ? 'w-16' : 'w-24'}`} />
+                  </div>
+                )
               ))}
             </div>
           ) : (
@@ -864,14 +934,18 @@ export default function Sidebar() {
             <button
               key={slug}
               onClick={() => router.push(`/dashboard/${slug}`)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
+              title={collapsed ? label : undefined}
+              aria-label={label}
+              className={`flex items-center rounded-2xl text-[13px] font-medium transition-all ${
+                collapsed ? 'w-9 h-9 mx-auto justify-center mb-1' : 'w-full gap-3 px-3 py-2.5'
+              } ${
                 isTableActive(slug)
                   ? 'bg-slate-900 text-white'
                   : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
               }`}
             >
               <Icon size={16} className="shrink-0" />
-              <span className="truncate">{label}</span>
+              {!collapsed && <span className="truncate">{label}</span>}
             </button>
           ))}
 
@@ -881,21 +955,25 @@ export default function Sidebar() {
               <button
                 key={table.id}
                 onClick={() => router.push(`/dashboard/${table.slug}`)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
+                title={collapsed ? table.name : undefined}
+                aria-label={table.name}
+                className={`flex items-center rounded-2xl text-[13px] font-medium transition-all ${
+                  collapsed ? 'w-9 h-9 mx-auto justify-center mb-1' : 'w-full gap-3 px-3 py-2.5'
+                } ${
                   isTableActive(table.slug)
                     ? 'bg-slate-900 text-white'
                     : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
                 }`}
               >
                 <Icon size={16} className="shrink-0" />
-                <span className="truncate">{table.name}</span>
+                {!collapsed && <span className="truncate">{table.name}</span>}
               </button>
             );
           })}
             </>
           )}
 
-          {!profileLoading && visibleSystemTables.length === 0 && visibleCustomTables.length === 0 && (
+          {!collapsed && !profileLoading && visibleSystemTables.length === 0 && visibleCustomTables.length === 0 && (
             <button
               onClick={() => setShowTableSettings(true)}
               className="w-full px-3 py-2.5 text-[11px] text-slate-300 italic text-left"
@@ -905,111 +983,92 @@ export default function Sidebar() {
           )}
         </div>
 
-        {/* Divider */}
-        <div className="h-px bg-slate-100 my-2 mx-3" />
-
-        {/* Gmail */}
-        <Link
-          href="/dashboard/gmail"
-          className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
-            pathname.includes('/gmail')
-              ? 'bg-slate-900 text-white'
-              : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
-          }`}
-        >
-          <Mail size={16} className="shrink-0" />
-          Gmail
-        </Link>
-
-        {/* PDF editor */}
-        <Link
-          href="/dashboard/pdf-editor"
-          className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
-            pathname.includes('/pdf-editor')
-              ? 'bg-slate-900 text-white'
-              : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
-          }`}
-        >
-          <PenSquare size={16} className="shrink-0" />
-          PDF editor
-        </Link>
-
-        {/* Virtual computers */}
-        <Link
-          href="/dashboard/virtual-computers"
-          className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
-            pathname.includes('/virtual-computers')
-              ? 'bg-slate-900 text-white'
-              : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
-          }`}
-        >
-          <Monitor size={16} className="shrink-0" />
-          Virtual computers
-        </Link>
-
-        {/* Schema map */}
-        <Link
-          href="/dashboard/schema"
-          className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
-            pathname.includes('/schema')
-              ? 'bg-slate-900 text-white'
-              : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
-          }`}
-        >
-          <Network size={16} className="shrink-0" />
-          Schema map
-        </Link>
-
-        {/* Settings */}
-        <Link
-          href="/dashboard/settings"
-          className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
-            pathname.includes('/settings')
-              ? 'bg-slate-900 text-white'
-              : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
-          }`}
-        >
-          <Settings size={16} className="shrink-0" />
-          Settings
-        </Link>
-
-        {/* Admin */}
-        {isAdmin && (
-          <Link
-            href="/dashboard/admin"
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
-              pathname.includes('/admin')
-                ? 'bg-amber-600 text-white'
-                : 'text-amber-600 hover:bg-amber-50'
-            }`}
-          >
-            <Shield size={16} className="shrink-0" />
-            Admin
-          </Link>
-        )}
-
-        {/* Billing */}
-        {isAdmin && (
-          <Link
-            href="/dashboard/billing"
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[13px] font-medium transition-all ${
-              pathname.includes('/billing')
-                ? 'bg-slate-900 text-white'
-                : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
-            }`}
-          >
-            <CreditCard size={16} className="shrink-0" />
-            Billing
-          </Link>
+        {/* Saved views — for the currently active table */}
+        {!collapsed && isTableActive(mode) && (
+          <div className="mb-2">
+            <div className="flex items-center justify-between px-3 mb-1">
+              <p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest">Saved views</p>
+              <button
+                onClick={handleNewView}
+                className="p-1 text-slate-300 hover:text-slate-600 rounded-lg hover:bg-slate-50 transition-all"
+                title="New saved view"
+              >
+                <Plus size={12} strokeWidth={3} />
+              </button>
+            </div>
+            <button
+              onClick={() => router.push(`/dashboard/${mode}`)}
+              className={`w-full flex items-center px-3 py-2 rounded-2xl text-[12px] transition-all ${
+                !activeViewId
+                  ? 'bg-indigo-50 text-indigo-700 font-bold'
+                  : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900 font-medium'
+              }`}
+            >
+              All (no filter)
+            </button>
+            {savedViews.map(view => (
+              <div key={view.id} className="group/view flex items-center">
+                <button
+                  onClick={() => router.push(`/dashboard/${mode}?view=${view.id}`)}
+                  className={`flex-1 min-w-0 flex items-center px-3 py-2 rounded-2xl text-[12px] transition-all text-left ${
+                    activeViewId === view.id
+                      ? 'bg-indigo-50 text-indigo-700 font-bold'
+                      : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900 font-medium'
+                  }`}
+                >
+                  <span className="truncate">{view.view_name}</span>
+                  {view.filters.length > 0 && (
+                    <span className="ml-1.5 text-[9px] text-slate-300 shrink-0">({view.filters.length})</span>
+                  )}
+                </button>
+                <button
+                  onClick={(e) => handleDeleteView(view, e)}
+                  title={`Delete "${view.view_name}"`}
+                  className="p-1 mr-1 text-slate-300 hover:text-red-500 opacity-0 group-hover/view:opacity-100 transition-all shrink-0"
+                >
+                  <X size={11} strokeWidth={3} />
+                </button>
+              </div>
+            ))}
+          </div>
         )}
 
         {/* Divider */}
-        <div className="h-px bg-slate-100 my-2 mx-3" />
+        <div className={`h-px bg-slate-100 my-2 ${collapsed ? 'mx-2' : 'mx-3'}`} />
 
-        {/* Tree nav */}
+        <SidebarNavLink href="/dashboard/gmail" icon={Mail} label="Gmail" active={pathname.includes('/gmail')} collapsed={collapsed} />
+        <SidebarNavLink href="/dashboard/pdf-editor" icon={PenSquare} label="PDF editor" active={pathname.includes('/pdf-editor')} collapsed={collapsed} />
+        <SidebarNavLink href="/dashboard/virtual-computers" icon={Monitor} label="Virtual computers" active={pathname.includes('/virtual-computers')} collapsed={collapsed} />
+        <SidebarNavLink href="/dashboard/schema" icon={Network} label="Schema map" active={pathname.includes('/schema')} collapsed={collapsed} />
+        <SidebarNavLink href="/dashboard/settings" icon={Settings} label="Settings" active={pathname.includes('/settings')} collapsed={collapsed} />
+
+        {ctxIsAdmin && (
+          <SidebarNavLink
+            href="/dashboard/admin" icon={Shield} label="Admin" collapsed={collapsed}
+            active={pathname.includes('/admin')}
+            activeClassName="bg-amber-600 text-white"
+            idleClassName="text-amber-600 hover:bg-amber-50"
+          />
+        )}
+
+        {ctxIsAdmin && (
+          <SidebarNavLink href="/dashboard/billing" icon={CreditCard} label="Billing" active={pathname.includes('/billing')} collapsed={collapsed} />
+        )}
+
+        {/* Divider */}
+        <div className={`h-px bg-slate-100 my-2 ${collapsed ? 'mx-2' : 'mx-3'}`} />
+
+        {/* Tree nav — record list is collapsed by default, opt-in via the disclosure toggle */}
+        {!collapsed && (
         <div>
           <div className="flex items-center justify-between px-3 mb-1">
-            <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setTreeOpen(p => !p)}
+              aria-expanded={treeOpen}
+              aria-label={treeOpen ? `Collapse ${mode} list` : `Expand ${mode} list`}
+              className="flex items-center gap-1.5 -ml-1 pl-1 pr-2 py-1 rounded-lg hover:bg-slate-50 transition-all"
+            >
+              <ChevronRight size={10} className={`text-slate-300 shrink-0 transition-transform ${treeOpen ? 'rotate-90' : ''}`} />
               <p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest">
                 {mode}
               </p>
@@ -1018,18 +1077,20 @@ export default function Sidebar() {
                   {treeConfig.filters.length}
                 </span>
               )}
-            </div>
+            </button>
             <div className="flex items-center gap-1">
               <button
                 onClick={() => mode === 'entities' ? setIsEntOpen(true) : setIsProjOpen(true)}
                 className="p-1 text-slate-300 hover:text-slate-600 rounded-lg hover:bg-slate-50 transition-all"
                 title="New record"
+                aria-label="New record"
               >
                 <Plus size={12} strokeWidth={3} />
               </button>
               <button
                 onClick={() => setShowTreeConfig(p => !p)}
                 title="Tree settings"
+                aria-label="Tree settings"
                 className={`p-1 rounded-lg transition-all ${
                   showTreeConfig || hasActiveFilters
                     ? 'text-indigo-600 bg-indigo-50'
@@ -1041,6 +1102,8 @@ export default function Sidebar() {
             </div>
           </div>
 
+          {treeOpen && (
+            <>
           {/* Active config hints */}
           {(treeConfig.displayFields.length > 1 ||
             treeConfig.sortField !== availableFields[0]?.key) && (
@@ -1098,11 +1161,14 @@ export default function Sidebar() {
           )}
             </>
           )}
+            </>
+          )}
         </div>
+        )}
       </nav>
 
       {/* Footer */}
-      <div className="px-3 py-4 border-t border-slate-100 space-y-1">
+      <div className={`border-t border-slate-100 space-y-1 py-4 ${collapsed ? 'px-2' : 'px-3'}`}>
         <div className="relative" onClick={e => e.stopPropagation()}>
 
           {/* Table visibility panel */}
@@ -1129,43 +1195,55 @@ export default function Sidebar() {
 
           {/* Profile card */}
           {profileLoading ? (
-            <div className="w-full flex items-center gap-3 px-3 py-3 rounded-2xl">
-              <div className="h-8 w-8 rounded-full bg-slate-200 animate-pulse shrink-0" />
-              <div className="flex flex-col gap-1.5 flex-1">
-                <div className="h-3 w-24 bg-slate-200 animate-pulse rounded-full" />
-                <div className="h-2.5 w-16 bg-slate-100 animate-pulse rounded-full" />
+            collapsed ? (
+              <div className="h-9 w-9 rounded-full bg-slate-200 animate-pulse mx-auto" />
+            ) : (
+              <div className="w-full flex items-center gap-3 px-3 py-3 rounded-2xl">
+                <div className="h-8 w-8 rounded-full bg-slate-200 animate-pulse shrink-0" />
+                <div className="flex flex-col gap-1.5 flex-1">
+                  <div className="h-3 w-24 bg-slate-200 animate-pulse rounded-full" />
+                  <div className="h-2.5 w-16 bg-slate-100 animate-pulse rounded-full" />
+                </div>
               </div>
-            </div>
+            )
           ) : (
           <button
             onClick={() => setShowCompanySwitcher(p => !p)}
-            className="w-full flex items-center gap-3 px-3 py-3 rounded-2xl hover:bg-slate-50 transition-all text-left"
+            title={collapsed ? (profile?.full_name || 'Account') : undefined}
+            aria-label="Account menu"
+            className={`flex items-center rounded-2xl hover:bg-slate-50 transition-all ${
+              collapsed ? 'w-9 h-9 mx-auto justify-center' : 'w-full gap-3 px-3 py-3 text-left'
+            }`}
           >
             <div className="h-8 w-8 rounded-full bg-slate-900 flex items-center justify-center text-[10px] font-bold text-white uppercase shrink-0">
               {profile?.full_name?.substring(0, 2) || 'AD'}
             </div>
-            <div className="flex flex-col min-w-0 flex-1">
-              <p className="text-[12px] font-bold text-slate-900 truncate">
-                {profile?.company?.name || 'No company'}
-              </p>
-              <p className="text-[10px] text-slate-400 truncate">
-                {profile?.full_name || 'User'}
-              </p>
-            </div>
-            {memberships.length > 1 && (
-              <ChevronsUpDown size={14} className="text-slate-300 shrink-0" />
+            {!collapsed && (
+              <>
+                <div className="flex flex-col min-w-0 flex-1">
+                  <p className="text-[12px] font-bold text-slate-900 truncate">
+                    {ctxCompanyName || 'No company'}
+                  </p>
+                  <p className="text-[10px] text-slate-400 truncate">
+                    {profile?.full_name || 'User'}
+                  </p>
+                </div>
+                {memberships.length > 1 && (
+                  <ChevronsUpDown size={14} className="text-slate-300 shrink-0" />
+                )}
+              </>
             )}
           </button>
           )}
 
-          {/* Company switcher */}
+          {/* Company switcher — fixed width so it stays readable even when the trigger sits in the collapsed rail */}
           {showCompanySwitcher && memberships.length > 0 && (
-            <div className="absolute bottom-full left-0 right-0 mb-2 bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden z-50">
+            <div className="absolute bottom-full left-0 mb-2 w-72 bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden z-50">
               <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest px-5 pt-4 pb-2">
                 {memberships.length > 1 ? 'Switch company' : 'Your company'}
               </p>
               {memberships.map(m => {
-                const isActive = m.company_id === profile?.active_company_id;
+                const isActive = m.company_id === ctxCompanyId;
                 return (
                   <button
                     key={m.company_id}
@@ -1206,10 +1284,14 @@ export default function Sidebar() {
         {/* Sign out */}
         <button
           onClick={() => supabase.auth.signOut().then(() => window.location.replace("/login"))}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl text-[12px] font-medium text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all"
+          title={collapsed ? 'Sign out' : undefined}
+          aria-label="Sign out"
+          className={`flex items-center rounded-2xl text-[12px] font-medium text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all ${
+            collapsed ? 'w-9 h-9 mx-auto justify-center' : 'w-full gap-3 px-3 py-2.5'
+          }`}
         >
           <LogOut size={15} className="shrink-0" />
-          Sign out
+          {!collapsed && 'Sign out'}
         </button>
       </div>
 

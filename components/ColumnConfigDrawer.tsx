@@ -2,7 +2,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X, Save } from "lucide-react";
+import { X, Save, Lock } from "lucide-react";
 import FilterPanel from "@/components/FilterPanel";
 import type { ActiveFilter } from "@/lib/types/filters";
 
@@ -36,7 +36,6 @@ interface Props {
   filterableFields?: FilterableField[];
   onFiltersChange?: (filters: ActiveFilter[]) => void;
   isAdmin?: boolean;
-  onSetCompanyDefault?: () => Promise<void>;
 }
 
 type ActiveTab = 'columns' | 'filters';
@@ -45,15 +44,13 @@ export default function ColumnConfigDrawer({
   isOpen, onClose, sections, tableCols, expandCols,
   activePresetName, onToggle,
   filters = [], filterableFields = [], onFiltersChange,
-  isAdmin = false, onSetCompanyDefault,
+  isAdmin = false,
 }: Props) {
   const [activeTab, setActiveTab] = useState<ActiveTab>('columns');
 
   // Local draft for filters — only applied on Save
   const [draftFilters, setDraftFilters] = useState<ActiveFilter[]>(filters);
   const [filtersDirty, setFiltersDirty] = useState(false);
-  const [savingDefault, setSavingDefault] = useState(false);
-  const [defaultSaved, setDefaultSaved] = useState(false);
 
   // Sync draft when external filters change (e.g. preset switch)
   useEffect(() => {
@@ -90,9 +87,11 @@ export default function ColumnConfigDrawer({
             <h2 className="text-[13px] font-bold text-slate-800 uppercase tracking-wide">
               Column setup
             </h2>
-            {activePresetName && (
+            {activeTab === 'filters' && (
               <p className="text-[10px] text-slate-400 mt-0.5">
-                Preset: {activePresetName}
+                {activePresetName
+                  ? `View: ${activePresetName}`
+                  : 'No view selected — filters apply now but won’t be saved'}
               </p>
             )}
           </div>
@@ -129,6 +128,14 @@ export default function ColumnConfigDrawer({
         {/* ── Columns tab ── */}
         {activeTab === 'columns' && (
           <div className="flex-1 overflow-y-auto pt-4">
+            {!isAdmin && (
+              <div className="mx-6 mb-2 flex items-center gap-2 px-3 py-2.5 bg-slate-50 border border-slate-100 rounded-2xl">
+                <Lock size={12} className="text-slate-400 shrink-0" />
+                <p className="text-[10px] text-slate-500 font-medium">
+                  Columns are set by your company admin and shared by the whole team.
+                </p>
+              </div>
+            )}
             {sections.map((section, si) => (
               <div key={si} className="px-6 py-4 border-b border-slate-50 last:border-0">
                 <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-3">
@@ -149,20 +156,26 @@ export default function ColumnConfigDrawer({
                         </div>
                         <div className="flex items-center gap-1 shrink-0 ml-3">
                           <button
-                            onClick={() => onToggle(f.id, inTable ? 'none' : 'table')}
-                            title={inTable ? 'Remove from table' : 'Show in table'}
+                            onClick={isAdmin ? () => onToggle(f.id, inTable ? 'none' : 'table') : undefined}
+                            disabled={!isAdmin}
+                            title={!isAdmin ? 'Only admins can change columns' : inTable ? 'Remove from table' : 'Show in table'}
                             className={`px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-wide transition-all ${
-                              inTable ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-400 hover:bg-slate-200 opacity-0 group-hover:opacity-100'
-                            }`}
+                              inTable
+                                ? 'bg-indigo-600 text-white'
+                                : `bg-slate-100 text-slate-400 ${isAdmin ? 'hover:bg-slate-200 opacity-0 group-hover:opacity-100' : 'opacity-40'}`
+                            } ${!isAdmin ? 'cursor-default' : ''}`}
                           >
                             Table
                           </button>
                           <button
-                            onClick={() => onToggle(f.id, inExpand ? 'none' : 'expand')}
-                            title={inExpand ? 'Remove from expand' : 'Show in expand panel'}
+                            onClick={isAdmin ? () => onToggle(f.id, inExpand ? 'none' : 'expand') : undefined}
+                            disabled={!isAdmin}
+                            title={!isAdmin ? 'Only admins can change columns' : inExpand ? 'Remove from expand' : 'Show in expand panel'}
                             className={`px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-wide transition-all ${
-                              inExpand ? 'bg-slate-600 text-white' : 'bg-slate-100 text-slate-400 hover:bg-slate-200 opacity-0 group-hover:opacity-100'
-                            }`}
+                              inExpand
+                                ? 'bg-slate-600 text-white'
+                                : `bg-slate-100 text-slate-400 ${isAdmin ? 'hover:bg-slate-200 opacity-0 group-hover:opacity-100' : 'opacity-40'}`
+                            } ${!isAdmin ? 'cursor-default' : ''}`}
                           >
                             Expand
                           </button>
@@ -218,22 +231,7 @@ export default function ColumnConfigDrawer({
             </div>
           )}
 
-          {isAdmin && onSetCompanyDefault && (
-          <button
-            onClick={async () => {
-              setSavingDefault(true);
-              await onSetCompanyDefault();
-              setSavingDefault(false);
-              setDefaultSaved(true);
-              setTimeout(() => setDefaultSaved(false), 2000);
-            }}
-            disabled={savingDefault}
-            className="w-full flex items-center justify-center gap-2 py-2 border border-slate-200 rounded-full text-[11px] text-slate-500 hover:border-indigo-300 hover:text-indigo-600 transition-colors disabled:opacity-50"
-          >
-            {defaultSaved ? '✓ Saved as company default' : savingDefault ? 'Saving...' : '⋮ Set as company default view'}
-          </button>
-        )}
-        <div className="flex items-center justify-between text-[10px] text-slate-400">
+          <div className="flex items-center justify-between text-[10px] text-slate-400">
             <span>{tableCols.length} in table · {expandCols.length} in expand</span>
             {activeTab === 'filters' && filtersDirty && (
               <span className="text-amber-500 font-bold">Unsaved changes</span>
