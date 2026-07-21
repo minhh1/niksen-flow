@@ -1,7 +1,7 @@
 # guacd -- the actual VNC/RDP protocol proxy. Private-only: no public
 # service block, reachable from the guacamole app over Fly's internal
-# 6PN network at niksenflow-guacd-iad.internal:4822 (see fly.guacamole.iad.toml).
-app = "niksenflow-guacd-iad"
+# 6PN network at diract-guacd-iad.internal:4822 (see fly.guacamole.iad.toml).
+app = "diract-guacd-iad"
 primary_region = "iad"
 
 [build]
@@ -9,7 +9,7 @@ primary_region = "iad"
 
 # The image's default command binds guacd to 0.0.0.0 (IPv4 only), which is
 # NOT reachable via Fly's private 6PN network -- that's IPv6
-# (niksenflow-guacd-iad.internal resolves to an fdaa:... address). This caused
+# (diract-guacd-iad.internal resolves to an fdaa:... address). This caused
 # every virtual-computer connection to fail with a generic "internal error"
 # in Guacamole: guacd worked perfectly when reached directly (confirmed by
 # SSHing in and connecting to localhost:4822), but the guacamole app on a

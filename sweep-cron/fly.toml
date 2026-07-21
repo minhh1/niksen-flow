@@ -2,7 +2,7 @@
 # sweep (.github/workflows/vm-sweep.yml) -- confirmed unreliable in
 # practice (1 scheduled run in 50 minutes, then 1 more in the next 30).
 # No public service -- just an always-on background loop.
-app = "niksenflow-sweep-cron"
+app = "diract-sweep-cron"
 primary_region = "syd"
 
 [build]

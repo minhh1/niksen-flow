@@ -1,15 +1,15 @@
 # Guacamole HTML5 web client -- the official image directly, configured
 # entirely via env vars (it bundles the JSON auth extension already). Set the
-# secret with `fly secrets set -a niksenflow-guacamole JSON_SECRET_KEY=...`
+# secret with `fly secrets set -a diract-guacamole-syd JSON_SECRET_KEY=...`
 # before first deploy -- see README.md.
-app = "niksenflow-guacamole"
+app = "diract-guacamole-syd"
 primary_region = "syd"
 
 [build]
   image = "guacamole/guacamole:1.5.5"
 
 [env]
-  GUACD_HOSTNAME = "niksenflow-guacd.internal"
+  GUACD_HOSTNAME = "diract-guacd-syd.internal"
 
 [http_service]
   internal_port = 8080

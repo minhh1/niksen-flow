@@ -46,24 +46,24 @@ function). Repeat per region (`syd`, `iad`, `fra`, `sin`) -- shown here for
 one new region, `<region>`:
 
 ```bash
-fly apps create niksenflow-guacd-<region>
-fly deploy -c guacamole/fly.guacd.<region>.toml -a niksenflow-guacd-<region>
+fly apps create diract-guacd-<region>
+fly deploy -c guacamole/fly.guacd.<region>.toml -a diract-guacd-<region>
 
-fly apps create niksenflow-guacamole-<region>
+fly apps create diract-guacamole-<region>
 # Same JSON_SECRET_KEY value across every region -- it's just the HMAC/AES
 # key lib/guacamole.ts signs tokens with, not a per-instance credential.
-fly secrets set -a niksenflow-guacamole-<region> JSON_SECRET_KEY=<same value everywhere>
-fly deploy -c guacamole/fly.guacamole.<region>.toml -a niksenflow-guacamole-<region>
+fly secrets set -a diract-guacamole-<region> JSON_SECRET_KEY=<same value everywhere>
+fly deploy -c guacamole/fly.guacamole.<region>.toml -a diract-guacamole-<region>
 ```
 
 Then on the Next.js app (Vercel), set one URL var per region plus the shared
 secret (see `lib/guacamole.ts`'s `REGION_URL_ENV` for the exact var names):
 
 ```
-GUACAMOLE_URL_SYD=https://niksenflow-guacamole.fly.dev/guacamole
-GUACAMOLE_URL_IAD=https://niksenflow-guacamole-iad.fly.dev/guacamole
-GUACAMOLE_URL_FRA=https://niksenflow-guacamole-fra.fly.dev/guacamole
-GUACAMOLE_URL_SIN=https://niksenflow-guacamole-sin.fly.dev/guacamole
+GUACAMOLE_URL_SYD=https://diract-guacamole-syd.fly.dev/guacamole
+GUACAMOLE_URL_IAD=https://diract-guacamole-iad.fly.dev/guacamole
+GUACAMOLE_URL_FRA=https://diract-guacamole-fra.fly.dev/guacamole
+GUACAMOLE_URL_SIN=https://diract-guacamole-sin.fly.dev/guacamole
 GUACAMOLE_JSON_SECRET_KEY=<same value passed to JSON_SECRET_KEY above>
 ```
 

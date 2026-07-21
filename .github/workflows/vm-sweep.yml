@@ -19,5 +19,5 @@ jobs:
     steps:
       - name: Trigger sweep
         run: |
-          curl -sf -X GET "https://niksen-flow.vercel.app/api/virtual-computers/sweep" \
+          curl -sf -X GET "https://diract.io/api/virtual-computers/sweep" \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"

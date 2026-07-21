@@ -6,7 +6,7 @@
 # This is just an always-on loop hitting the same sweep endpoint every 5
 # minutes from a machine we fully control the cadence of.
 while true; do
-  curl -sf -X GET "https://niksen-flow.vercel.app/api/virtual-computers/sweep" \
+  curl -sf -X GET "https://diract.io/api/virtual-computers/sweep" \
     -H "Authorization: Bearer ${CRON_SECRET}" \
     && echo "$(date -Iseconds) sweep ok" \
     || echo "$(date -Iseconds) sweep FAILED"

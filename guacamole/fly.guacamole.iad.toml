@@ -1,6 +1,6 @@
 # Guacamole HTML5 web client -- the official image directly, configured
 # entirely via env vars (it bundles the JSON auth extension already). Set the
-# secret with `fly secrets set -a niksenflow-guacamole-iad JSON_SECRET_KEY=...`
+# secret with `fly secrets set -a diract-guacamole-iad JSON_SECRET_KEY=...`
 # before first deploy -- see README.md.
 # CAUTION: fly deploy on a fresh app's first deploy auto-creates a second
 # "HA/zero-downtime" machine here, running alongside the first -- fine for
@@ -10,18 +10,18 @@
 # rejected when a later request lands on the other). Confirmed directly:
 # this happened on first deploy and caused real login failures for two
 # users before being caught. After any redeploy, verify with
-# `fly status -a niksenflow-guacamole-iad` that exactly one
+# `fly status -a diract-guacamole-iad` that exactly one
 # machine is running -- if a second one appears, `fly scale count 1 -a
-# niksenflow-guacamole-iad` to remove it, matching how
-# niksenflow-guacamole (syd) has always run.
-app = "niksenflow-guacamole-iad"
+# diract-guacamole-iad` to remove it, matching how
+# diract-guacamole (syd) has always run.
+app = "diract-guacamole-iad"
 primary_region = "iad"
 
 [build]
   image = "guacamole/guacamole:1.5.5"
 
 [env]
-  GUACD_HOSTNAME = "niksenflow-guacd-iad.internal"
+  GUACD_HOSTNAME = "diract-guacd-iad.internal"
 
 [http_service]
   internal_port = 8080
