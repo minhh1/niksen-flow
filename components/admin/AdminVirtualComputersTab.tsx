@@ -8,11 +8,59 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
-import { Monitor, Plus, X, KeyRound, Trash2, CreditCard, Loader2, AlertTriangle } from "lucide-react";
+import { Monitor, Plus, X, KeyRound, Trash2, CreditCard, Loader2, AlertTriangle, HelpCircle } from "lucide-react";
 import CostComparisonTable from "@/components/virtualcomputers/CostComparisonTable";
 import VmStatusBadge from "@/components/virtualcomputers/VmStatusBadge";
+import CredentialsHelpDrawer from "./CredentialsHelpDrawer";
 import { REGIONS, FLY_REGION_LABELS } from "@/lib/vmProviders/regions";
 import type { CloudProviderId, VmProtocol, VmSizeOption } from "@/lib/vmProviders/types";
+
+// Walks a company admin through the whole lifecycle, in order -- reused as
+// the drawer's `steps` prop the same way AdminMsTeamsTab.tsx uses it for
+// "where do I find these credentials", just for the broader "how does this
+// whole feature work" question instead of one specific form.
+const VM_LIFECYCLE_STEPS = [
+  {
+    title: "Add a cloud account, or use platform billing",
+    description:
+      "Bring your own DigitalOcean/AWS/GCP account (add its credentials above) and pay that provider directly, or choose \"Platform-billed\" when creating a VM to have it count against your subscription plan's included slots instead -- no credential of your own needed for that path.",
+  },
+  {
+    title: "Pick a provider and operating system",
+    description:
+      "DigitalOcean offers a plain Ubuntu desktop (cheapest, VNC) or Windows 11 (Beta -- a real Windows 11 install inside nested virtualization, RDP only). AWS is Windows Server + Microsoft Office preinstalled, RDP only, and licensed per-hour the normal Windows Server way. Windows 11 on DigitalOcean is different: it starts on Microsoft's free evaluation license, not a bundled paid license -- whoever's assigned needs to activate it with their own Windows 11 product key inside the VM for continued/production use.",
+  },
+  {
+    title: "Choose a size and region",
+    description:
+      "Bigger sizes cost more per hour but handle heavier use (Windows 11 specifically needs at least the 4 vCPU/8GB tier to run at all). Region affects both where the VM physically runs and which of our streaming gateways (Sydney, US, Europe, or Asia) it routes through -- pick whichever's actually closest to the person using it, not necessarily your own company's HQ.",
+  },
+  {
+    title: "Assign it to someone",
+    description:
+      "Each VM is assigned to exactly one company member, who's the only non-admin able to see and open it (admins can see and open every VM). Reassigning later is just a dropdown on the VM's row -- the underlying computer and its files aren't affected.",
+  },
+  {
+    title: "Wait for it to finish setting up",
+    description:
+      "A plain Ubuntu desktop is usually ready within a minute. AWS Windows + Office takes about 10-15 minutes. Windows 11 on DigitalOcean is the slowest -- it's installing a real copy of Windows from scratch, which takes roughly 75-90 minutes the first time. The status badge updates live; no need to keep refreshing.",
+  },
+  {
+    title: "Set computer awake time (optional, recommended)",
+    description:
+      "Turn this on to have VMs automatically sleep overnight and on weekends instead of running (and costing money) 24/7. \"Wake up at\" is when the computer should already be on and ready -- set it at least 2 hours before your team's actual start time, since especially Windows VMs can take a while to wake from a saved snapshot. There's always a midnight safety cutoff regardless of this setting.",
+  },
+  {
+    title: "Hibernating and waking",
+    description:
+      "When a VM goes idle outside its awake-time schedule, it hibernates: a snapshot of the exact machine state -- files, installed apps, everything -- gets saved, then the underlying compute shuts down so it stops costing money. \"Wake now\" restores a fresh instance from that snapshot, picking up right where it left off. Only one snapshot is ever kept per VM; a new one replaces the last automatically.",
+  },
+  {
+    title: "Destroying a VM",
+    description:
+      "This is permanent -- the computer, its files, and its saved snapshot (if any) are all deleted for good, and cannot be recovered afterward. Use this when someone's finished with a VM entirely, not as a way to save costs overnight (that's what the awake-time schedule above is for).",
+  },
+];
 
 interface Props {
   companyId: string;
@@ -127,6 +175,7 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
   const [actionMessage, setActionMessage] = useState<{ type: "info" | "success" | "error"; text: string } | null>(null);
   const [schedule, setSchedule] = useState<Schedule | null>(null);
   const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [vmHelpOpen, setVmHelpOpen] = useState(false);
 
   const notify = useCallback((type: "info" | "success" | "error", text: string, autoDismissMs = 6000) => {
     setActionMessage({ type, text });
@@ -546,7 +595,16 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
       {/* Create + list virtual computers */}
       <div className="bg-white border border-slate-200 rounded-[32px] p-6">
         <div className="flex items-center justify-between mb-4">
-          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Virtual computers</p>
+          <div className="flex items-center gap-2">
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Virtual computers</p>
+            <button
+              type="button"
+              onClick={() => setVmHelpOpen(true)}
+              className="flex items-center gap-1 text-[10px] font-bold text-indigo-600 hover:underline"
+            >
+              <HelpCircle size={12} /> How does this work?
+            </button>
+          </div>
           <button onClick={() => setShowCreateForm((v) => !v)} className="p-1.5 text-slate-300 hover:text-indigo-600 transition-colors">
             <Plus size={14} />
           </button>
@@ -856,6 +914,14 @@ export default function AdminVirtualComputersTab({ companyId }: Props) {
           </div>
         )}
       </div>
+
+      <CredentialsHelpDrawer
+        isOpen={vmHelpOpen}
+        onClose={() => setVmHelpOpen(false)}
+        title="How virtual computers work"
+        intro="A step-by-step walkthrough of the whole lifecycle, from adding a cloud account through to destroying a VM."
+        steps={VM_LIFECYCLE_STEPS}
+      />
     </div>
   );
 }
