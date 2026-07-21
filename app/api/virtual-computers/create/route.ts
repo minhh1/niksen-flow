@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
   if (!isAdmin) return NextResponse.json({ error: "Admin access required" }, { status: 403 });
 
   const body = await req.json().catch(() => null);
-  const { name, provider, sizeSlug, region, protocol, credentialId, assignedUserId } = body || {};
+  const { name, provider, sizeSlug, region, protocol, credentialId, assignedUserId, os: requestedOs } = body || {};
   const billingMode = body?.billingMode === "platform" ? "platform" : "byo";
 
   if (!PROVISIONABLE_PROVIDERS.includes(provider)) {
@@ -44,12 +44,33 @@ export async function POST(req: NextRequest) {
   }
 
   // AWS is Windows-only here (see lib/vmProviders/aws.ts), added specifically
-  // to preinstall Microsoft Office. Platform-billed Windows VMs are gated to
-  // the Pro plan only (see lib/billing/plans.ts) via the generic
-  // allowedSizes check below -- no special-casing needed here since a plan
-  // without an "aws" entry in allowedSizes already rejects every AWS
-  // sizeSlug the same way it would reject an unlisted DigitalOcean one.
-  const os: VmOs = provider === "aws" ? "windows" : "linux";
+  // to preinstall Microsoft Office. DigitalOcean, by contrast, offers
+  // Windows 11 as an explicit opt-in choice alongside its default Ubuntu
+  // desktop (see lib/vmProviders/digitalocean.ts's windowsCloudInitScript --
+  // a real Windows 11 install inside nested KVM via dockur/windows), so its
+  // `os` comes from the request rather than being implied by provider.
+  // Platform-billed Windows VMs are gated to the Pro plan only (see
+  // lib/billing/plans.ts) via the generic allowedSizes check below -- no
+  // special-casing needed here since a plan without a matching sizeSlug in
+  // its allowedSizes already rejects it the same way for every provider.
+  const os: VmOs = provider === "aws" ? "windows" : requestedOs === "windows" ? "windows" : "linux";
+
+  // dockur/windows needs meaningfully more resources than this repo's
+  // smallest DigitalOcean tier -- confirmed directly (this session's spike)
+  // that a real, usable unattended Windows 11 + Office install needs at
+  // least the s-4vcpu-8gb tier, not s-2vcpu-4gb.
+  const WINDOWS_CAPABLE_DO_SIZES = ["s-4vcpu-8gb", "s-8vcpu-16gb"];
+  if (provider === "digitalocean" && os === "windows" && !WINDOWS_CAPABLE_DO_SIZES.includes(sizeSlug)) {
+    return NextResponse.json(
+      { error: `Windows 11 needs at least the ${WINDOWS_CAPABLE_DO_SIZES[0]} size.` },
+      { status: 400 }
+    );
+  }
+  // dockur/windows only ever exposes RDP (3389), never VNC -- the UI forces
+  // this, but don't just trust the client for it.
+  if (os === "windows" && protocol !== "rdp") {
+    return NextResponse.json({ error: "Windows VMs must use the rdp protocol" }, { status: 400 });
+  }
 
   const sizeOption = PRICING[provider as CloudProviderId]?.find((s) => s.slug === sizeSlug);
   if (!sizeOption) return NextResponse.json({ error: "Unknown sizeSlug for provider" }, { status: 400 });

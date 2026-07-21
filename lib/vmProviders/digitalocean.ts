@@ -13,6 +13,7 @@ import type {
   VmProtocol,
   VmProvider,
 } from "./types";
+import { CHROME_DPI_FIX_SNIPPET, INSTALL_OFFICE_SNIPPET } from "./windowsProvisioning";
 
 const DO_API_URL = "https://api.digitalocean.com/v2";
 
@@ -190,6 +191,102 @@ ${writeFiles}runcmd:
 `;
 }
 
+function parseSizeSlug(sizeSlug: string): { vcpus: number; memoryGb: number } {
+  const match = /^s-(\d+)vcpu-(\d+)gb$/.exec(sizeSlug);
+  if (!match) throw new Error(`Cannot size a Windows 11 VM from unrecognized slug "${sizeSlug}".`);
+  return { vcpus: Number(match[1]), memoryGb: Number(match[2]) };
+}
+
+// A genuine Windows 11 install, running inside nested KVM on the droplet's
+// own Ubuntu host via dockur/windows (ghcr.io/dockur/windows) -- Guacamole
+// connects straight to its exposed RDP port (3389) the same way it already
+// connects to a native Windows Server EC2 instance or this file's own
+// Linux-desktop xrdp/VNC server above. No RemoteApp/individual-app-window
+// layer is involved here -- that's WinBoat's own wrapper around this same
+// image, built for a different use case (surfacing individual floating app
+// windows on someone's own Linux desktop), not needed for a full remote
+// desktop session.
+//
+// Confirmed directly, this session, on a real droplet: nested KVM works on
+// standard DO Basic droplets (DO doesn't officially support/recommend this,
+// though), and dockur/windows's OEM folder mechanism (mounted at ./oem,
+// copied to C:\OEM inside the guest) natively auto-executes
+// oem/install.bat once Windows finishes its own unattended setup -- reused
+// here to run the same Office install + Chrome DPI fix already used for
+// the AWS Windows path (see windowsProvisioning.ts), via a companion
+// PowerShell script the batch file just invokes.
+//
+// Sizing reserves 1 vCPU / 2GB for the Ubuntu host itself (Docker/QEMU
+// overhead is real even though no desktop is installed on the host side),
+// giving the rest to the Windows guest. DISK_SIZE is fixed at 80G -- safely
+// within either Windows-capable droplet size's actual disk allocation
+// (160GB/320GB on DO's s-4vcpu-8gb/s-8vcpu-16gb Basic tiers).
+//
+// Only ever called for a fresh create, never a snapshot restore -- see the
+// comment on the `fromSnapshotId` branch in createInstance below for why
+// waking from a snapshot needs no equivalent script at all.
+function windowsCloudInitScript(username: string, password: string, sizeSlug: string): string {
+  const { vcpus, memoryGb } = parseSizeSlug(sizeSlug);
+  const guestVcpus = Math.max(2, vcpus - 1);
+  const guestRamGb = Math.max(4, memoryGb - 2);
+  const escapedUsername = username.replace(/"/g, '\\"');
+  const escapedPassword = password.replace(/"/g, '\\"');
+
+  const provisionPs1 = `${CHROME_DPI_FIX_SNIPPET}
+
+${INSTALL_OFFICE_SNIPPET}`;
+  const provisionPs1B64 = Buffer.from(provisionPs1, "utf-8").toString("base64");
+
+  const composeFile = `  - path: /root/windows-vm/docker-compose.yml
+    content: |
+      services:
+        windows:
+          image: ghcr.io/dockur/windows:5.14
+          container_name: windows
+          environment:
+            VERSION: "11"
+            RAM_SIZE: "${guestRamGb}G"
+            CPU_CORES: "${guestVcpus}"
+            DISK_SIZE: "80G"
+            USERNAME: "${escapedUsername}"
+            PASSWORD: "${escapedPassword}"
+            LANGUAGE: "English"
+          cap_add:
+            - NET_ADMIN
+          devices:
+            - /dev/kvm
+          ports:
+            - "3389:3389/tcp"
+            - "3389:3389/udp"
+            - "8006:8006"
+          volumes:
+            - /root/windows-vm/data:/storage
+            - /root/windows-vm/oem:/oem
+          restart: unless-stopped
+          stop_grace_period: 2m
+`;
+
+  const installBat = `  - path: /root/windows-vm/oem/install.bat
+    content: |
+      @echo off
+      powershell -ExecutionPolicy Bypass -File C:\\OEM\\provision.ps1
+`;
+
+  const provisionScript = `  - path: /root/windows-vm/oem/provision.ps1
+    encoding: b64
+    content: ${provisionPs1B64}
+`;
+
+  return `#cloud-config
+write_files:
+${composeFile}${installBat}${provisionScript}runcmd:
+  - mkdir -p /root/windows-vm/data /root/windows-vm/oem
+  - curl -fsSL https://get.docker.com | sh
+  - systemctl enable --now docker
+  - docker compose -f /root/windows-vm/docker-compose.yml up -d
+`;
+}
+
 async function doFetch(credentials: ProviderCredentials, path: string, init?: RequestInit): Promise<Response> {
   const token = credentials.api_token;
   if (!token) throw new Error("Missing DigitalOcean api_token credential.");
@@ -231,15 +328,34 @@ export const digitalOceanProvider: VmProvider = {
   id: "digitalocean",
 
   async createInstance(params: CreateInstanceParams): Promise<CreateInstanceResult> {
-    // Restoring from a snapshot: the disk already has the desktop/VNC/RDP
-    // server and extra apps installed, so re-running the full cloud-init
-    // provisioning script would be redundant (and, per the systemd-unit
-    // gotchas documented above, has a history of subtly breaking things
-    // when run more than once). Just re-set the password so the stored
-    // remote_password still works, nothing else.
     let image: string;
     let userData: string;
-    if (params.fromSnapshotId) {
+    if (params.os === "windows") {
+      // Restoring from a snapshot: the disk already has Docker + the
+      // dockur/windows container's compose file (with its USERNAME/PASSWORD
+      // env vars already baked in from the original create) on it, and
+      // Docker's `restart: unless-stopped` plus a systemd-enabled Docker
+      // daemon bring the container back automatically once the droplet
+      // itself boots -- unlike the Linux desktop path below, there's no
+      // Linux user account here matching remoteUsername/remotePassword to
+      // re-sync (those are the *Windows guest's* credentials, set once
+      // during its own unattended install, not a host-level account), so
+      // no user_data is needed at all on restore.
+      if (params.fromSnapshotId) {
+        image = params.fromSnapshotId;
+        userData = "#cloud-config\n";
+      } else {
+        const ubuntu = await resolveLatestUbuntuLts(params.credentials);
+        image = ubuntu.slug;
+        userData = windowsCloudInitScript(params.remoteUsername, params.remotePassword, params.sizeSlug);
+      }
+    } else if (params.fromSnapshotId) {
+      // Restoring from a snapshot: the disk already has the desktop/VNC/RDP
+      // server and extra apps installed, so re-running the full cloud-init
+      // provisioning script would be redundant (and, per the systemd-unit
+      // gotchas documented above, has a history of subtly breaking things
+      // when run more than once). Just re-set the password so the stored
+      // remote_password still works, nothing else.
       image = params.fromSnapshotId;
       userData = `#cloud-config\nruncmd:\n  - echo '${params.remoteUsername.replace(/'/g, "'\\''")}:${params.remotePassword.replace(/'/g, "'\\''")}' | chpasswd\n`;
     } else {
