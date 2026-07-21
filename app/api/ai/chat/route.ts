@@ -24,6 +24,7 @@ interface ChatMessage {
 interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
+  content: string;
 }
 
 interface MatchedChunk {
@@ -55,9 +56,24 @@ export async function POST(req: NextRequest) {
   const modelId: string | undefined = body?.modelId;
   const provider: "hosted" | "self_hosted" | undefined = body?.provider;
   const history: ChatMessage[] = Array.isArray(body?.history) ? body.history : [];
+  const conversationId: string | undefined = body?.conversationId;
 
   if (!question || !modelId || !provider) {
     return new Response(JSON.stringify({ error: "question, modelId, and provider are required" }), { status: 400 });
+  }
+
+  // Persisted so a conversation survives a refresh/reopen (see
+  // supabase/ai_conversations.sql, supabase/ai_messages.sql) -- the id is
+  // client-generated, so the first message in a new chat creates the
+  // conversation row here rather than needing a separate create call.
+  if (conversationId) {
+    await admin
+      .from("ai_conversations")
+      .upsert(
+        { id: conversationId, company_id: companyId, user_id: user.id, updated_at: new Date().toISOString() },
+        { onConflict: "id", ignoreDuplicates: false }
+      );
+    await admin.from("ai_messages").insert({ conversation_id: conversationId, role: "user", content: question });
   }
 
   const { data: settings } = await admin
@@ -139,7 +155,7 @@ export async function POST(req: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       controller.enqueue(ndjson({ citations, retrievalError }));
-      let usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+      let usage: TokenUsage = { inputTokens: 0, outputTokens: 0, content: "" };
       try {
         usage =
           provider === "hosted"
@@ -147,6 +163,12 @@ export async function POST(req: NextRequest) {
             : await streamSelfHosted(ollamaUrl!, modelId, messages, controller);
       } catch (err) {
         controller.enqueue(ndjson({ error: err instanceof Error ? err.message : String(err) }));
+      }
+
+      if (conversationId && usage.content) {
+        await admin
+          .from("ai_messages")
+          .insert({ conversation_id: conversationId, role: "assistant", content: usage.content, citations });
       }
 
       const cost = costUsd(provider, modelId, usage);
@@ -176,7 +198,7 @@ async function streamHosted(modelId: string, messages: unknown[], controller: Re
   });
   if (!res.ok || !res.body) throw new Error(`Together chat completion failed: ${res.status} ${await res.text()}`);
 
-  const usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+  const usage: TokenUsage = { inputTokens: 0, outputTokens: 0, content: "" };
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -193,7 +215,10 @@ async function streamHosted(modelId: string, messages: unknown[], controller: Re
       if (payload === "[DONE]") return usage;
       const json = JSON.parse(payload);
       const delta = json.choices?.[0]?.delta?.content;
-      if (delta) controller.enqueue(ndjson({ delta }));
+      if (delta) {
+        controller.enqueue(ndjson({ delta }));
+        usage.content += delta;
+      }
       if (json.usage) {
         usage.inputTokens = json.usage.prompt_tokens ?? 0;
         usage.outputTokens = json.usage.completion_tokens ?? 0;
@@ -211,7 +236,7 @@ async function streamSelfHosted(ollamaUrl: string, modelId: string, messages: un
   });
   if (!res.ok || !res.body) throw new Error(`Ollama chat completion failed: ${res.status} ${await res.text()}`);
 
-  const usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
+  const usage: TokenUsage = { inputTokens: 0, outputTokens: 0, content: "" };
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -225,7 +250,10 @@ async function streamSelfHosted(ollamaUrl: string, modelId: string, messages: un
       if (!line.trim()) continue;
       const json = JSON.parse(line);
       const delta = json.message?.content;
-      if (delta) controller.enqueue(ndjson({ delta }));
+      if (delta) {
+        controller.enqueue(ndjson({ delta }));
+        usage.content += delta;
+      }
       if (json.done) {
         usage.inputTokens = json.prompt_eval_count ?? 0;
         usage.outputTokens = json.eval_count ?? 0;
