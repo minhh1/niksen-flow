@@ -10,11 +10,15 @@
 // sentence-window chunking isn't needed yet. Revisit if a source ever
 // produces multi-page content (e.g. long document attachments).
 //
-// Embedding path: platform-hosted (Together AI's BAAI/bge-base-en-v1.5) if
-// TOGETHER_API_KEY is set, otherwise the company's self-hosted Ollama
-// (nomic-embed-text) from ai_chat_settings.self_hosted_ollama_url. Both are
-// 768-dimensional so either can write into the same vector column -- see
-// the comment on ai_document_chunks.embedding.
+// Embedding path: platform-hosted (Together AI's
+// intfloat/multilingual-e5-large-instruct -- its only serverless embedding
+// model, confirmed 2026-07-21 against docs.together.ai/docs/serverless-models,
+// 1024-dim) if TOGETHER_API_KEY is set, otherwise the company's self-hosted
+// Ollama (mxbai-embed-large) from ai_chat_settings.self_hosted_ollama_url.
+// ai_document_chunks.embedding is vector(1024) to match the hosted path --
+// a self-hosted model that doesn't also output 1024 dims will fail the
+// insert below, which is caught per-company and recorded as an error
+// rather than crashing the whole run.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const db = createClient(
@@ -43,7 +47,7 @@ async function embedTexts(texts: string[], ollamaUrl: string | null): Promise<(n
     const res = await fetch("https://api.together.xyz/v1/embeddings", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOGETHER_API_KEY}` },
-      body: JSON.stringify({ model: "BAAI/bge-base-en-v1.5", input: texts }),
+      body: JSON.stringify({ model: "intfloat/multilingual-e5-large-instruct", input: texts }),
     });
     if (!res.ok) throw new Error(`Together embeddings failed: ${res.status} ${await res.text()}`);
     const json = await res.json();
@@ -56,7 +60,7 @@ async function embedTexts(texts: string[], ollamaUrl: string | null): Promise<(n
       const res = await fetch(`${ollamaUrl}/api/embeddings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "nomic-embed-text", prompt: text }),
+        body: JSON.stringify({ model: "mxbai-embed-large", prompt: text }),
       });
       if (!res.ok) {
         embeddings.push(null);

@@ -39,7 +39,7 @@ CREATE POLICY ai_chat_settings_company_members ON ai_chat_settings
 CREATE OR REPLACE FUNCTION match_ai_document_chunks(
   p_company_id uuid,
   p_source_types text[],
-  p_query_embedding vector(768),
+  p_query_embedding vector(1024),
   p_match_count int DEFAULT 8
 ) RETURNS TABLE (
   id uuid,

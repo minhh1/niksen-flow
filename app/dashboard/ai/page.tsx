@@ -42,6 +42,7 @@ export default function AiAssistantPage() {
   const [sending, setSending] = useState(false);
   const [usage, setUsage] = useState<Usage | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retrievalWarning, setRetrievalWarning] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const loadModels = useCallback(async () => {
@@ -76,6 +77,7 @@ export default function AiAssistantPage() {
     if (!selected) return;
 
     setError(null);
+    setRetrievalWarning(null);
     setInput("");
     const history = messages.map((m) => ({ role: m.role, content: m.content }));
     setMessages((prev) => [...prev, { role: "user", content: question }, { role: "assistant", content: "" }]);
@@ -115,6 +117,7 @@ export default function AiAssistantPage() {
               return next;
             });
           }
+          if (evt.retrievalError) setRetrievalWarning(evt.retrievalError);
           if (evt.error) setError(evt.error);
         }
       }
@@ -205,6 +208,11 @@ export default function AiAssistantPage() {
 
       <footer className="bg-white border-t border-slate-100 shrink-0 px-8 py-6">
         <div className="max-w-3xl mx-auto">
+          {retrievalWarning && (
+            <p className="flex items-center gap-1.5 text-[11px] text-amber-600 mb-2">
+              <AlertTriangle size={12} /> Answered without grounding context -- retrieval failed: {retrievalWarning}
+            </p>
+          )}
           {error && (
             <p className="flex items-center gap-1.5 text-[11px] text-red-500 mb-2">
               <AlertTriangle size={12} /> {error}

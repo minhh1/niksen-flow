@@ -97,24 +97,36 @@ export async function POST(req: NextRequest) {
 
   let citations: { sourceType: string; sourceUrl: string | null; snippet: string }[] = [];
   let contextBlock = "";
+  let retrievalError: string | null = null;
 
+  // Retrieval failures (bad embedding provider config, a dimension
+  // mismatch, Together/Ollama being briefly unreachable) shouldn't take
+  // down the whole chat request -- degrade to an ungrounded answer instead
+  // of a hard failure, but surface the error so it's visible rather than
+  // silently wrong.
   if (sourceTypes.length > 0) {
-    const queryEmbedding = await embedQuery(question, ollamaUrl);
-    if (queryEmbedding) {
-      const { data: matches } = await admin.rpc("match_ai_document_chunks", {
-        p_company_id: companyId,
-        p_source_types: sourceTypes,
-        p_query_embedding: queryEmbedding,
-        p_match_count: 8,
-      });
-      citations = (matches ?? []).map((m: MatchedChunk) => ({
-        sourceType: m.source_type,
-        sourceUrl: m.source_url,
-        snippet: m.content.slice(0, 200),
-      }));
-      contextBlock = (matches ?? [])
-        .map((m: MatchedChunk, i: number) => `[${i + 1}] (${m.source_type}) ${m.content}`)
-        .join("\n\n");
+    try {
+      const queryEmbedding = await embedQuery(question, ollamaUrl);
+      if (queryEmbedding) {
+        const { data: matches, error: rpcError } = await admin.rpc("match_ai_document_chunks", {
+          p_company_id: companyId,
+          p_source_types: sourceTypes,
+          p_query_embedding: queryEmbedding,
+          p_match_count: 8,
+        });
+        if (rpcError) throw new Error(rpcError.message);
+        citations = (matches ?? []).map((m: MatchedChunk) => ({
+          sourceType: m.source_type,
+          sourceUrl: m.source_url,
+          snippet: m.content.slice(0, 200),
+        }));
+        contextBlock = (matches ?? [])
+          .map((m: MatchedChunk, i: number) => `[${i + 1}] (${m.source_type}) ${m.content}`)
+          .join("\n\n");
+      }
+    } catch (err) {
+      retrievalError = err instanceof Error ? err.message : String(err);
+      console.error("AI chat retrieval failed, continuing without grounding context:", retrievalError);
     }
   }
 
@@ -126,7 +138,7 @@ export async function POST(req: NextRequest) {
 
   const stream = new ReadableStream({
     async start(controller) {
-      controller.enqueue(ndjson({ citations }));
+      controller.enqueue(ndjson({ citations, retrievalError }));
       let usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
       try {
         usage =

@@ -14,12 +14,18 @@
 -- source_url is a deep link back into the app so chat answers can cite
 -- their source (e.g. /dashboard/projects?id=... ).
 --
--- Embedding dimension is fixed at 768 -- both embedding paths ai-embed-worker
--- uses are chosen to match: the hosted provider's BAAI/bge-base-en-v1.5 and
--- a self-hosted Ollama's nomic-embed-text are both 768-dimensional, so
--- either path can write into this same column. If the configured embedding
--- model ever changes to a different dimension, this column and its index
--- must be recreated to match (pgvector requires a fixed size).
+-- Embedding dimension is fixed at 1024, matching Together AI's only
+-- serverless embedding model (intfloat/multilingual-e5-large-instruct,
+-- confirmed 2026-07-21 against docs.together.ai/docs/serverless-models --
+-- an earlier version of this comment claimed BAAI/bge-base-en-v1.5, which
+-- was never a real Together model and caused every chat request to crash).
+-- The self-hosted default (mxbai-embed-large, see lib/ai/embeddings.ts) is
+-- assumed to also produce 1024-dim vectors, but isn't independently
+-- verified the same way -- a mismatched self-hosted model fails the
+-- embed/insert cleanly (caught in app/api/ai/chat/route.ts and per-company
+-- in ai-embed-worker) rather than corrupting data. If the configured
+-- embedding model ever changes dimension, this column and its index must
+-- be recreated to match (pgvector requires a fixed size).
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS ai_document_chunks (
@@ -29,7 +35,7 @@ CREATE TABLE IF NOT EXISTS ai_document_chunks (
   source_id text NOT NULL,
   source_url text,
   content text NOT NULL,
-  embedding vector(768) NOT NULL,
+  embedding vector(1024) NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (company_id, source_type, source_id)
 );

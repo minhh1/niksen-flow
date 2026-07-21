@@ -150,7 +150,7 @@ function GenericMasterTableInner({
   const [activeViewName, setActiveViewName] = useState<string | null>(null);
   const [isSpreadsheetOpen, setIsSpreadsheetOpen] = useState(false);
 
-  const schema = useTableSchema(tableName);
+  const schema = useTableSchema(tableName, ctxCompanyId);
   const relationalEditCols = useRelationalEditFields(schema.relationalEditCols);
   const relatedFields = useRelatedFields(tableName);
 

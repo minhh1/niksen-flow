@@ -50,31 +50,46 @@ function deriveFieldType(col: ColumnMeta): FieldConfig['type'] {
   }
 }
 
-export function useTableSchema(tableName: string): TableSchema {
+export function useTableSchema(tableName: string, externalCompanyId?: string | null): TableSchema {
+  // When a caller already has companyId from a shared context (e.g.
+  // CompanyContext, which every dashboard page mounts anyway), pass it in
+  // so this hook can skip its own auth.getUser() + profiles round trip —
+  // otherwise every consumer duplicates that same identity lookup on every
+  // mount, racing CompanyContext's own fetch for no benefit.
+  const usingExternalCompanyId = externalCompanyId !== undefined;
+
   // Lazy initializers run synchronously on first render (unlike useEffect,
   // which always waits a tick) — so a table already visited this session
   // renders with its real schema immediately instead of flashing "loading"
   // for one frame on every remount (e.g. switching Properties → Entities).
   const [all, setAll] = useState<ColumnMeta[]>(() => {
+    if (usingExternalCompanyId) {
+      return externalCompanyId ? (getCachedSchemaMetadata(tableName, externalCompanyId) ?? []) : [];
+    }
     const { resolved, companyId: cid } = getCachedCompanyIdSync();
     return resolved ? (getCachedSchemaMetadata(tableName, cid) ?? []) : [];
   });
   const [companyId, setCompanyId] = useState<string | null>(() => {
+    if (usingExternalCompanyId) return externalCompanyId ?? null;
     const { resolved, companyId: cid } = getCachedCompanyIdSync();
     return resolved ? cid : null;
   });
   const [loading, setLoading] = useState(() => {
+    if (usingExternalCompanyId) {
+      return !externalCompanyId || getCachedSchemaMetadata(tableName, externalCompanyId) === null;
+    }
     const { resolved, companyId: cid } = getCachedCompanyIdSync();
     return !resolved || getCachedSchemaMetadata(tableName, cid) === null;
   });
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (usingExternalCompanyId && !externalCompanyId) return; // wait for the shared context to resolve
     let active = true;
 
     (async () => {
       try {
-        const cid = await getCompanyId();
+        const cid = usingExternalCompanyId ? externalCompanyId! : await getCompanyId();
         const cols = await getSchemaMetadata(tableName, cid);
         if (active) {
           setCompanyId(cid);
@@ -90,7 +105,7 @@ export function useTableSchema(tableName: string): TableSchema {
     })();
 
     return () => { active = false; };
-  }, [tableName]); // only tableName — getCompanyId/getSchemaMetadata are stable cached functions
+  }, [tableName, usingExternalCompanyId, externalCompanyId]);
 
   const displayable = useMemo(() =>
     all.filter(c => (c.category === 'data' || c.category === 'relation') && !c.is_hidden),
