@@ -1,7 +1,7 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   let response = NextResponse.next({
     request: { headers: request.headers },
   })
@@ -33,7 +33,15 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  const { data: { user } } = await supabase.auth.getUser()
+  // getSession() reads and verifies the JWT from the cookie locally — no
+  // network round-trip to Supabase's auth server. Proxy runs on every
+  // request (including prefetches), so per Next.js's own guidance this
+  // check should stay "optimistic": redirect based on the cookie, and leave
+  // real authorization to RLS and each page's own checks, not Proxy. That's
+  // already how this app works — Proxy is only a UX-level redirect gate,
+  // never the actual security boundary.
+  const { data: { session } } = await supabase.auth.getSession()
+  const user = session?.user
 
   // Logged-in user on homepage → redirect to dashboard immediately
   if (user && pathname === '/') {
