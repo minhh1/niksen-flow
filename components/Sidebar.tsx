@@ -656,6 +656,10 @@ export default function Sidebar() {
   // Seeded from the current page so landing on e.g. /dashboard/admin opens
   // straight to the Admin panel rather than defaulting to Tables.
   const [activeRailSection, setActiveRailSection] = useState<RailSection | null>(() => {
+    // Marketplace is a plain link (no second-level panel of its own), so it
+    // must seed no panel at all — otherwise landing here directly leaves
+    // Tables' panel open behind it, and the two look simultaneously "active".
+    if (pathname.startsWith('/dashboard/marketplace')) return null;
     if (pathname.includes('/admin')) return 'admin';
     if (pathname.includes('/settings') || pathname.includes('/billing')) return 'settings';
     if (
@@ -1002,7 +1006,7 @@ export default function Sidebar() {
             onClick={() => { if (!pathname.startsWith('/dashboard/marketplace')) startNavigation(); setActiveRailSection(null); }}
             title="Marketplace" aria-label="Marketplace"
             className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-all ${
-              pathname.startsWith('/dashboard/marketplace') ? 'bg-slate-900 text-white' : 'text-slate-400 hover:bg-slate-50 hover:text-slate-700'
+              pathname.startsWith('/dashboard/marketplace') && !activeRailSection ? 'bg-slate-900 text-white' : 'text-slate-400 hover:bg-slate-50 hover:text-slate-700'
             }`}
           >
             <Store size={17} />
