@@ -1241,9 +1241,11 @@ export default function Sidebar() {
                   {/* Not highlighted even when no named view is selected —
                       filters auto-save without one, so "no view selected"
                       doesn't mean "no filter active" and shouldn't look
-                      like a selected/active state. */}
+                      like a selected/active state. Always navigates (not
+                      gated on activeViewId) since it needs to clear ad-hoc
+                      filters too, not just drop a named view selection. */}
                   <button
-                    onClick={() => { if (activeViewId) { startNavigation(); router.push(`/dashboard/${mode}`); } }}
+                    onClick={() => { startNavigation(); router.push(`/dashboard/${mode}?clearFilters=1`); }}
                     className="w-full flex items-center px-3 py-2 rounded-2xl text-[12px] transition-all text-slate-500 hover:bg-slate-50 hover:text-slate-900 font-medium"
                   >
                     All (no filter)

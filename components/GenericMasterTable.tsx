@@ -132,6 +132,10 @@ function GenericMasterTableInner({
   const searchParams = useSearchParams();
   const selectedId = searchParams.get("id");
   const viewId = searchParams.get("view");
+  // Sidebar's "All (no filter)" sets this to signal a real reset — dropping
+  // just ?view= only clears the *named view* selection, it doesn't touch
+  // ad-hoc filters auto-saved without one (the common case).
+  const clearFiltersSignal = searchParams.get("clearFilters");
 
   // Use shared company context — avoids duplicate auth call with Sidebar
   const { companyId: ctxCompanyId, isAdmin: ctxIsAdmin, userId: ctxUserId } = useCompany();
@@ -359,6 +363,16 @@ function GenericMasterTableInner({
       startProgress(); // covers view switches — data stays visible while this resolves
 
       try {
+        if (clearFiltersSignal) {
+          setActiveViewName(null);
+          setFilters([]);
+          if (ctxUserId && ctxCompanyId) {
+            await savedViewsService.saveDefaultFilters(ctxUserId, ctxCompanyId, tableName, []);
+          }
+          router.replace(`/dashboard/${tableName}`);
+          return;
+        }
+
         if (!viewId) {
           setActiveViewName(null);
           if (ctxUserId && ctxCompanyId) {
@@ -380,7 +394,7 @@ function GenericMasterTableInner({
       }
     };
     loadFilters();
-  }, [viewId, ctxUserId, ctxCompanyId, tableName, startProgress, doneProgress]);
+  }, [viewId, clearFiltersSignal, ctxUserId, ctxCompanyId, tableName, startProgress, doneProgress, router]);
 
   useEffect(() => {
     if (!filtersReadyToSave.current) return;  // ← skip saves during load
