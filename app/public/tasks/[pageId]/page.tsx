@@ -223,19 +223,24 @@ export default function PublicTaskPage() {
     })();
   };
 
-  // Manually override which organised-view bucket a task sits in.
+  // Manually override which organised-view bucket a task sits in — scoped
+  // to the tab it was moved in (the same task can be "Action" for the
+  // assignee and "Watching" for someone just watching it), not the task
+  // globally.
   const moveTaskGroup = async (task: Task, group: TaskGroup) => {
+    const forUserId = activeTab;
+    if (!forUserId) return;
     setData(prev => prev ? {
       ...prev,
-      tabs: prev.tabs.map(tab => ({
+      tabs: prev.tabs.map(tab => tab.userId !== forUserId ? tab : {
         ...tab,
         tasks: tab.tasks.map(t => t.id === task.id ? { ...t, taskGroup: group } : t),
-      })),
+      }),
     } : prev);
     const res = await fetch(`/api/public-tasks/${pageId}/tasks/${task.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ taskGroup: group }),
+      body: JSON.stringify({ taskGroup: group, forUserId }),
     });
     if (!res.ok) refresh();
   };

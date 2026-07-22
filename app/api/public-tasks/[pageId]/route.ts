@@ -27,7 +27,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
   const TASK_SELECT = `
       id, name, due_date, due_time, is_completed, completed_at, estimated_cost, date_entered, assignee_id, project_id,
       status_id, assigned_team_id, is_monetary, created_by, awaiting_follow_up, follow_up_date, notes, source_message_id,
-      source_email_subject, source_email_body, task_group,
+      source_email_subject, source_email_body,
       assignee:assignee_id(id, full_name, email),
       creator:created_by(id, full_name, email),
       project:project_id(id, name),
@@ -103,6 +103,19 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
     }
   }
 
+  // ── Organised-view classification, per (task, whose tab it's in) ──
+  // The same task can be "Action" in the assignee's tab and "Watching" in
+  // a watcher's tab, so this isn't a single value on the task itself.
+  let taskGroupByTaskAndUser: Record<string, string> = {};
+  if (tasks?.length) {
+    const { data: overrides } = await admin
+      .from("task_group_overrides").select("task_id, profile_id, task_group")
+      .in("task_id", tasks.map((t: any) => t.id));
+    for (const o of overrides || []) {
+      taskGroupByTaskAndUser[`${o.task_id}:${o.profile_id}`] = o.task_group;
+    }
+  }
+
   // ── Group into tabs, one per target user ────────────────────────
   const { data: targetProfiles } = await admin
     .from("profiles").select("id, full_name, email").in("id", targetUserIds.length ? targetUserIds : ["00000000-0000-0000-0000-000000000000"]);
@@ -138,7 +151,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
           followUps: followUpsByTask[t.id] || [],
           isWatcher: t.assignee_id !== p.id,
           watcherIds: watchersByTask[t.id] || [],
-          taskGroup: t.task_group,
+          taskGroup: taskGroupByTaskAndUser[`${t.id}:${p.id}`] || null,
         })),
     }))
     .sort((a: any, b: any) => a.userName.localeCompare(b.userName));

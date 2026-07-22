@@ -50,7 +50,6 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ pa
   if (body.awaitingFollowUp !== undefined) update.awaiting_follow_up = !!body.awaitingFollowUp;
   if (body.followUpDate !== undefined) update.follow_up_date = body.followUpDate || null;
   if (body.notes !== undefined) update.notes = body.notes || null;
-  if (body.taskGroup !== undefined) update.task_group = body.taskGroup || null;
   if (body.assigneeId !== undefined) {
     if (body.assigneeId && !targetUserIds.includes(body.assigneeId)) {
       return NextResponse.json({ error: "Assignee is outside this page's scope" }, { status: 400 });
@@ -58,7 +57,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ pa
     update.assignee_id = body.assigneeId || null;
   }
 
-  if (Object.keys(update).length === 0 && body.watcherIds === undefined) {
+  if (Object.keys(update).length === 0 && body.watcherIds === undefined && body.taskGroup === undefined) {
     return NextResponse.json({ error: "No fields to update" }, { status: 400 });
   }
 
@@ -71,6 +70,22 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ pa
     await saveTaskWatchers(admin, { taskId, companyId: page.company_id, newIds: body.watcherIds, actorId: user.id });
   }
 
+  // Organised-view classification — scoped to whichever tab (assignee or
+  // watcher) it was moved in, not the task globally, so the same task can
+  // sit in different buckets for different people.
+  if (body.taskGroup !== undefined) {
+    const forUserId = body.forUserId;
+    if (!forUserId || !targetUserIds.includes(forUserId)) {
+      return NextResponse.json({ error: "Missing or invalid forUserId" }, { status: 400 });
+    }
+    if (body.taskGroup) {
+      await admin.from("task_group_overrides")
+        .upsert({ task_id: taskId, company_id: page.company_id, profile_id: forUserId, task_group: body.taskGroup, updated_at: new Date().toISOString() }, { onConflict: "task_id,profile_id" });
+    } else {
+      await admin.from("task_group_overrides").delete().eq("task_id", taskId).eq("profile_id", forUserId);
+    }
+  }
+
   const bodyKeys = Object.keys(body);
   if (bodyKeys.length === 1 && body.isCompleted !== undefined) {
     await logTaskActivity(admin, { taskId, companyId: page.company_id, actorId: user.id, action: body.isCompleted ? "completed" : "reopened" });
@@ -80,7 +95,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ pa
       action: body.awaitingFollowUp ? "follow_up_set" : "follow_up_cleared",
       detail: body.awaitingFollowUp && body.followUpDate ? `follow-up date: ${body.followUpDate}` : null,
     });
-  } else if (bodyKeys.length === 1 && body.taskGroup !== undefined) {
+  } else if (bodyKeys.length === 2 && body.taskGroup !== undefined && body.forUserId !== undefined) {
     const label = body.taskGroup ? TASK_GROUP_LABELS[body.taskGroup as TaskGroup] || body.taskGroup : "auto";
     await logTaskActivity(admin, { taskId, companyId: page.company_id, actorId: user.id, action: "updated", detail: `moved to "${label}"` });
   } else {
