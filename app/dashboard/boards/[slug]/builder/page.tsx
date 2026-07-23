@@ -30,7 +30,7 @@ export default function DashboardBuilderPage() {
   const router = useRouter();
   const slugParam = params.slug as string;
   const isNew = slugParam === 'new';
-  const { companyId, userId, isAdmin, loading: companyLoading } = useCompany();
+  const { companyId, userId } = useCompany();
   const { tables } = useCustomTables();
 
   const [loading, setLoading] = useState(!isNew);
@@ -133,7 +133,7 @@ export default function DashboardBuilderPage() {
       if (err) { setError(err.message); return; }
       if (data) {
         logSchemaChange({ companyId, actorId: userId, entityType: 'company_dashboard', entityId: data.id, entityLabel: data.name, action: 'create', after: data });
-        router.push(`/dashboard/boards/${data.slug}`);
+        router.push(`/dashboard/dashboards/${data.slug}`);
       }
       return;
     }
@@ -143,7 +143,7 @@ export default function DashboardBuilderPage() {
     if (err) { setError(err.message); return; }
     if (data && before) {
       logSchemaChange({ companyId, actorId: userId, entityType: 'company_dashboard', entityId: dashboardId!, entityLabel: data.name, action: 'update', before, after: data });
-      router.push(`/dashboard/boards/${data.slug}`);
+      router.push(`/dashboard/dashboards/${data.slug}`);
     }
   };
 
@@ -155,11 +155,8 @@ export default function DashboardBuilderPage() {
     router.push('/dashboard/properties');
   };
 
-  if (loading || companyLoading) {
+  if (loading) {
     return null;
-  }
-  if (!isAdmin) {
-    return <p className="text-center text-[12px] text-slate-400 py-20">Only company admins can build or delete dashboards.</p>;
   }
 
   const canSave = !saving && !!name.trim() && !!sourceTableId && !(builderMode === 'code' && codeErrors.length > 0);
