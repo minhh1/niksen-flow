@@ -20,6 +20,7 @@ import TaskHistoryTab from "@/components/TaskHistoryTab";
 
 interface Task {
   id: string; name: string; isCompleted: boolean; completedAt: string | null;
+  assigneeId: string | null;
   dueDate: string | null; dueTime: string | null;
   projectId: string | null; projectName: string | null; matterNumber: string | null;
   statusId: string | null; status: string | null; statusColor: string | null;
@@ -607,7 +608,7 @@ function TaskModal({ pageId, formOptions, defaultAssigneeId, task, saving, setSa
   const [dueDate, setDueDate] = useState(task?.dueDate || "");
   const [dueTime, setDueTime] = useState(task?.dueTime ? task.dueTime.slice(0, 5) : "09:00");
   const [teamId, setTeamId] = useState(task?.teamId || "");
-  const [assigneeId, setAssigneeId] = useState(defaultAssigneeId || "");
+  const [assigneeId, setAssigneeId] = useState(task ? (task.assigneeId || "") : (defaultAssigneeId || ""));
   const [watcherIds, setWatcherIds] = useState<string[]>(task?.watcherIds || []);
   const [notes, setNotes] = useState(task?.notes || "");
   const [error, setError] = useState<string | null>(null);
@@ -621,9 +622,9 @@ function TaskModal({ pageId, formOptions, defaultAssigneeId, task, saving, setSa
     setError(null);
     const body: any = {
       name, dueDate: dueDate || null, dueTime: dueTime || null, teamId: teamId || null,
-      notes: notes.trim() || null, watcherIds,
+      notes: notes.trim() || null, watcherIds, assigneeId: assigneeId || null,
     };
-    if (!isEdit) { body.projectId = project!.id; body.assigneeId = assigneeId || null; }
+    if (!isEdit) { body.projectId = project!.id; }
     const res = await fetch(`/api/public-tasks/${pageId}${isEdit ? `/tasks/${task!.id}` : ""}`, {
       method: isEdit ? "PATCH" : "POST",
       headers: { "Content-Type": "application/json" },
@@ -700,7 +701,7 @@ function TaskModal({ pageId, formOptions, defaultAssigneeId, task, saving, setSa
                 className="w-full px-4 py-2.5 border border-slate-200 rounded-full text-[13px] outline-none" />
             </div>
           </div>
-          {!isEdit && formOptions.assignees.length > 1 && (
+          {formOptions.assignees.length > 0 && (
             <div>
               <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Assignee</p>
               <select value={assigneeId} onChange={e => setAssigneeId(e.target.value)}

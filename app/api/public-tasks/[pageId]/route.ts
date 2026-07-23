@@ -138,6 +138,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
 
   const mapTask = (t: any, isWatcher: boolean, tabUserId: string) => ({
     id: t.id, name: t.name, isCompleted: t.is_completed, completedAt: t.completed_at,
+    assigneeId: t.assignee_id,
     dueDate: t.due_date ? String(t.due_date).slice(0, 10) : null,
     dueTime: t.due_time,
     projectId: t.project_id,
