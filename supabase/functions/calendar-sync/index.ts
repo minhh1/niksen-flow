@@ -223,7 +223,7 @@ Deno.serve(async (req) => {
     // Fetch task with all related data
     const { data: task, error: taskErr } = await db.from("tasks")
       .select(`
-        id, name, due_date, due_time, is_completed, calendar_event_id, calendar_target, company_calendar_event_id,
+        id, name, due_date, due_time, is_completed, calendar_event_id, calendar_target, company_calendar_event_id, sync_to_company_calendar,
         company_id, project_id,
         assignee:assignee_id(id, email, full_name),
         project:project_id(id, name)
@@ -259,7 +259,11 @@ Deno.serve(async (req) => {
     }
 
     let companyAuth: { token: string; userId: string } | null = null;
-    if (company?.sync_tasks_to_company_calendar && company.gmail_source_emails?.length) {
+    const wantsCompanySync = !!company?.sync_tasks_to_company_calendar || !!task.sync_to_company_calendar;
+    // Also resolve this if a company-calendar copy already exists, even if
+    // the setting/flag has since been turned off — otherwise a delete or
+    // complete action can't clean up the now-orphaned copy.
+    if ((wantsCompanySync || task.company_calendar_event_id) && company?.gmail_source_emails?.length) {
       companyAuth = await getTokenByEmail(company.gmail_source_emails[0]);
       if (!companyAuth) console.log("[calendar] company source email hasn't connected Google Calendar");
     }
@@ -353,7 +357,13 @@ Deno.serve(async (req) => {
       if (eventId) { dbUpdate.calendar_event_id = eventId; anySynced = true; }
     }
 
-    if (companyAuth) {
+    if (companyAuth && !wantsCompanySync && task.company_calendar_event_id) {
+      // The company-wide setting and this task's own flag are both off,
+      // but a copy exists from before — remove the now-unwanted copy.
+      await deleteCalendarEvent(companyAuth.token, "primary", task.company_calendar_event_id);
+      dbUpdate.company_calendar_event_id = null;
+      anySynced = true;
+    } else if (companyAuth && wantsCompanySync) {
       let companyEventId = task.company_calendar_event_id;
       if (companyEventId) {
         const updated = await updateCalendarEvent(companyAuth.token, "primary", companyEventId, event);

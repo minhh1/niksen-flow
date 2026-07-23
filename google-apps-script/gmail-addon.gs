@@ -1200,6 +1200,7 @@ function buildTaskCardById(projectId, projectName, labelCode, companyId, token, 
       taskSourceEmailSubject: t.sourceEmailSubject || '',
       taskSourceEmailBody: t.sourceEmailBody || '',
       taskWatcherIds: (t.watchers || []).map(function(w) { return w.id; }).join(','),
+      taskSyncToCompanyCalendar: t.syncToCompanyCalendar ? 'true' : 'false',
       projectId: projectId,
       projectName: projectName,
       labelCode: labelCode,
@@ -1466,6 +1467,15 @@ function buildTaskCardById(projectId, projectName, labelCode, companyId, token, 
     .setFieldName('newTaskCost')
     .setTitle('Estimated cost ($)')
     );
+
+  // Company calendar — in addition to whatever company-wide setting is on,
+  // this task can individually opt into also syncing to the company's
+  // source-email calendar.
+  addSection.addWidget(CardService.newSelectionInput()
+    .setType(CardService.SelectionInputType.CHECK_BOX)
+    .setFieldName('newTaskSyncToCompanyCalendar')
+    .setTitle('')
+    .addItem('📅 Also add to company calendar', 'true', false));
 
   // Submit button
   addSection.addWidget(CardService.newButtonSet()
@@ -2116,6 +2126,15 @@ function buildEditTaskCard(params, statuses, profiles, teams) {
     .setTitle('Estimated cost ($)')
     .setValue(params.taskCost || ''));
 
+  // Company calendar — in addition to whatever company-wide setting is on,
+  // this task can individually opt into also syncing to the company's
+  // source-email calendar.
+  section.addWidget(CardService.newSelectionInput()
+    .setType(CardService.SelectionInputType.CHECK_BOX)
+    .setFieldName('editTaskSyncToCompanyCalendar')
+    .setTitle('')
+    .addItem('📅 Also add to company calendar', 'true', params.taskSyncToCompanyCalendar === 'true'));
+
   // Follow-ups — a task can be followed up more than once, so this opens
   // the same dated log/manage card used from the task list row.
   section.addWidget(CardService.newDecoratedText()
@@ -2263,6 +2282,7 @@ function onChangeEditTaskDueMode(e) {
     taskMonetary: (fi.editTaskMonetary || []).indexOf('true') !== -1 ? 'true' : 'false',
     taskCost: (fi.editTaskCost || [e.parameters.taskCost || ''])[0] || '',
     taskNotes: (fi.editTaskNotes || [e.parameters.taskNotes || ''])[0] || '',
+    taskSyncToCompanyCalendar: (fi.editTaskSyncToCompanyCalendar || (e.parameters.taskSyncToCompanyCalendar === 'true' ? ['true'] : [])).indexOf('true') !== -1 ? 'true' : 'false',
   });
 
   var ctxRes = apiGet('/task-context?companyId=' + params.companyId, params.accessToken || getToken());
@@ -2286,6 +2306,7 @@ function onUpdateTask(e) {
   var estimatedCost = costRaw ? parseFloat(costRaw.replace(/,/g, '')) : null;
   var notes = ((e.formInputs.editTaskNotes || [''])[0] || '').trim();
   var watcherIds = e.formInputs.editTaskWatchers || [];
+  var syncToCompanyCalendar = (e.formInputs.editTaskSyncToCompanyCalendar || []).indexOf('true') !== -1;
 
   if (!name) return errorNotification('Task name is required');
 
@@ -2329,6 +2350,7 @@ function onUpdateTask(e) {
     estimatedCost: estimatedCost,
     notes: notes || null,
     watcherIds: watcherIds,
+    syncToCompanyCalendar: syncToCompanyCalendar,
   }, token);
 
   if (!result.ok) return errorNotification('Error: ' + (result.data.error || 'Unknown'));
@@ -2415,6 +2437,7 @@ function onCreateTask(e) {
   var linkEmail = (e.formInputs.newTaskLinkEmail || []).indexOf('true') !== -1;
   var emailContent = linkEmail ? fetchMessageContent(token, e.parameters.messageId) : null;
   var watcherIds = e.formInputs.newTaskWatchers || [];
+  var syncToCompanyCalendar = (e.formInputs.newTaskSyncToCompanyCalendar || []).indexOf('true') !== -1;
 
   var result = apiPost('/create-task', {
     projectId: e.parameters.projectId,
@@ -2432,6 +2455,7 @@ function onCreateTask(e) {
     emailSubject: emailContent ? emailContent.subject : null,
     emailBody: emailContent ? emailContent.body : null,
     watcherIds: watcherIds,
+    syncToCompanyCalendar: syncToCompanyCalendar,
   }, token);
 
   if (!result.ok || !result.data.ok) return errorNotification('Error: ' + (result.data.error || 'Unknown'));

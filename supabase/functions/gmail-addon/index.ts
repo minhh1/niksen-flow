@@ -1101,7 +1101,7 @@ Deno.serve(async (req) => {
 
       const { data: tasks, error: tasksErr } = await db
         .from('tasks')
-        .select('id, name, is_completed, due_date, due_time, assignee_id, assigned_team_id, status_id, is_monetary, estimated_cost, created_by, awaiting_follow_up, follow_up_date, notes, source_message_id, source_email_subject, source_email_body, calendar_target, profiles:assignee_id(full_name, email), teams:assigned_team_id(team_name), task_statuses:status_id(label, color_hex), creator:created_by(full_name, email)')
+        .select('id, name, is_completed, due_date, due_time, assignee_id, assigned_team_id, status_id, is_monetary, estimated_cost, created_by, awaiting_follow_up, follow_up_date, notes, source_message_id, source_email_subject, source_email_body, calendar_target, sync_to_company_calendar, profiles:assignee_id(full_name, email), teams:assigned_team_id(team_name), task_statuses:status_id(label, color_hex), creator:created_by(full_name, email)')
         .eq('project_id', projectId)
         .is('deleted_at', null)
         .order('due_date', { ascending: true, nullsFirst: false })
@@ -1175,6 +1175,7 @@ Deno.serve(async (req) => {
           sourceEmailSubject: t.source_email_subject,
           sourceEmailBody: t.source_email_body,
           calendarTarget: t.calendar_target,
+          syncToCompanyCalendar: t.sync_to_company_calendar,
           watchers: watchersByTask[t.id] || [],
         })),
         statuses: statuses || [],
@@ -1193,7 +1194,7 @@ Deno.serve(async (req) => {
         isMonetary, estimatedCost,
         reminderSetting, reminderSettings,
         responsibleTeam, assignedTo,
-        notes, messageId, emailSubject, emailBody, watcherIds, calendarTarget,
+        notes, messageId, emailSubject, emailBody, watcherIds, calendarTarget, syncToCompanyCalendar,
       } = body;
 
       // ── Validation ──────────────────────────────────────────────
@@ -1230,6 +1231,7 @@ Deno.serve(async (req) => {
         source_email_subject: emailSubject || null,
         source_email_body: emailBody || null,
         calendar_target: calendarTarget === 'main_calendar' ? 'main_calendar' : 'tasks_calendar',
+        sync_to_company_calendar: !!syncToCompanyCalendar,
         created_by: profile?.id,
         date_entered: new Date().toISOString().split('T')[0],
         is_completed: false,
@@ -1412,7 +1414,7 @@ Deno.serve(async (req) => {
     // ── POST /update-task ──────────────────────────────────────────
     if (req.method === 'POST' && path === '/update-task') {
       const body = await req.json();
-      const { taskId, name, dueDate, dueTime, statusId, assigneeId, assignedTeamId, isMonetary, estimatedCost, awaitingFollowUp, followUpDate, notes, watcherIds, calendarTarget } = body;
+      const { taskId, name, dueDate, dueTime, statusId, assigneeId, assignedTeamId, isMonetary, estimatedCost, awaitingFollowUp, followUpDate, notes, watcherIds, calendarTarget, syncToCompanyCalendar } = body;
       if (!taskId) return json({ error: 'Missing taskId' }, 400, headers);
       if (!name?.trim()) return json({ error: 'Task name required' }, 400, headers);
 
@@ -1431,6 +1433,7 @@ Deno.serve(async (req) => {
         estimated_cost: estimatedCost || null,
       };
       if (calendarTarget !== undefined) update.calendar_target = calendarTarget === 'main_calendar' ? 'main_calendar' : 'tasks_calendar';
+      if (syncToCompanyCalendar !== undefined) update.sync_to_company_calendar = !!syncToCompanyCalendar;
       if (awaitingFollowUp !== undefined) {
         update.awaiting_follow_up = !!awaitingFollowUp;
         update.follow_up_date = awaitingFollowUp ? (followUpDate || null) : null;
@@ -1860,7 +1863,7 @@ Deno.serve(async (req) => {
         .from('tasks')
         .select(`
           id, name, is_completed, due_date, due_time, assignee_id, assigned_team_id,
-          status_id, is_monetary, estimated_cost, created_by, awaiting_follow_up, follow_up_date, notes, source_message_id, source_email_subject, source_email_body, calendar_target,
+          status_id, is_monetary, estimated_cost, created_by, awaiting_follow_up, follow_up_date, notes, source_message_id, source_email_subject, source_email_body, calendar_target, sync_to_company_calendar,
           project_id,
           projects:project_id(id, name, project_gmail_labels(gmail_label_name, label_code)),
           profiles:assignee_id(full_name, email),
@@ -1942,6 +1945,7 @@ Deno.serve(async (req) => {
           sourceEmailSubject: t.source_email_subject,
           sourceEmailBody: t.source_email_body,
           calendarTarget: t.calendar_target,
+          syncToCompanyCalendar: t.sync_to_company_calendar,
           watchers: watchersByTask[t.id] || [],
         })),
         limit,
@@ -1964,7 +1968,7 @@ Deno.serve(async (req) => {
         .from('tasks')
         .select(`
           id, name, is_completed, due_date, due_time, assignee_id, assigned_team_id,
-          status_id, is_monetary, estimated_cost, created_by, awaiting_follow_up, follow_up_date, notes, source_message_id, source_email_subject, source_email_body, calendar_target,
+          status_id, is_monetary, estimated_cost, created_by, awaiting_follow_up, follow_up_date, notes, source_message_id, source_email_subject, source_email_body, calendar_target, sync_to_company_calendar,
           project_id,
           projects:project_id(id, name, project_gmail_labels(gmail_label_name, label_code)),
           teams:assigned_team_id(team_name),
@@ -2042,6 +2046,7 @@ Deno.serve(async (req) => {
           sourceEmailSubject: t.source_email_subject,
           sourceEmailBody: t.source_email_body,
           calendarTarget: t.calendar_target,
+          syncToCompanyCalendar: t.sync_to_company_calendar,
           watchers: watchersByTask[t.id] || [],
         })),
         limit,
