@@ -9,6 +9,7 @@ import { createClient } from "@supabase/supabase-js";
 import { loadPageAndAuthorize } from "@/lib/publicTaskPageAuth";
 import { logTaskActivity } from "@/lib/taskActivityLog";
 import { filterTasksByProjectAccess } from "@/lib/projectAccess";
+import { triggerCalendarSync } from "@/lib/triggerCalendarSync";
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ pageId: string }> }) {
   const { pageId } = await params;
@@ -27,7 +28,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
   const TASK_SELECT = `
       id, name, due_date, due_time, is_completed, completed_at, estimated_cost, date_entered, assignee_id, project_id,
       status_id, assigned_team_id, is_monetary, created_by, awaiting_follow_up, follow_up_date, notes, source_message_id,
-      source_email_subject, source_email_body,
+      source_email_subject, source_email_body, sync_to_company_calendar,
       assignee:assignee_id(id, full_name, email),
       creator:created_by(id, full_name, email),
       project:project_id(id, name),
@@ -171,6 +172,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
     sourceMessageId: t.source_message_id,
     sourceEmailSubject: t.source_email_subject,
     sourceEmailBody: t.source_email_body,
+    syncToCompanyCalendar: !!t.sync_to_company_calendar,
     followUps: followUpsByTask[t.id] || [],
     isWatcher,
     watcherIds: watchersByTask[t.id] || [],
@@ -254,7 +256,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pag
   try { body = await req.json(); } catch {
     return NextResponse.json({ error: "Invalid body" }, { status: 400 });
   }
-  const { name, projectId, dueDate, dueTime, statusId, teamId, assigneeId, notes, watcherIds } = body;
+  const { name, projectId, dueDate, dueTime, statusId, teamId, assigneeId, notes, watcherIds, syncToCompanyCalendar } = body;
   if (!name?.trim()) return NextResponse.json({ error: "Task name is required" }, { status: 400 });
   if (!projectId) return NextResponse.json({ error: "Project is required" }, { status: 400 });
 
@@ -283,6 +285,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pag
     assigned_team_id: teamId || null,
     assignee_id: finalAssigneeId,
     notes: notes || null,
+    sync_to_company_calendar: !!syncToCompanyCalendar,
     created_by: user.id,
     date_entered: new Date().toISOString().split("T")[0],
     is_completed: false,
@@ -295,6 +298,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ pag
   if (Array.isArray(watcherIds) && watcherIds.length) {
     await admin.from("task_watchers").insert(watcherIds.map((profile_id: string) => ({ task_id: task.id, company_id: page.company_id, profile_id, created_by: user.id })));
   }
+
+  if (task.due_date) triggerCalendarSync(task.id, "upsert");
 
   return NextResponse.json({ ok: true, task });
 }

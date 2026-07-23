@@ -34,6 +34,7 @@ interface Task {
   isWatcher: boolean;
   watcherIds: string[];
   taskGroup: string | null;
+  syncToCompanyCalendar: boolean;
 }
 interface Tab { userId: string; userName: string; tasks: Task[]; }
 interface FormOptions {
@@ -610,6 +611,7 @@ function TaskModal({ pageId, formOptions, defaultAssigneeId, task, saving, setSa
   const [teamId, setTeamId] = useState(task?.teamId || "");
   const [assigneeId, setAssigneeId] = useState(task ? (task.assigneeId || "") : (defaultAssigneeId || ""));
   const [watcherIds, setWatcherIds] = useState<string[]>(task?.watcherIds || []);
+  const [syncToCompanyCalendar, setSyncToCompanyCalendar] = useState(task?.syncToCompanyCalendar || false);
   const [notes, setNotes] = useState(task?.notes || "");
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -622,7 +624,7 @@ function TaskModal({ pageId, formOptions, defaultAssigneeId, task, saving, setSa
     setError(null);
     const body: any = {
       name, dueDate: dueDate || null, dueTime: dueTime || null, teamId: teamId || null,
-      notes: notes.trim() || null, watcherIds, assigneeId: assigneeId || null,
+      notes: notes.trim() || null, watcherIds, assigneeId: assigneeId || null, syncToCompanyCalendar,
     };
     if (!isEdit) { body.projectId = project!.id; }
     const res = await fetch(`/api/public-tasks/${pageId}${isEdit ? `/tasks/${task!.id}` : ""}`, {
@@ -759,6 +761,15 @@ function TaskModal({ pageId, formOptions, defaultAssigneeId, task, saving, setSa
               </div>
             </div>
           )}
+          <div>
+            <label className="flex items-center gap-3 cursor-pointer">
+              <div onClick={() => setSyncToCompanyCalendar(v => !v)}
+                className={`w-10 h-6 rounded-full transition-colors shrink-0 ${syncToCompanyCalendar ? "bg-indigo-600" : "bg-slate-200"}`}>
+                <div className={`w-5 h-5 bg-white rounded-full shadow mt-0.5 transition-transform ${syncToCompanyCalendar ? "translate-x-4" : "translate-x-0.5"}`} />
+              </div>
+              <span className="text-[12px] text-slate-700 font-medium">📅 Also add to company calendar</span>
+            </label>
+          </div>
           <div>
             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1.5">Notes</p>
             <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} placeholder="Add a note..."
