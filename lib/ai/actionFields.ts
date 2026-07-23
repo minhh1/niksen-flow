@@ -11,7 +11,7 @@
 // even identify what's being created, unrelated to this per-company
 // required/default mechanism.
 export type ActionType = "create_task" | "create_project";
-export type FieldKind = "text" | "date" | "reference:project" | "reference:profile" | "reference:entity" | "select";
+export type FieldKind = "text" | "date" | "time" | "reference:project" | "reference:profile" | "reference:entity" | "select";
 
 export interface FieldDef {
   key: string;
@@ -34,11 +34,16 @@ const TABLE_NAME_BY_ACTION: Record<ActionType, "tasks" | "projects"> = {
 
 // Built-ins only -- required/defaultValue/isCustom are filled in by
 // loadFieldConfig below (they depend on this company's overrides).
-const BUILTIN_FIELDS: Record<ActionType, Array<Pick<FieldDef, "key" | "label" | "kind" | "alwaysRequired">>> = {
+// defaultRequired overrides the per-action fallback (see loadFieldConfig)
+// for a specific field when unconfigured -- due_time should never be asked
+// unless the user actually mentions a time, unlike create_task's other
+// optional built-ins which default to required ("ask everything").
+const BUILTIN_FIELDS: Record<ActionType, Array<Pick<FieldDef, "key" | "label" | "kind" | "alwaysRequired"> & { defaultRequired?: boolean }>> = {
   create_task: [
     { key: "name", label: "Task name", kind: "text", alwaysRequired: true },
     { key: "project_name", label: "Project (name or matter number)", kind: "reference:project", alwaysRequired: true },
     { key: "due_date", label: "Due date (YYYY-MM-DD)", kind: "date", alwaysRequired: false },
+    { key: "due_time", label: "Due time (HH:MM, 24-hour)", kind: "time", alwaysRequired: false, defaultRequired: false },
     { key: "assignee_name", label: "Assignee", kind: "reference:profile", alwaysRequired: false },
     { key: "notes", label: "Notes", kind: "text", alwaysRequired: false },
   ],
@@ -76,7 +81,9 @@ export async function loadFieldConfig(admin: any, companyId: string, actionType:
     // Fallback when unconfigured: create_task's built-in optional fields
     // default to required (bot asks everything for a task out of the box);
     // create_project's built-ins default to not required, matching today.
-    const fallbackRequired = actionType === "create_task";
+    // A field can override this via defaultRequired (e.g. due_time should
+    // never be asked unless the user actually mentions a time).
+    const fallbackRequired = f.defaultRequired !== undefined ? f.defaultRequired : actionType === "create_task";
     return {
       ...f,
       isCustom: false,

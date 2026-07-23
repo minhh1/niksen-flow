@@ -162,6 +162,15 @@ export async function advanceAction(
         continue;
       }
       collected[field.key] = new Date(parsed).toISOString().slice(0, 10);
+    } else if (field.kind === "time") {
+      const match = raw.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+      if (!match) {
+        delete collected[field.key];
+        needsReask.push(field);
+        conflictNotes.push(`I couldn't understand the time "${raw}" -- please use 24-hour HH:MM (e.g. 14:30).`);
+        continue;
+      }
+      collected[field.key] = `${match[1].padStart(2, "0")}:${match[2]}`;
     }
   }
 
@@ -248,6 +257,7 @@ export async function advanceAction(
       name: collected.name,
       projectId: projectMatch!.id,
       dueDate: collected.due_date ?? null,
+      dueTime: collected.due_time ?? null,
       assigneeId: assigneeMatch?.id ?? null,
       notes: collected.notes ?? null,
       customFieldValues,

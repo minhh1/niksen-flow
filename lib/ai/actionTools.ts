@@ -18,7 +18,7 @@
 // tool-calling call, not the plain RAG chat path, which has no tools to
 // misuse in the first place.
 export const TOOL_USE_GUARDRAILS =
-  "You also have tools for creating/updating tasks and projects. Only call one of these when the user is clearly and explicitly asking you to create or change something specific, using real details they actually provided. Never invent a placeholder name, project, or value to fill a required field. For greetings, small talk, or questions that aren't a clear action request, respond normally in plain text without calling any tool. If a request is action-like but missing a required detail (e.g. no project name for a new task), ask a clarifying question in plain text instead of guessing or calling a tool with incomplete or invented information.";
+  "You also have tools for creating/updating tasks and projects. Only call one of these when the user is clearly and explicitly asking you to create or change something specific, using real details they actually provided. Never invent a placeholder name, project, or value to fill a required field. For greetings, small talk, or questions that aren't a clear action request, respond normally in plain text without calling any tool. If a request is action-like but missing a required detail (e.g. no project name for a new task), ask a clarifying question in plain text instead of guessing or calling a tool with incomplete or invented information. If the user refers back to something already in the conversation instead of restating it -- e.g. \"create the above task\", \"create above task\", \"make this a task\", \"add that as a project\" -- use the actual text of the message(s) they're pointing to (usually the immediately preceding message) to fill in the corresponding field (e.g. the referenced message's full text becomes the task/project name) instead of asking for it again or leaving it blank.";
 
 import type { FieldDef } from "./actionFields";
 
@@ -181,13 +181,21 @@ export function buildActionTools(taskFields: FieldDef[], projectFields: FieldDef
         parameters: {
           type: "object",
           properties: {
-            name: { type: "string", description: "The task's name/title, ONLY if the user actually stated one -- omit this property entirely rather than inventing a placeholder." },
+            name: {
+              type: "string",
+              description:
+                "The task's name/title. If the user references a prior message instead of stating one directly (e.g. \"create the above task\", \"create above task\", \"make this a task\"), use the full text of the message they're pointing to (usually the one immediately before) as the name. Otherwise, ONLY fill this in if the user actually stated a name -- omit this property entirely rather than inventing a placeholder.",
+            },
             project_name: {
               type: "string",
               description:
                 "The project this task belongs to, only if mentioned -- this can be the project's name OR a known identifier like a matter number (e.g. \"matter number 230005\" -> extract just \"230005\", not the whole phrase).",
             },
             due_date: { type: "string", description: "Due date in YYYY-MM-DD format, if mentioned." },
+            due_time: {
+              type: "string",
+              description: "Due time in 24-hour HH:MM format, ONLY if the user actually mentioned a specific time (e.g. \"3pm\" -> \"15:00\") -- never invent one, it's fine to leave a task with no time.",
+            },
             assignee_name: { type: "string", description: "Name of the person to assign the task to, if mentioned." },
             notes: { type: "string", description: "Any additional notes or details for the task." },
             ...customFieldProperties(taskFields),
@@ -215,7 +223,11 @@ export function buildActionTools(taskFields: FieldDef[], projectFields: FieldDef
         parameters: {
           type: "object",
           properties: {
-            name: { type: "string", description: "The project's name, ONLY if the user actually stated one -- omit this property entirely rather than inventing a placeholder." },
+            name: {
+              type: "string",
+              description:
+                "The project's name. If the user references a prior message instead of stating one directly (e.g. \"create the above as a project\", \"make this a project\"), use the full text of the message they're pointing to as the name. Otherwise, ONLY fill this in if the user actually stated a name -- omit this property entirely rather than inventing a placeholder.",
+            },
             description: { type: "string", description: "A description of the project, if mentioned." },
             status: { type: "string", description: "Initial status, if mentioned (defaults to Open)." },
             ...customFieldProperties(projectFields),

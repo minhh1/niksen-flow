@@ -253,6 +253,7 @@ export interface CreateTaskParams {
   name: string;
   projectId: string;
   dueDate?: string | null;
+  dueTime?: string | null;
   assigneeId?: string | null;
   notes?: string | null;
   customFieldValues?: CustomFieldValueInput[];
@@ -266,6 +267,7 @@ export async function createTask(admin: any, companyId: string, userId: string, 
       company_id: companyId,
       name: params.name.trim(),
       due_date: params.dueDate || null,
+      due_time: params.dueTime || null,
       assignee_id: params.assigneeId || null,
       notes: params.notes || null,
       created_by: userId,
