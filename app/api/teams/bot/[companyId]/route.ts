@@ -13,7 +13,7 @@
 // retrieval/model-calling/billing code paths the web chat uses (see
 // lib/ai/retrieval.ts, lib/ai/modelCall.ts, lib/billing/aiUsageCap.ts) so
 // behavior and cost never diverges between the two surfaces.
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { adminClient } from "@/lib/documentTemplateAuth";
 import { verifyIncomingBotRequest } from "@/lib/msTeamsBot/verifyIncomingToken";
 import { getBotToken, sendReply, type BotCredentials } from "@/lib/msTeamsBot/connector";
@@ -97,11 +97,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ com
     return NextResponse.json({ ok: true });
   }
 
-  // Fire the reply asynchronously from here on -- Bot Framework wants a
-  // fast ack, and the actual answer goes back via a separate outbound
-  // call to the Connector, not the response body of this request.
-  handleMessage(admin, companyId, creds, { aadObjectId, tenantId, serviceUrl, conversationId, activityId, question }).catch(
-    (err) => console.error("Teams bot message handling failed:", err)
+  // The reply goes back via a separate outbound call to the Connector, not
+  // the response body of this request -- Bot Framework wants a fast ack.
+  // Using next/server's after() (not a bare detached promise) matters on
+  // Vercel's serverless platform: once this response is sent, the function
+  // invocation can be frozen/torn down immediately, silently killing an
+  // un-awaited background promise mid-execution. after() (backed by
+  // Vercel's waitUntil) keeps the invocation alive until the work actually
+  // finishes. An un-awaited handleMessage() call here previously caused
+  // exactly that -- inconsistent/slow replies and Bot Framework redelivering
+  // the same message when it didn't see a timely-enough response (observed
+  // as duplicate teams_bot_link_requests rows for the same identity).
+  after(() =>
+    handleMessage(admin, companyId, creds, { aadObjectId, tenantId, serviceUrl, conversationId, activityId, question }).catch((err) =>
+      console.error("Teams bot message handling failed:", err)
+    )
   );
 
   return NextResponse.json({ ok: true });

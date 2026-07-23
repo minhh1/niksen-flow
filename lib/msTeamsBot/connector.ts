@@ -19,7 +19,17 @@ export interface BotCredentials {
   bot_tenant_id: string;
 }
 
+// Module-level cache, keyed by app ID -- the token is valid for roughly an
+// hour (whatever `expires_in` the token endpoint returns), so re-fetching
+// it on every single incoming message was a wasted network round trip most
+// of the time. Only helps on a warm serverless invocation (reset on cold
+// start), but that's the common case for a few-minutes-apart conversation.
+const tokenCache = new Map<string, { token: string; expiresAt: number }>();
+
 export async function getBotToken(creds: BotCredentials): Promise<string> {
+  const cached = tokenCache.get(creds.bot_app_id);
+  if (cached && cached.expiresAt > Date.now()) return cached.token;
+
   const res = await fetch(`https://login.microsoftonline.com/${creds.bot_tenant_id}/oauth2/v2.0/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -32,6 +42,10 @@ export async function getBotToken(creds: BotCredentials): Promise<string> {
   });
   if (!res.ok) throw new Error(`Failed to get bot token: ${res.status} ${await res.text()}`);
   const json = await res.json();
+
+  // 5-minute safety margin before actual expiry, same buffer style used
+  // elsewhere in this codebase for token refresh (see lib/gmail/client.ts).
+  tokenCache.set(creds.bot_app_id, { token: json.access_token, expiresAt: Date.now() + (json.expires_in - 300) * 1000 });
   return json.access_token;
 }
 
