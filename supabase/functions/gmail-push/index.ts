@@ -455,7 +455,12 @@ Deno.serve(async (req) => {
 
     for (const event of history) {
 
-      // ── Labels removed: re-add if still active in DB ─────────────
+      // ── Labels removed: only an admin's removal sticks ────────────
+      // Same policy as message deletion — a regular member accidentally
+      // unlabeling their own copy gets auto-corrected (the label is
+      // supposed to be shared team-wide), but an admin deliberately taking
+      // one email out of a shared label is a real decision and shouldn't
+      // get silently overridden the next time this project syncs.
       for (const item of (event.labelsRemoved || [])) {
         const msgId = item.message?.id;
         if (!msgId) continue;
@@ -467,16 +472,34 @@ Deno.serve(async (req) => {
           const codeMatch = gmailLabel.name.match(/\[([A-Z0-9]{4,6})\]$/);
           if (!codeMatch) continue;
           const dbLabel = dbLabelsByCode.get(codeMatch[1]);
-          if (dbLabel) {
-            console.log(`[push] Re-adding label "${gmailLabel.name}" to ${msgId}`);
-            await applyLabel(token, msgId, removedLabelId);
-            await invalidateSyncJob(companyId, dbLabel.project_id, userId);
+          if (!dbLabel) continue;
+
+          if (await isCompanyAdmin(companyId, userId)) {
+            console.log(`[push] Admin removed label "${gmailLabel.name}" from ${msgId} — leaving it removed`);
+            // Delete this user's project_emails row for this message so it's
+            // permanently excluded from future resyncs for them — not just
+            // skipped this once. Without this, a later trigger unrelated to
+            // this message (e.g. a new team member joining, which resets
+            // completed_users for everyone) would re-include it and silently
+            // undo the admin's decision.
+            await db.from("project_emails").delete()
+              .eq("user_id", userId).eq("gmail_message_id", msgId).eq("project_id", dbLabel.project_id);
             await logActivity({
               company_id: companyId, triggered_by: null, action: "label_removed",
               project_id: dbLabel.project_id, gmail_message_id: msgId, gmail_label_name: gmailLabel.name,
-              target_user_id: userId, details: { label_code: codeMatch[1], reapplied: true },
+              target_user_id: userId, details: { label_code: codeMatch[1], reapplied: false },
             });
+            continue;
           }
+
+          console.log(`[push] Re-adding label "${gmailLabel.name}" to ${msgId}`);
+          await applyLabel(token, msgId, removedLabelId);
+          await invalidateSyncJob(companyId, dbLabel.project_id, userId);
+          await logActivity({
+            company_id: companyId, triggered_by: null, action: "label_removed",
+            project_id: dbLabel.project_id, gmail_message_id: msgId, gmail_label_name: gmailLabel.name,
+            target_user_id: userId, details: { label_code: codeMatch[1], reapplied: true },
+          });
         }
       }
 
@@ -625,24 +648,28 @@ Deno.serve(async (req) => {
       }
 
       // ── Messages deleted: only an admin's delete sticks ────────────
+      // Gmail's history "messagesDeleted" fires for ANY deletion anywhere
+      // in the mailbox, not just shared project emails — a user cleaning
+      // out personal inbox clutter generates the exact same event. Only
+      // act on it (and only log it) when this message was actually a
+      // tracked project email for this user; otherwise it's noise that
+      // has nothing to do with any shared matter.
       for (const item of (event.messagesDeleted || [])) {
         const msgId = item.message?.id;
         if (!msgId) continue;
         const { data: existing } = await db.from("project_emails")
           .select("project_id, company_id, subject, snippet, gmail_label_applied")
           .eq("user_id", userId).eq("gmail_message_id", msgId).maybeSingle();
+        if (!existing?.company_id || !existing?.project_id) continue;
 
-        let restored = false;
-        if (existing?.company_id && existing?.project_id) {
-          restored = await restoreIfNotAdmin(existing.company_id, existing.project_id, userId);
-        }
+        const restored = await restoreIfNotAdmin(existing.company_id, existing.project_id, userId);
 
-        console.log(`[push] Message deleted ${msgId}${restored ? " — non-admin, restoring" : ""}`);
+        console.log(`[push] Message deleted ${msgId}${restored ? " — non-admin, restoring" : " — admin, deletion stands"}`);
         await logActivity({
-          company_id: existing?.company_id || allCompanyIds[0] || null, triggered_by: null,
-          action: "message_deleted", project_id: existing?.project_id || null,
+          company_id: existing.company_id, triggered_by: null,
+          action: "message_deleted", project_id: existing.project_id,
           gmail_message_id: msgId, target_user_id: userId,
-          details: { subject: existing?.subject || null, snippet: existing?.snippet || null, restored },
+          details: { subject: existing.subject || null, snippet: existing.snippet || null, restored },
         });
 
         // The deleting user's own row is gone from their mailbox — drop it

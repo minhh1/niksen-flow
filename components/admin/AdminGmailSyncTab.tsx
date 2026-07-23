@@ -68,7 +68,7 @@ function describeActivity(row: ActivityRow): string {
     case "label_applied": return `Label applied for ${row.user_name}`;
     case "label_removed": return row.reapplied
       ? `${row.user_name} removed the label — auto re-applied`
-      : `Label removed for ${row.user_name}`;
+      : `${row.user_name} removed this (admin) — staying removed`;
     case "message_deleted": return row.restored
       ? `${row.user_name} deleted this — not an admin, so it was restored automatically`
       : `Message deleted by ${row.user_name} (admin)`;
