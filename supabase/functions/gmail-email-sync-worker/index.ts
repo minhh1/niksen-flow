@@ -187,9 +187,16 @@ Deno.serve(async (_req) => {
 });
 
 async function runDispatch(t0: number): Promise<Response> {
+  // Realtime-flagged jobs (a genuinely new email, deletion, or newly-
+  // created label, per gmail-push/gmail-addon) sort first, ahead of the
+  // ordinary FIFO backlog — otherwise a brand-new action just competes on
+  // equal footing with the rest of the queue.
   const { data: jobs } = await db.from("gmail_sync_jobs")
     .select("*").eq("job_type", "email_sync").in("status", ["pending", "processing"])
-    .lt("attempts", MAX_ATTEMPTS).order("created_at", { ascending: true }).limit(BATCH_SIZE);
+    .lt("attempts", MAX_ATTEMPTS)
+    .order("is_realtime", { ascending: false })
+    .order("created_at", { ascending: true })
+    .limit(BATCH_SIZE);
 
   if (!jobs?.length) {
     console.log("[email-sync-worker] No pending jobs");

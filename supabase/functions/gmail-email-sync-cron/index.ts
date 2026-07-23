@@ -335,7 +335,7 @@ Deno.serve(async (_req) => {
 
     const toUpdate: string[] = [];
     const toInsert: any[] = [];
-    let skippedNoEmails = 0, skippedProcessing = 0, skippedInProgress = 0;
+    let skippedNoEmails = 0, skippedProcessing = 0, skippedInProgress = 0, skippedAlreadyDone = 0;
 
     for (const label of (labels as any[])) {
       if (!projectIdsWithEmails.has(label.project_id)) { skippedNoEmails++; continue; }
@@ -359,6 +359,17 @@ Deno.serve(async (_req) => {
         continue;
       }
 
+      // A job that's already "done" only needs redoing if the connected-
+      // member count changed since — otherwise leave it alone. This used
+      // to reset EVERY done job to pending on EVERY 15-min sweep
+      // unconditionally, meaning the whole system perpetually re-verified
+      // every project's emails against every user's mailbox forever. See
+      // the matching fix in gmail-label-sync-cron for the full story.
+      if (existing?.status === "done" && totalUsers === connectedUserIds.length) {
+        skippedAlreadyDone++;
+        continue;
+      }
+
       if (existing) {
         toUpdate.push(existing.id);
       } else {
@@ -371,7 +382,7 @@ Deno.serve(async (_req) => {
       }
     }
 
-    console.log(`[email-sync-cron] toUpdate=${toUpdate.length} toInsert=${toInsert.length} skippedNoEmails=${skippedNoEmails} skippedProcessing=${skippedProcessing} skippedInProgress=${skippedInProgress}`);
+    console.log(`[email-sync-cron] toUpdate=${toUpdate.length} toInsert=${toInsert.length} skippedNoEmails=${skippedNoEmails} skippedProcessing=${skippedProcessing} skippedInProgress=${skippedInProgress} skippedAlreadyDone=${skippedAlreadyDone}`);
 
     if (toUpdate.length) {
       const { error: updateErr } = await db.from("gmail_sync_jobs").update({

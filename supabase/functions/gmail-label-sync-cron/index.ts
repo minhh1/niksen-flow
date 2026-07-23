@@ -338,7 +338,7 @@ Deno.serve(async (_req) => {
     // Build updates and inserts in bulk
     const toUpdate: string[] = [];
     const toInsert: any[] = [];
-    let skippedInProgress = 0;
+    let skippedInProgress = 0, skippedAlreadyDone = 0;
 
     for (const label of allLabels) {
       const existing = existingByProject.get(label.project_id) as any;
@@ -348,6 +348,19 @@ Deno.serve(async (_req) => {
       const completedCount = (existing?.completed_users || []).length;
       if (existing?.status === "pending" && completedCount > 0 && completedCount < (existing?.total_users || totalUsers)) {
         skippedInProgress++;
+        continue;
+      }
+
+      // A job that's already "done" only needs redoing if the company's
+      // connected-member count changed since (someone joined/connected
+      // Gmail and needs the label too) — otherwise leave it alone. This
+      // used to reset EVERY done job to pending on EVERY 15-min sweep
+      // unconditionally, which meant the whole system was perpetually
+      // re-verifying every label against every user's mailbox forever —
+      // the real cause of most of the load/starvation issues chased down
+      // on 2026-07-21/22, not just a symptom of them.
+      if (existing?.status === "done" && existing.total_users === totalUsers) {
+        skippedAlreadyDone++;
         continue;
       }
 
@@ -383,7 +396,7 @@ Deno.serve(async (_req) => {
     }
 
     queued += toUpdate.length + toInsert.length;
-    console.log(`[label-sync-cron] Company ${companyId}: ${toUpdate.length} updated + ${toInsert.length} inserted + ${skippedInProgress} in-progress skipped (${totalUsers} users)`);
+    console.log(`[label-sync-cron] Company ${companyId}: ${toUpdate.length} updated + ${toInsert.length} inserted + ${skippedInProgress} in-progress skipped + ${skippedAlreadyDone} already-done skipped (${totalUsers} users)`);
   }
 
   console.log(`[label-sync-cron] DONE in ${Date.now() - t0}ms — ${queued} jobs`);

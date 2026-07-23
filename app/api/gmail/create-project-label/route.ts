@@ -122,6 +122,7 @@ export async function POST(req: NextRequest) {
       attempts: 0,
       completed_users: [],
       total_users: totalUsers,
+      is_realtime: true, // a brand-new label should sync ahead of the routine backlog
     });
   }
 

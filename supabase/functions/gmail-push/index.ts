@@ -193,8 +193,56 @@ async function invalidateSyncJob(companyId: string, projectId: string, userId: s
   await db.from("gmail_sync_jobs").update({
     completed_users: updated,
     status: "pending",
+    is_realtime: true,
     updated_at: new Date().toISOString(),
   }).eq("id", job.id);
+}
+
+// A genuinely new email needs to reach EVERY other team member, not just
+// the one this push event was about — reset the whole job (both types),
+// not just this one user, so the dispatcher reconsiders everyone next
+// tick. The label/email sync crons used to do this blindly for every
+// project on every 15-min sweep regardless of whether anything changed,
+// which is what made most of the label-sync backlog on 2026-07-21/22 —
+// now that they only touch a job when something's actually different,
+// gmail-push has to be the one to flag "something's different" for new
+// mail, or new messages would stop propagating to the rest of the team.
+async function resetJobsForNewEmail(companyId: string, projectId: string): Promise<void> {
+  for (const jobType of ["label_sync", "email_sync"]) {
+    await db.from("gmail_sync_jobs")
+      .update({ status: "pending", completed_users: [], is_realtime: true, updated_at: new Date().toISOString() })
+      .eq("job_type", jobType).eq("company_id", companyId).eq("project_id", projectId)
+      .neq("status", "processing"); // don't disturb a unit actively mid-flight
+  }
+}
+
+async function isCompanyAdmin(companyId: string, userId: string): Promise<boolean> {
+  const { data } = await db.from("company_memberships")
+    .select("role").eq("company_id", companyId).eq("user_id", userId).maybeSingle();
+  return data?.role === "company_admin";
+}
+
+// Only an admin's delete should actually stick — anyone else's is treated as
+// a mistake and undone. Doesn't try to restore the exact deleted message in
+// place (Gmail's history "messagesDeleted" means it's genuinely gone from
+// that mailbox, not just trashed); instead it removes just this one user
+// from both jobs' completed_users, so the next dispatch re-syncs everything
+// for them from scratch — which naturally re-imports whatever they're
+// missing, including the one they deleted, from another connected member's
+// copy, the same path used for anyone newly joining an existing label.
+async function restoreIfNotAdmin(companyId: string, projectId: string, userId: string): Promise<boolean> {
+  if (await isCompanyAdmin(companyId, userId)) return false;
+  for (const jobType of ["label_sync", "email_sync"]) {
+    const { data: job } = await db.from("gmail_sync_jobs")
+      .select("id, completed_users").eq("job_type", jobType)
+      .eq("company_id", companyId).eq("project_id", projectId).maybeSingle();
+    if (!job) continue;
+    const updated = (job.completed_users || []).filter((u: string) => u !== userId);
+    await db.from("gmail_sync_jobs").update({
+      completed_users: updated, status: "pending", is_realtime: true, updated_at: new Date().toISOString(),
+    }).eq("id", job.id);
+  }
+  return true;
 }
 
 // ── Main handler ───────────────────────────────────────────────────
@@ -366,11 +414,7 @@ Deno.serve(async (req) => {
           target_user_id: userId, details: { label_code: labelCode, count: items.length },
         });
 
-        for (const jobType of ["label_sync", "email_sync"]) {
-          await db.from("gmail_sync_jobs")
-            .update({ status: "pending", completed_users: [], updated_at: new Date().toISOString() })
-            .eq("job_type", jobType).eq("project_id", dbLabel.project_id).eq("company_id", companyId);
-        }
+        await resetJobsForNewEmail(companyId, dbLabel.project_id);
         continue;
       }
 
@@ -381,15 +425,18 @@ Deno.serve(async (req) => {
         const msgData1 = await getMessage(token, msgId);
         const threadId1 = msgData1?.threadId || msgId;
         const meta1 = extractEmailMeta(msgData1);
-        const { error: e1 } = await db.from("project_emails").upsert({
+        const { data: d1, error: e1 } = await db.from("project_emails").upsert({
           project_id: dbLabel.project_id, company_id: companyId,
           user_id: userId, gmail_message_id: msgId, gmail_thread_id: threadId1,
           subject: meta1.subject, from_address: meta1.from_address, from_name: meta1.from_name,
           date: meta1.date, snippet: meta1.snippet, gmail_label_applied: true,
-        }, { onConflict: "user_id,gmail_message_id", ignoreDuplicates: true });
+        }, { onConflict: "user_id,gmail_message_id", ignoreDuplicates: true }).select();
         if (e1) console.error(`[push] project_emails error:`, e1.message);
         else {
           console.log(`[push] ✓ Saved msg=${msgId} subject="${meta1.subject}"`);
+          // A skipped duplicate (already tracked) returns no row — only a
+          // genuinely new message needs to propagate to the rest of the team.
+          if (d1 && d1.length > 0) await resetJobsForNewEmail(companyId, dbLabel.project_id);
           await logActivity({
             company_id: companyId, triggered_by: null, action: "sync_to_user",
             project_id: dbLabel.project_id, gmail_message_id: msgId, gmail_label_name: gmailLabelDisplayName,
@@ -457,12 +504,15 @@ Deno.serve(async (req) => {
           if (dbLabel) {
             const md2 = await getMessage(token, msgId);
             const threadId2 = md2?.threadId || msgId;
-            const { error: e2 } = await db.from("project_emails").upsert({
+            const { data: d2, error: e2 } = await db.from("project_emails").upsert({
               project_id: dbLabel.project_id, company_id: matchedCompanyId,
               user_id: userId, gmail_message_id: msgId, gmail_thread_id: threadId2, gmail_label_applied: true,
-            }, { onConflict: "user_id,gmail_message_id", ignoreDuplicates: true });
+            }, { onConflict: "user_id,gmail_message_id", ignoreDuplicates: true }).select();
             if (e2) console.error(`[push] upsert error:`, e2.message);
-            else console.log(`[push] ✓ Saved labelled email ${msgId} [${matchedCode}]`);
+            else {
+              console.log(`[push] ✓ Saved labelled email ${msgId} [${matchedCode}]`);
+              if (d2 && d2.length > 0) await resetJobsForNewEmail(matchedCompanyId, dbLabel.project_id);
+            }
             const meta2 = extractEmailMeta(md2);
             await logActivity({
               company_id: matchedCompanyId, triggered_by: null, action: "sync_to_user",
@@ -555,12 +605,13 @@ Deno.serve(async (req) => {
           await applyLabel(token, msgId, labelId);
           const threadId3 = msgData?.threadId || msgId;
           const meta3 = extractEmailMeta(msgData);
-          await db.from("project_emails").upsert({
+          const { data: d3 } = await db.from("project_emails").upsert({
             project_id: subjectMatch.project_id, company_id: subjectMatch.company_id,
             user_id: userId, gmail_message_id: msgId, gmail_thread_id: threadId3,
             subject: meta3.subject, from_address: meta3.from_address, from_name: meta3.from_name,
             date: meta3.date, snippet: meta3.snippet, gmail_label_applied: true,
-          }, { onConflict: "user_id,gmail_message_id", ignoreDuplicates: true });
+          }, { onConflict: "user_id,gmail_message_id", ignoreDuplicates: true }).select();
+          if (d3 && d3.length > 0) await resetJobsForNewEmail(subjectMatch.company_id, subjectMatch.project_id);
           await db.from("project_email_subjects").upsert({
             project_id: subjectMatch.project_id, company_id: subjectMatch.company_id,
             gmail_message_id: msgId, subject_normalised: normSubject,
@@ -573,19 +624,31 @@ Deno.serve(async (req) => {
         }
       }
 
-      // ── Messages deleted: log for the activity feed ───────────────
+      // ── Messages deleted: only an admin's delete sticks ────────────
       for (const item of (event.messagesDeleted || [])) {
         const msgId = item.message?.id;
         if (!msgId) continue;
         const { data: existing } = await db.from("project_emails")
-          .select("project_id, company_id, subject")
+          .select("project_id, company_id, subject, snippet, gmail_label_applied")
           .eq("user_id", userId).eq("gmail_message_id", msgId).maybeSingle();
-        console.log(`[push] Message deleted ${msgId}`);
+
+        let restored = false;
+        if (existing?.company_id && existing?.project_id) {
+          restored = await restoreIfNotAdmin(existing.company_id, existing.project_id, userId);
+        }
+
+        console.log(`[push] Message deleted ${msgId}${restored ? " — non-admin, restoring" : ""}`);
         await logActivity({
           company_id: existing?.company_id || allCompanyIds[0] || null, triggered_by: null,
           action: "message_deleted", project_id: existing?.project_id || null,
-          gmail_message_id: msgId, target_user_id: userId, details: { subject: existing?.subject || null },
+          gmail_message_id: msgId, target_user_id: userId,
+          details: { subject: existing?.subject || null, snippet: existing?.snippet || null, restored },
         });
+
+        // The deleting user's own row is gone from their mailbox — drop it
+        // so it doesn't linger as a stale "they have this" record; a
+        // restore (if any) will create a fresh row once the re-sync runs.
+        await db.from("project_emails").delete().eq("user_id", userId).eq("gmail_message_id", msgId);
       }
     }
 

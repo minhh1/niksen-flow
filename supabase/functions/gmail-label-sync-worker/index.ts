@@ -182,6 +182,20 @@ async function runDispatch(t0: number): Promise<Response> {
   // they're closest to done and users are actively waiting on them; most
   // have only 1-2 pending users left, so a larger job count here doesn't
   // translate into a proportionally larger dispatch-unit count.
+  // Realtime-flagged jobs (a genuinely new email, deletion, or newly-
+  // created label, per gmail-push/gmail-addon) always go first, ahead of
+  // the ordinary backlog tiers below — otherwise a brand-new action just
+  // competes on equal footing with hundreds of routine backlog jobs.
+  const { data: realtimeJobs } = await db
+    .from("gmail_sync_jobs")
+    .select("*")
+    .eq("job_type", "label_sync")
+    .eq("is_realtime", true)
+    .in("status", ["pending", "processing"])
+    .lt("attempts", MAX_ATTEMPTS)
+    .order("updated_at", { ascending: false })
+    .limit(10);
+
   const { data: newJobs } = await db
     .from("gmail_sync_jobs")
     .select("*")
@@ -213,11 +227,11 @@ async function runDispatch(t0: number): Promise<Response> {
 
   const seen = new Set<string>();
   const jobs: any[] = [];
-  for (const j of [...(newJobs || []), ...(processingJobs || []), ...(oldJobs || [])]) {
+  for (const j of [...(realtimeJobs || []), ...(newJobs || []), ...(processingJobs || []), ...(oldJobs || [])]) {
     if (!seen.has(j.id)) { seen.add(j.id); jobs.push(j); }
   }
 
-  console.log(`[label-sync-worker] Jobs: new=${newJobs?.length||0} processing=${processingJobs?.length||0} old=${oldJobs?.length||0} total=${jobs.length}`);
+  console.log(`[label-sync-worker] Jobs: realtime=${realtimeJobs?.length||0} new=${newJobs?.length||0} processing=${processingJobs?.length||0} old=${oldJobs?.length||0} total=${jobs.length}`);
 
   if (!jobs.length) {
     console.log("[label-sync-worker] No pending jobs");

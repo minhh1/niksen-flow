@@ -46,6 +46,7 @@ interface ActivityRow {
   email_snippet: string | null;
   user_name: string;
   reapplied: boolean;
+  restored: boolean;
   count: number | null;
   created_at: string;
 }
@@ -68,7 +69,9 @@ function describeActivity(row: ActivityRow): string {
     case "label_removed": return row.reapplied
       ? `${row.user_name} removed the label — auto re-applied`
       : `Label removed for ${row.user_name}`;
-    case "message_deleted": return `Message deleted by ${row.user_name}`;
+    case "message_deleted": return row.restored
+      ? `${row.user_name} deleted this — not an admin, so it was restored automatically`
+      : `Message deleted by ${row.user_name} (admin)`;
     case "archived": return `Archived to ${row.user_name}`;
     case "email_trashed": return `Deleted from ${row.user_name}'s mailbox (archived)`;
     case "sync_recovered": return `Recovered — ${row.user_name} is back on track`;
@@ -528,6 +531,7 @@ export default function AdminGmailSyncTab({ companyId }: AdminGmailSyncTabProps)
       email_snippet: r.details?.snippet || null,
       user_name: r.target_user_id ? (nameById.get(r.target_user_id) || "Unknown") : "System",
       reapplied: !!r.details?.reapplied,
+      restored: !!r.details?.restored,
       count: typeof r.details?.count === "number" ? r.details.count : null,
       created_at: r.created_at,
     }));
