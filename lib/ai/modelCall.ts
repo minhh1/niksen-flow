@@ -54,6 +54,56 @@ export async function callHostedModel(
   return usage;
 }
 
+export interface ToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface ToolCallResult extends TokenUsage {
+  toolCall: ToolCall | null;
+}
+
+// Non-streaming tool-calling variant, used only by the Teams bot's
+// "act on the app" capability (see app/api/teams/bot/[companyId]/route.ts,
+// lib/ai/actionTools.ts) -- a tool-call decision isn't meaningfully
+// streamed token-by-token, and the bot is already non-streaming. Hosted
+// (Together) only: self-hosted Ollama models vary too much in tool-calling
+// reliability to build data-mutating actions on top of, so the bot skips
+// straight to plain RAG chat (callHostedModel/callSelfHostedModel above)
+// for self-hosted companies.
+export async function callHostedModelWithTools(
+  modelId: string,
+  messages: unknown[],
+  tools: unknown[]
+): Promise<ToolCallResult> {
+  const res = await fetch("https://api.together.xyz/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOGETHER_API_KEY}` },
+    body: JSON.stringify({ model: modelId, messages, tools, tool_choice: "auto", stream: false }),
+  });
+  if (!res.ok) throw new Error(`Together tool-calling completion failed: ${res.status} ${await res.text()}`);
+
+  const json = await res.json();
+  const message = json.choices?.[0]?.message ?? {};
+  const rawToolCall = message.tool_calls?.[0];
+
+  let toolCall: ToolCall | null = null;
+  if (rawToolCall?.function?.name) {
+    try {
+      toolCall = { name: rawToolCall.function.name, arguments: JSON.parse(rawToolCall.function.arguments || "{}") };
+    } catch {
+      toolCall = null;
+    }
+  }
+
+  return {
+    toolCall,
+    content: message.content ?? "",
+    inputTokens: json.usage?.prompt_tokens ?? 0,
+    outputTokens: json.usage?.completion_tokens ?? 0,
+  };
+}
+
 export async function callSelfHostedModel(
   ollamaUrl: string,
   modelId: string,
