@@ -7,6 +7,19 @@
 // lib/ai/actions.ts's resolve* functions, never trusted from the model
 // directly. Together AI's chat completions endpoint supports this
 // OpenAI-style `tools` shape (confirmed against their docs 2026-07-23).
+//
+// Observed in testing: with tool_choice "auto", the model called
+// create_project (inventing the placeholder name "My Project") in response
+// to a plain "Hi are you live?" -- a casual message with zero actual
+// request to create anything. Passing `tools` alone isn't enough; the
+// system prompt needs to explicitly discourage speculative tool calls, or
+// the model treats "a tool exists" as license to use it. This message is
+// appended as its own system message (see the bot route) only for the
+// tool-calling call, not the plain RAG chat path, which has no tools to
+// misuse in the first place.
+export const TOOL_USE_GUARDRAILS =
+  "You also have tools for creating/updating tasks and projects. Only call one of these when the user is clearly and explicitly asking you to create or change something specific, using real details they actually provided. Never invent a placeholder name, project, or value to fill a required field. For greetings, small talk, or questions that aren't a clear action request, respond normally in plain text without calling any tool. If a request is action-like but missing a required detail (e.g. no project name for a new task), ask a clarifying question in plain text instead of guessing or calling a tool with incomplete or invented information.";
+
 export const ACTION_TOOLS = [
   {
     type: "function",

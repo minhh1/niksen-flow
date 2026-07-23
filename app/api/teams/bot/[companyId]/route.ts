@@ -19,7 +19,7 @@ import { verifyIncomingBotRequest } from "@/lib/msTeamsBot/verifyIncomingToken";
 import { getBotToken, sendReply, type BotCredentials } from "@/lib/msTeamsBot/connector";
 import { resolveSourceTypes, retrieveGroundingContext, buildSystemPrompt } from "@/lib/ai/retrieval";
 import { callHostedModel, callHostedModelWithTools, callSelfHostedModel, type ToolCall } from "@/lib/ai/modelCall";
-import { ACTION_TOOLS } from "@/lib/ai/actionTools";
+import { ACTION_TOOLS, TOOL_USE_GUARDRAILS } from "@/lib/ai/actionTools";
 import {
   resolveProjectByName, resolveProfileByName, resolveTaskByName, resolveStatusByLabel,
   createTask, updateTask, createProject, updateProject,
@@ -254,7 +254,15 @@ async function handleMessage(admin: any, companyId: string, botCreds: BotCredent
   if (provider === "hosted") {
     let toolResult;
     try {
-      toolResult = await callHostedModelWithTools(modelId, modelMessages, ACTION_TOOLS);
+      // A separate system message, appended only for this call -- the
+      // plain RAG path (modelMessages as built above) has no tools to
+      // misuse, so it doesn't need this and stays as-is.
+      const toolCallMessages = [
+        modelMessages[0],
+        { role: "system", content: TOOL_USE_GUARDRAILS },
+        ...modelMessages.slice(1),
+      ];
+      toolResult = await callHostedModelWithTools(modelId, toolCallMessages, ACTION_TOOLS);
     } catch (err) {
       console.error("Teams bot tool-calling call failed, falling back to plain chat:", err);
       toolResult = null;
