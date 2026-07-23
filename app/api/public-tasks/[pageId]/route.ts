@@ -41,7 +41,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
     .in("assignee_id", targetUserIds.length ? targetUserIds : ["00000000-0000-0000-0000-000000000000"])
     .eq("company_id", page.company_id)
     .is("deleted_at", null)
-    .order("due_date", { ascending: true, nullsFirst: false });
+    .order("due_date", { ascending: true, nullsFirst: false })
+    .order("due_time", { ascending: true, nullsFirst: false });
 
   // Being on the same team-scoped page doesn't grant access to a project
   // that's restricted to specific teams/members — filter those out for
@@ -87,11 +88,22 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ page
       .is("assignee_id", null)
       .eq("company_id", page.company_id)
       .is("deleted_at", null)
-      .order("due_date", { ascending: true, nullsFirst: false });
+      .order("due_date", { ascending: true, nullsFirst: false })
+      .order("due_time", { ascending: true, nullsFirst: false });
     unallocatedTasks = isAdmin ? (rawUnallocated || []) : await filterTasksByProjectAccess(admin, user.id, rawUnallocated || []);
   }
 
-  const tasks = [...(assignedTasks || []), ...watchedTasks, ...unallocatedTasks];
+  // Merging three separately-queried groups (assigned/watched/unallocated)
+  // would otherwise leave each block sorted internally but not against each
+  // other (e.g. all assigned tasks before all watched ones, regardless of
+  // due date) — sort the combined list once so every tab's date order is
+  // correct end to end.
+  const dueSortKey = (t: any) => {
+    if (!t.due_date) return "9999-99-99 99:99:99";
+    return String(t.due_date).slice(0, 10) + " " + (t.due_time ? String(t.due_time).slice(0, 8) : "99:99:99");
+  };
+  const tasks = [...(assignedTasks || []), ...watchedTasks, ...unallocatedTasks]
+    .sort((a, b) => dueSortKey(a).localeCompare(dueSortKey(b)));
 
   // ── Follow-up log, grouped per task ──────────────────────────────
   let followUpsByTask: Record<string, { id: string; followedUpAt: string; isDone: boolean }[]> = {};

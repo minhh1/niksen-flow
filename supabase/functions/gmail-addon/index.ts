@@ -1586,7 +1586,8 @@ Deno.serve(async (req) => {
         .eq('assignee_id', profileId)
         .eq('is_completed', false)
         .is('deleted_at', null)
-        .order('due_date', { ascending: true, nullsFirst: false });
+        .order('due_date', { ascending: true, nullsFirst: false })
+        .order('due_time', { ascending: true, nullsFirst: false });
 
       if (companyId) query = query.eq('company_id', companyId);
       if (filter === 'due') query = query.lte('due_date', today);
@@ -1652,7 +1653,8 @@ Deno.serve(async (req) => {
         .is('deleted_at', null)
         .not('assignee_id', 'is', null)
         .lte('due_date', today)
-        .order('due_date', { ascending: true });
+        .order('due_date', { ascending: true })
+        .order('due_time', { ascending: true, nullsFirst: false });
 
       if (error) return json({ error: error.message }, 500, headers);
 
@@ -1704,7 +1706,8 @@ Deno.serve(async (req) => {
       const { data: tasks, error: tasksErr } = await db.from('tasks')
         .select('id, name, due_date, due_time, projects:project_id(id, name), task_statuses:status_id(label, color_hex), assigned_team:assigned_team_id(team_name)')
         .eq('assignee_id', profile.id).eq('is_completed', false).is('deleted_at', null)
-        .not('due_date', 'is', null).lte('due_date', todayStr).order('due_date', { ascending: true });
+        .not('due_date', 'is', null).lte('due_date', todayStr)
+        .order('due_date', { ascending: true }).order('due_time', { ascending: true, nullsFirst: false });
       if (tasksErr) return json({ error: tasksErr.message }, 500, headers);
       const today = new Date();
       return json({
@@ -1733,7 +1736,8 @@ Deno.serve(async (req) => {
       const { data: tasks, error: tasksErr } = await db.from('tasks')
         .select('id, name, due_date, assignee_id, projects:project_id(id, name), task_statuses:status_id(label), profiles:assignee_id(full_name, email)')
         .in('assignee_id', userIds).eq('is_completed', false).is('deleted_at', null)
-        .not('due_date', 'is', null).lte('due_date', todayStr).order('due_date', { ascending: true });
+        .not('due_date', 'is', null).lte('due_date', todayStr)
+        .order('due_date', { ascending: true }).order('due_time', { ascending: true, nullsFirst: false });
       if (tasksErr) return json({ error: tasksErr.message }, 500, headers);
       const byUser: Record<string, any> = {};
       for (const t of (tasks || []) as any[]) {

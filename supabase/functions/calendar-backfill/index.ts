@@ -28,7 +28,8 @@ Deno.serve(async (_req) => {
     .is("deleted_at", null)
     .is("calendar_event_id", null)
     .not("due_date", "is", null)
-    .order("due_date", { ascending: true });
+    .order("due_date", { ascending: true })
+    .order("due_time", { ascending: true, nullsFirst: false });
 
   if (error) {
     console.error("[backfill] error:", error.message);

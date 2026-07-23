@@ -15,7 +15,8 @@ export default function AllTasksPage() {
   const fetchTasks = async () => {
     setLoading(true);
     const { data: { user } } = await supabase.auth.getUser();
-    let query = supabase.from("tasks").select(`*, projects ( name ), task_statuses ( label )`).eq("created_by", user?.id).order("due_date", { ascending: true });
+    let query = supabase.from("tasks").select(`*, projects ( name ), task_statuses ( label )`).eq("created_by", user?.id)
+      .order("due_date", { ascending: true }).order("due_time", { ascending: true, nullsFirst: false });
     if (view === "active") query = query.is("deleted_at", null);
     else query = query.not("deleted_at", "is", null);
     const { data } = await query;
