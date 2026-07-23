@@ -18,7 +18,7 @@
 // tool-calling call, not the plain RAG chat path, which has no tools to
 // misuse in the first place.
 export const TOOL_USE_GUARDRAILS =
-  "You also have tools for creating/updating tasks and projects. Only call one of these when the user is clearly and explicitly asking you to create or change something specific, using real details they actually provided. Never invent a placeholder name, project, or value to fill a required field. For greetings, small talk, or questions that aren't a clear action request, respond normally in plain text without calling any tool. If a request is action-like but missing a required detail (e.g. no project name for a new task), ask a clarifying question in plain text instead of guessing or calling a tool with incomplete or invented information. If the user refers back to something already in the conversation instead of restating it -- e.g. \"create the above task\", \"create above task\", \"make this a task\", \"add that as a project\" -- use the actual text of the message(s) they're pointing to (usually the immediately preceding message) to fill in the corresponding field (e.g. the referenced message's full text becomes the task/project name) instead of asking for it again or leaving it blank.";
+  "You also have tools for creating/updating tasks and projects. Only call one of these when the user is clearly and explicitly asking you to create or change something specific, using real details they actually provided. Never invent a placeholder name, project, or value to fill a required field. For greetings, small talk, or questions that aren't a clear action request, respond normally in plain text without calling any tool. If a request is action-like but missing a required detail (e.g. no project name for a new task), ask a clarifying question in plain text instead of guessing or calling a tool with incomplete or invented information. If the user refers back to something already in the conversation instead of restating it -- e.g. \"create the above task\", \"create above task\", \"make this a task\", \"add that as a project\" -- use the actual text of the message(s) they're pointing to (usually the immediately preceding message) to fill in the corresponding field (e.g. the referenced message's full text becomes the task/project name) instead of asking for it again or leaving it blank. Copy that referenced text verbatim -- never summarize, shorten, or paraphrase it into your own wording.";
 
 import type { FieldDef } from "./actionFields";
 
@@ -184,7 +184,7 @@ export function buildActionTools(taskFields: FieldDef[], projectFields: FieldDef
             name: {
               type: "string",
               description:
-                "The task's name/title. If the user references a prior message instead of stating one directly (e.g. \"create the above task\", \"create above task\", \"make this a task\"), use the full text of the message they're pointing to (usually the one immediately before) as the name. Otherwise, ONLY fill this in if the user actually stated a name -- omit this property entirely rather than inventing a placeholder.",
+                "The task's name/title. If the user references a prior message instead of stating one directly (e.g. \"create the above task\", \"create above task\", \"make this a task\"), use the COMPLETE, VERBATIM text of the message they're pointing to (usually the one immediately before) as the name -- copy it exactly, do not summarize, shorten, paraphrase, or rewrite it into your own words. Otherwise, ONLY fill this in if the user actually stated a name -- omit this property entirely rather than inventing a placeholder.",
             },
             project_name: {
               type: "string",
@@ -226,7 +226,7 @@ export function buildActionTools(taskFields: FieldDef[], projectFields: FieldDef
             name: {
               type: "string",
               description:
-                "The project's name. If the user references a prior message instead of stating one directly (e.g. \"create the above as a project\", \"make this a project\"), use the full text of the message they're pointing to as the name. Otherwise, ONLY fill this in if the user actually stated a name -- omit this property entirely rather than inventing a placeholder.",
+                "The project's name. If the user references a prior message instead of stating one directly (e.g. \"create the above as a project\", \"make this a project\"), use the COMPLETE, VERBATIM text of the message they're pointing to as the name -- copy it exactly, do not summarize, shorten, paraphrase, or rewrite it into your own words. Otherwise, ONLY fill this in if the user actually stated a name -- omit this property entirely rather than inventing a placeholder.",
             },
             description: { type: "string", description: "A description of the project, if mentioned." },
             status: { type: "string", description: "Initial status, if mentioned (defaults to Open)." },

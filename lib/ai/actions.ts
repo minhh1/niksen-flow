@@ -114,10 +114,15 @@ export async function resolveProfileByName(admin: any, companyId: string, name: 
 
   const { data: profiles } = await admin.from("profiles").select("id, full_name, email").in("id", memberIds);
   const lower = name.toLowerCase();
+  // Matches on full_name only -- matching against email too used to cause
+  // false-positive "duplicates": every profile at a company shares the same
+  // email domain (e.g. everyone @huynhco.com), so searching a first name
+  // that happens to appear in the company's own domain (e.g. "Huy" inside
+  // "huynhco.com") matched nearly every member, not just the actual person.
+  // Assignees are referred to by name in chat, never by raw email, so
+  // dropping the email fallback has no real downside here.
   const candidates: ResolvedMatch[] = (profiles ?? [])
-    .filter((p: { full_name: string | null; email: string | null }) =>
-      (p.full_name ?? "").toLowerCase().includes(lower) || (p.email ?? "").toLowerCase().includes(lower)
-    )
+    .filter((p: { full_name: string | null }) => (p.full_name ?? "").toLowerCase().includes(lower))
     .map((p: { id: string; full_name: string | null; email: string | null }) => ({ id: p.id, name: p.full_name || p.email || "Unknown" }));
   return pickBestMatch(name, candidates);
 }
