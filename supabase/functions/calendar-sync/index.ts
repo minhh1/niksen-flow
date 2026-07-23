@@ -1,8 +1,13 @@
 // supabase/functions/calendar-sync/index.ts
 // Creates / updates / deletes a Google Calendar event for a task — on the
-// assignee's own calendar only. Whether they share that calendar with
-// anyone else is entirely up to them; this doesn't manage sharing/ACLs or
-// try to put the event on anyone else's calendar.
+// assignee's own calendar, and optionally also on the company's nominated
+// source-of-truth Gmail account's calendar (companies.
+// sync_tasks_to_company_calendar), if that's turned on. These are two
+// independent copies (separate event ids), synced whether or not the
+// other target is available — a task with no assignee (or an assignee who
+// hasn't connected Calendar) can still sync to the company calendar, and
+// vice versa. Whether the assignee shares their own calendar with anyone
+// else is entirely up to them; this doesn't manage sharing/ACLs there.
 // Called with: { action: 'upsert' | 'delete' | 'complete', taskId }
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -218,7 +223,7 @@ Deno.serve(async (req) => {
     // Fetch task with all related data
     const { data: task, error: taskErr } = await db.from("tasks")
       .select(`
-        id, name, due_date, due_time, is_completed, calendar_event_id, calendar_target,
+        id, name, due_date, due_time, is_completed, calendar_event_id, calendar_target, company_calendar_event_id,
         company_id, project_id,
         assignee:assignee_id(id, email, full_name),
         project:project_id(id, name)
@@ -230,27 +235,39 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ error: "Task not found" }), { status: 404, headers: corsHeaders });
     }
 
-    const assigneeEmail = (task.assignee as any)?.email || null;
-    if (!assigneeEmail) {
-      console.log("[calendar] no assignee — skipping");
-      return new Response(JSON.stringify({ ok: true, skipped: "no assignee" }), { headers: corsHeaders });
-    }
-
-    const assigneeAuth = await getTokenByEmail(assigneeEmail);
-    if (!assigneeAuth) {
-      console.log("[calendar] assignee hasn't connected Google Calendar — skipping");
-      return new Response(JSON.stringify({ ok: true, skipped: "assignee not connected" }), { headers: corsHeaders });
-    }
-
-    const calendarId = await resolveCalendarId(assigneeAuth.userId, assigneeAuth.token, task.calendar_target);
-
     const companyId = task.company_id;
     const { data: company } = await db.from("companies")
-      .select("calendar_event_title_format, calendar_event_duration_mins")
+      .select("calendar_event_title_format, calendar_event_duration_mins, sync_tasks_to_company_calendar, gmail_source_emails")
       .eq("id", companyId).maybeSingle();
 
     const titleFormat = company?.calendar_event_title_format || "{task_name}";
     const durationMins = company?.calendar_event_duration_mins || 30;
+
+    // ── Resolve sync targets ────────────────────────────────────────
+    // Two independent copies — each syncs (or doesn't) on its own, so a
+    // task missing one target still syncs to the other.
+    const assigneeEmail = (task.assignee as any)?.email || null;
+    let assigneeAuth: { token: string; userId: string } | null = null;
+    let assigneeCalendarId: string | null = null;
+    if (assigneeEmail) {
+      assigneeAuth = await getTokenByEmail(assigneeEmail);
+      if (assigneeAuth) {
+        assigneeCalendarId = await resolveCalendarId(assigneeAuth.userId, assigneeAuth.token, task.calendar_target);
+      } else {
+        console.log("[calendar] assignee hasn't connected Google Calendar");
+      }
+    }
+
+    let companyAuth: { token: string; userId: string } | null = null;
+    if (company?.sync_tasks_to_company_calendar && company.gmail_source_emails?.length) {
+      companyAuth = await getTokenByEmail(company.gmail_source_emails[0]);
+      if (!companyAuth) console.log("[calendar] company source email hasn't connected Google Calendar");
+    }
+
+    if (!assigneeAuth && !companyAuth) {
+      console.log("[calendar] no sync target available — skipping");
+      return new Response(JSON.stringify({ ok: true, skipped: "no sync target" }), { headers: corsHeaders });
+    }
 
     // Resolve any custom-field tokens referenced in the title format (e.g.
     // {matter_number}, {job_reference} — whatever fields this company has
@@ -284,20 +301,33 @@ Deno.serve(async (req) => {
     ].filter(Boolean).join("\n");
 
     // ── Handle delete / complete ───────────────────────────────────
-    if ((action === "delete" || action === "complete") && task.calendar_event_id) {
-      console.log(`[calendar] ${action} event ${task.calendar_event_id}`);
+    if ((action === "delete" || action === "complete") && (task.calendar_event_id || task.company_calendar_event_id)) {
+      const dbUpdate: Record<string, unknown> = {};
 
       if (action === "delete") {
-        await deleteCalendarEvent(assigneeAuth.token, calendarId, task.calendar_event_id);
-        await db.from("tasks").update({ calendar_event_id: null, calendar_synced_at: null }).eq("id", taskId);
+        if (assigneeAuth && assigneeCalendarId && task.calendar_event_id) {
+          await deleteCalendarEvent(assigneeAuth.token, assigneeCalendarId, task.calendar_event_id);
+          dbUpdate.calendar_event_id = null;
+        }
+        if (companyAuth && task.company_calendar_event_id) {
+          await deleteCalendarEvent(companyAuth.token, "primary", task.company_calendar_event_id);
+          dbUpdate.company_calendar_event_id = null;
+        }
+        dbUpdate.calendar_synced_at = null;
       } else {
         // Mark as cancelled (keeps in history)
         const event = buildEvent({ title, description, dueDate: task.due_date, dueTime: task.due_time,
           durationMins, isCompleted: true });
-        await updateCalendarEvent(assigneeAuth.token, calendarId, task.calendar_event_id, event);
-        await db.from("tasks").update({ calendar_synced_at: new Date().toISOString() }).eq("id", taskId);
+        if (assigneeAuth && assigneeCalendarId && task.calendar_event_id) {
+          await updateCalendarEvent(assigneeAuth.token, assigneeCalendarId, task.calendar_event_id, event);
+        }
+        if (companyAuth && task.company_calendar_event_id) {
+          await updateCalendarEvent(companyAuth.token, "primary", task.company_calendar_event_id, event);
+        }
+        dbUpdate.calendar_synced_at = new Date().toISOString();
       }
 
+      await db.from("tasks").update(dbUpdate).eq("id", taskId);
       return new Response(JSON.stringify({ ok: true, action }), { headers: corsHeaders });
     }
 
@@ -310,35 +340,37 @@ Deno.serve(async (req) => {
     const event = buildEvent({ title, description, dueDate: task.due_date, dueTime: task.due_time,
       durationMins, isCompleted: false });
 
-    let eventId = task.calendar_event_id;
+    const dbUpdate: Record<string, unknown> = {};
+    let anySynced = false;
 
-    if (eventId) {
-      // Try to update existing event
-      const updated = await updateCalendarEvent(assigneeAuth.token, calendarId, eventId, event);
-      if (!updated) {
-        // Event gone (or calendar_target changed calendars) — create new
-        console.log("[calendar] event not found, creating new");
-        eventId = null;
-      } else {
-        console.log(`[calendar] updated event ${eventId}`);
+    if (assigneeAuth && assigneeCalendarId) {
+      let eventId = task.calendar_event_id;
+      if (eventId) {
+        const updated = await updateCalendarEvent(assigneeAuth.token, assigneeCalendarId, eventId, event);
+        if (!updated) eventId = null; // gone, or calendar_target changed — recreate
       }
+      if (!eventId) eventId = await createCalendarEvent(assigneeAuth.token, assigneeCalendarId, event);
+      if (eventId) { dbUpdate.calendar_event_id = eventId; anySynced = true; }
     }
 
-    if (!eventId) {
-      eventId = await createCalendarEvent(assigneeAuth.token, calendarId, event);
-      console.log(`[calendar] created event ${eventId}`);
+    if (companyAuth) {
+      let companyEventId = task.company_calendar_event_id;
+      if (companyEventId) {
+        const updated = await updateCalendarEvent(companyAuth.token, "primary", companyEventId, event);
+        if (!updated) companyEventId = null;
+      }
+      if (!companyEventId) companyEventId = await createCalendarEvent(companyAuth.token, "primary", event);
+      if (companyEventId) { dbUpdate.company_calendar_event_id = companyEventId; anySynced = true; }
     }
 
-    if (!eventId) {
+    if (!anySynced) {
       return new Response(JSON.stringify({ error: "Failed to create event", detail: lastCalendarApiError }), { status: 500, headers: corsHeaders });
     }
 
-    await db.from("tasks").update({
-      calendar_event_id: eventId,
-      calendar_synced_at: new Date().toISOString(),
-    }).eq("id", taskId);
+    dbUpdate.calendar_synced_at = new Date().toISOString();
+    await db.from("tasks").update(dbUpdate).eq("id", taskId);
 
-    return new Response(JSON.stringify({ ok: true, eventId }), { headers: corsHeaders });
+    return new Response(JSON.stringify({ ok: true, eventId: dbUpdate.calendar_event_id || null, companyEventId: dbUpdate.company_calendar_event_id || null }), { headers: corsHeaders });
 
   } catch (err: any) {
     console.error("[calendar] error:", err.message);

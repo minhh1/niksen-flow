@@ -150,6 +150,7 @@ export default function AdminPage() {
   const [calendarSeparator, setCalendarSeparator] = useState(' — ');
   const [calendarDragIdx, setCalendarDragIdx] = useState<number | null>(null);
   const [calendarDuration, setCalendarDuration] = useState(30);
+  const [syncToCompanyCalendar, setSyncToCompanyCalendar] = useState(false);
   const [savingCalendar, setSavingCalendar] = useState(false);
   const [projectCustomFields, setProjectCustomFields] = useState<ProjectCustomField[]>([]);
   const [addingCustomField, setAddingCustomField] = useState(false);
@@ -246,6 +247,7 @@ export default function AdminPage() {
     setCalendarTokens(parsedFormat.tokens);
     setCalendarSeparator(parsedFormat.separator);
     setCalendarDuration(comp?.calendar_event_duration_mins || 30);
+    setSyncToCompanyCalendar(!!comp?.sync_tasks_to_company_calendar);
 
     // Members — two separate queries to avoid FK join issues
     const { data: memberships } = await supabase
@@ -343,6 +345,7 @@ export default function AdminPage() {
     await supabase.from('companies').update({
       calendar_event_title_format: buildCalendarFormat(calendarTokens, calendarSeparator),
       calendar_event_duration_mins: calendarDuration,
+      sync_tasks_to_company_calendar: syncToCompanyCalendar,
     }).eq('id', company.id);
     setSavingCalendar(false);
   };
@@ -927,7 +930,7 @@ export default function AdminPage() {
               <div className="pt-6 border-t border-slate-100 space-y-4">
                 <p className="text-[11px] font-bold text-slate-700 uppercase tracking-widest">Calendar sync</p>
                 <p className="text-[11px] text-slate-400">
-                  Events are created in the nominated source email's Google Calendar and the assignee's calendar.
+                  Events are created on the assignee's own Google Calendar. Optionally also add a copy to the nominated source email's calendar below.
                 </p>
 
                 <div className="space-y-3">
@@ -1077,6 +1080,20 @@ export default function AdminPage() {
                       </button>
                     ))}
                   </div>
+                </div>
+                <div>
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <div onClick={() => setSyncToCompanyCalendar(v => !v)}
+                      className={`w-10 h-6 rounded-full transition-colors shrink-0 ${syncToCompanyCalendar ? 'bg-indigo-600' : 'bg-slate-200'} ${sourceEmails.length ? '' : 'opacity-40 pointer-events-none'}`}>
+                      <div className={`w-5 h-5 bg-white rounded-full shadow mt-0.5 transition-transform ${syncToCompanyCalendar ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    </div>
+                    <span className="text-[12px] text-slate-700 font-medium">
+                      Also add every task event to {sourceEmails[0] ? <span className="font-mono text-[11px]">{sourceEmails[0]}</span> : 'the source email'}'s calendar
+                    </span>
+                  </label>
+                  {!sourceEmails.length && (
+                    <p className="text-[10px] text-slate-400 mt-1.5 ml-[52px]">Nominate a source email above first.</p>
+                  )}
                 </div>
                 <button
                   onClick={handleSaveCalendar}
