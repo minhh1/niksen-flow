@@ -217,7 +217,8 @@ export default function AdminPlatformHealthTab() {
   const [azureExpiring, setAzureExpiring] = useState<{ companyName: string; kind: string; expires_at: string }[]>([]);
   const [secretsLoading, setSecretsLoading] = useState(true);
   const [addingSecret, setAddingSecret] = useState(false);
-  const [newSecret, setNewSecret] = useState({ service: "", label: "", rotation_interval_days: "90" });
+  const [newSecret, setNewSecret] = useState({ service: "", label: "", expires_at: "", rotation_interval_days: "90" });
+  const [editingExpiryId, setEditingExpiryId] = useState<string | null>(null);
   const [savingSecret, setSavingSecret] = useState(false);
 
   const loadSecrets = async () => {
@@ -242,11 +243,12 @@ export default function AdminPlatformHealthTab() {
       body: JSON.stringify({
         service: newSecret.service.trim(),
         label: newSecret.label.trim(),
+        expires_at: newSecret.expires_at || null,
         rotation_interval_days: newSecret.rotation_interval_days ? Number(newSecret.rotation_interval_days) : null,
       }),
     });
     setSavingSecret(false);
-    setNewSecret({ service: "", label: "", rotation_interval_days: "90" });
+    setNewSecret({ service: "", label: "", expires_at: "", rotation_interval_days: "90" });
     setAddingSecret(false);
     loadSecrets();
   };
@@ -257,6 +259,16 @@ export default function AdminPlatformHealthTab() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ last_rotated_at: new Date().toISOString() }),
     });
+    loadSecrets();
+  };
+
+  const handleSetExpiry = async (id: string, expiresAt: string) => {
+    await fetch(`/api/admin/secrets/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expires_at: expiresAt || null }),
+    });
+    setEditingExpiryId(null);
     loadSecrets();
   };
 
@@ -419,13 +431,27 @@ export default function AdminPlatformHealthTab() {
                   <div className="flex items-center gap-4">
                     <div className="flex-1 min-w-0">
                       <p className="text-[13px] font-bold text-slate-800">{s.label}</p>
-                      <p className="text-[11px] text-slate-400 mt-0.5">
-                        {s.expires_at
-                          ? `Expires ${new Date(s.expires_at).toLocaleDateString()}`
-                          : s.last_rotated_at
-                            ? `Last rotated ${new Date(s.last_rotated_at).toLocaleDateString()}${s.rotation_interval_days ? ` — every ${s.rotation_interval_days}d` : ""}`
-                            : "Never rotated"}
-                      </p>
+                      {editingExpiryId === s.id ? (
+                        <input
+                          type="date"
+                          autoFocus
+                          defaultValue={s.expires_at ? s.expires_at.slice(0, 10) : ""}
+                          onBlur={e => handleSetExpiry(s.id, e.target.value)}
+                          onKeyDown={e => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); if (e.key === "Escape") setEditingExpiryId(null); }}
+                          className="mt-1 px-3 py-1 border border-indigo-300 rounded-full text-[11px] outline-none"
+                        />
+                      ) : (
+                        <button
+                          onClick={() => setEditingExpiryId(s.id)}
+                          className="text-[11px] text-slate-400 mt-0.5 hover:text-indigo-600 hover:underline text-left"
+                        >
+                          {s.expires_at
+                            ? `Expires ${new Date(s.expires_at).toLocaleDateString()}`
+                            : s.last_rotated_at
+                              ? `Last rotated ${new Date(s.last_rotated_at).toLocaleDateString()}${s.rotation_interval_days ? ` — every ${s.rotation_interval_days}d` : ""} (no expiry set)`
+                              : "No expiry set — click to add"}
+                        </button>
+                      )}
                       {s.notes && <p className="text-[10px] text-slate-300 mt-1">{s.notes}</p>}
                     </div>
                     <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase shrink-0 ${status.className}`}>{status.label}</span>
@@ -446,8 +472,16 @@ export default function AdminPlatformHealthTab() {
                   placeholder="Service slug e.g. custom_thing" className="w-full px-4 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
                 <input value={newSecret.label} onChange={e => setNewSecret(p => ({ ...p, label: e.target.value }))}
                   placeholder="Label e.g. Custom thing API key" className="w-full px-4 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
-                <input type="number" value={newSecret.rotation_interval_days} onChange={e => setNewSecret(p => ({ ...p, rotation_interval_days: e.target.value }))}
-                  placeholder="Rotation interval (days)" className="w-full px-4 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
+                <div>
+                  <label className="text-[10px] text-slate-400 block mb-1 ml-1">Expires on (if known)</label>
+                  <input type="date" value={newSecret.expires_at} onChange={e => setNewSecret(p => ({ ...p, expires_at: e.target.value }))}
+                    className="w-full px-4 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-400 block mb-1 ml-1">Or a rotation cadence, if it has no fixed expiry</label>
+                  <input type="number" value={newSecret.rotation_interval_days} onChange={e => setNewSecret(p => ({ ...p, rotation_interval_days: e.target.value }))}
+                    placeholder="Rotation interval (days)" className="w-full px-4 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400" />
+                </div>
                 <div className="flex gap-2">
                   <button onClick={handleAddSecret} disabled={savingSecret} className="px-5 py-2 bg-indigo-600 text-white text-[12px] font-bold rounded-full disabled:opacity-40">
                     {savingSecret ? "Saving..." : "Add"}
