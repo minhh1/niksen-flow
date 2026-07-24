@@ -388,7 +388,18 @@ async function handleToolCall(
   if (toolCall.name === "update_task") {
     const taskName = args.task_name as string | undefined;
     if (!taskName) return reply("Which task should I update?");
-    const task = await resolveTaskByName(admin, companyId, taskName);
+
+    // A project qualifier (e.g. "task X for project lot 39") scopes the
+    // search so the right task is found even when the same task name
+    // recurs across projects -- see resolveTaskByName's projectId param.
+    let scopeProjectId: string | undefined;
+    if (args.project_name) {
+      const project = await resolveProjectByName(admin, companyId, args.project_name as string);
+      if (project.status !== "found") return askAbout("project", project, args.project_name as string);
+      scopeProjectId = project.match.id;
+    }
+
+    const task = await resolveTaskByName(admin, companyId, taskName, scopeProjectId);
     if (task.status !== "found") return askAbout("task", task, taskName);
 
     let assigneeId: string | null | undefined;
@@ -403,19 +414,35 @@ async function handleToolCall(
       if (status.status !== "found") return askAbout("status", status, args.status as string);
       statusId = status.match.id;
     }
+    let moveToProjectId: string | undefined;
+    if (args.new_project_name) {
+      const newProject = await resolveProjectByName(admin, companyId, args.new_project_name as string);
+      if (newProject.status !== "found") return askAbout("project", newProject, args.new_project_name as string);
+      moveToProjectId = newProject.match.id;
+    }
 
     const changes: string[] = [];
     if (args.new_name) changes.push(`rename to "${args.new_name}"`);
     if (args.due_date) changes.push(`due date to ${args.due_date}`);
     if (assigneeId) changes.push(`assignee to ${args.assignee_name}`);
     if (statusId) changes.push(`status to ${args.status}`);
+    if (moveToProjectId) changes.push(`move to project ${args.new_project_name}`);
     if (args.is_completed !== undefined) changes.push(args.is_completed ? "mark complete" : "reopen");
     if (args.notes) changes.push("update notes");
     const summary = `I'll update task "${task.match.name}": ${changes.join(", ") || "no changes recognized"}.`;
 
     return storePending(
       "update_task",
-      { taskId: task.match.id, name: args.new_name ?? undefined, dueDate: args.due_date ?? undefined, assigneeId, statusId, isCompleted: args.is_completed, notes: args.notes ?? undefined },
+      {
+        taskId: task.match.id,
+        name: args.new_name ?? undefined,
+        dueDate: args.due_date ?? undefined,
+        assigneeId,
+        statusId,
+        isCompleted: args.is_completed,
+        notes: args.notes ?? undefined,
+        projectId: moveToProjectId,
+      },
       summary
     );
   }

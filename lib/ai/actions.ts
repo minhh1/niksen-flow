@@ -94,13 +94,16 @@ export async function createEntity(admin: any, companyId: string, name: string, 
   return data;
 }
 
-export async function resolveTaskByName(admin: any, companyId: string, name: string): Promise<ResolveResult> {
-  const { data } = await admin
-    .from("tasks")
-    .select("id, name")
-    .eq("company_id", companyId)
-    .is("deleted_at", null)
-    .ilike("name", `%${name}%`);
+// projectId scopes the search to one project when the user gave one (e.g.
+// "task send out contract for project lot 39, ...") -- task names aren't
+// required unique across projects (see Phase I's require_unique_task_names
+// toggle, off by default), so the same task name recurring in different
+// projects is normal and a project qualifier is exactly the disambiguator
+// needed rather than searching company-wide.
+export async function resolveTaskByName(admin: any, companyId: string, name: string, projectId?: string): Promise<ResolveResult> {
+  let query = admin.from("tasks").select("id, name").eq("company_id", companyId).is("deleted_at", null).ilike("name", `%${name}%`);
+  if (projectId) query = query.eq("project_id", projectId);
+  const { data } = await query;
   return pickBestMatch(name, (data ?? []) as ResolvedMatch[]);
 }
 
@@ -299,6 +302,7 @@ export interface UpdateTaskParams {
   notes?: string | null;
   statusId?: string | null;
   isCompleted?: boolean;
+  projectId?: string;
 }
 
 export async function updateTask(admin: any, companyId: string, userId: string, params: UpdateTaskParams) {
@@ -309,6 +313,7 @@ export async function updateTask(admin: any, companyId: string, userId: string, 
   if (params.notes !== undefined) update.notes = params.notes || null;
   if (params.statusId !== undefined) update.status_id = params.statusId || null;
   if (params.isCompleted !== undefined) update.is_completed = params.isCompleted;
+  if (params.projectId !== undefined) update.project_id = params.projectId;
 
   const { error } = await admin.from("tasks").update(update).eq("id", params.taskId).eq("company_id", companyId);
   if (error) throw new Error(error.message);

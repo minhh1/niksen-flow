@@ -100,8 +100,21 @@ const UPDATE_TASK_TOOL = {
     parameters: {
       type: "object",
       properties: {
-        task_name: { type: "string", description: "The name of the existing task to update." },
+        task_name: {
+          type: "string",
+          description:
+            "The existing task's own name/title only -- if the user also mentions which project it's in (e.g. \"task send out contract for project lot 39\"), put ONLY \"send out contract\" here and the project part in project_name below, don't combine them into one string.",
+        },
+        project_name: {
+          type: "string",
+          description:
+            "Which project the task CURRENTLY belongs to, if mentioned -- helps find the right task when the same task name might exist in more than one project. Can be the project's name or a known identifier like a matter number. Do not put a NEW project here if the user wants to move the task -- use new_project_name for that.",
+        },
         new_name: { type: "string", description: "A new name for the task, if it should be renamed." },
+        new_project_name: {
+          type: "string",
+          description: "A different project to move this task to, only if the user explicitly asks to change/move it to another project. Can be a project name or matter number.",
+        },
         due_date: { type: "string", description: "New due date in YYYY-MM-DD format, if changing." },
         assignee_name: { type: "string", description: "New assignee's name, if changing." },
         status: { type: "string", description: "New status label (e.g. Done, In Progress), if changing." },
