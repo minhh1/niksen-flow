@@ -394,36 +394,46 @@ function TemplateModal({ templates, setTemplates, profiles, teams, companyId, pr
     { value: 'record_due', label: 'Project due date' },
   ];
 
-  const getAnchorDate = (item: TemplateItem): Date => {
-    if (item.due_anchor === 'record_created') return new Date(projectCreatedAt);
-    if (item.due_anchor === 'record_due' && projectDueDate) return new Date(projectDueDate);
-    return new Date();
-  };
-
-  // Calendar-day resolution — instant, no network call.
-  const resolveDate = (item: TemplateItem): string | null => {
-    if (item.due_offset_days === null) return null;
-    const anchor = getAnchorDate(item);
-    anchor.setDate(anchor.getDate() + (item.due_offset_days || 0));
-    return anchor.toISOString().split('T')[0];
-  };
-
-  // Business-day resolution — calls date-calc for AU state-aware holiday skipping.
-  // Falls back to the calendar-day result if the item isn't in business mode or the call fails.
-  const resolveDateAsync = async (item: TemplateItem): Promise<string | null> => {
-    if (item.due_offset_days === null) return null;
+  // Resolves an item's due date, following "After: <earlier task>" chains (due_anchor = `task_<index>`)
+  // back to a real anchor (project created / project due date). `items` is the full ordered array the
+  // index refers to — pass the same array the item's `task_<index>` values were assigned against.
+  // Business-day items call date-calc for AU state-aware holiday skipping; calendar-day items resolve
+  // synchronously via simple date math, still wrapped in a promise so both paths share one code path.
+  const resolveItemDate = async (
+    item: Partial<TemplateItem>, items: Partial<TemplateItem>[], seen: Set<number> = new Set()
+  ): Promise<string | null> => {
+    if (item.due_offset_days === null || item.due_offset_days === undefined) return null;
+    let anchor: Date | null = null;
+    if (item.due_anchor === 'record_created') {
+      anchor = new Date(projectCreatedAt);
+    } else if (item.due_anchor === 'record_due') {
+      anchor = projectDueDate ? new Date(projectDueDate) : null;
+    } else {
+      const m = /^task_(\d+)$/.exec(item.due_anchor || '');
+      if (m) {
+        const idx = Number(m[1]);
+        const ref = items[idx];
+        if (ref && !seen.has(idx)) {
+          const refDate = await resolveItemDate(ref, items, new Set(seen).add(idx));
+          anchor = refDate ? new Date(refDate) : null;
+        }
+      } else {
+        anchor = new Date();
+      }
+    }
+    if (!anchor) return null;
     if (item.due_offset_mode === 'business' && item.due_offset_state) {
-      const fromDateStr = getAnchorDate(item).toISOString().split('T')[0];
+      const fromDateStr = anchor.toISOString().split('T')[0];
       const { data, error } = await supabase.functions.invoke('date-calc', {
         body: { fromDate: fromDateStr, days: item.due_offset_days, mode: 'business', state: item.due_offset_state },
       });
       if (!error && data?.resultDate) return data.resultDate;
     }
-    return resolveDate(item);
+    anchor.setDate(anchor.getDate() + (item.due_offset_days || 0));
+    return anchor.toISOString().split('T')[0];
   };
 
-  // Resolved dates for the "apply" preview — keyed by item id, populated async
-  // for business-day items (calendar-day items resolve instantly via resolveDate).
+  // Resolved dates for the "apply" preview — keyed by item id, populated async.
   const [resolvedDates, setResolvedDates] = useState<Record<string, string | null>>({});
 
   useEffect(() => {
@@ -431,7 +441,7 @@ function TemplateModal({ templates, setTemplates, profiles, teams, companyId, pr
     let cancelled = false;
     (async () => {
       const items = selected.items.filter(i => !i.parent_item_id);
-      const entries = await Promise.all(items.map(async item => [item.id, await resolveDateAsync(item)] as const));
+      const entries = await Promise.all(items.map(async item => [item.id, await resolveItemDate(item, selected.items)] as const));
       if (!cancelled) setResolvedDates(Object.fromEntries(entries));
     })();
     return () => { cancelled = true; };
@@ -448,7 +458,7 @@ function TemplateModal({ templates, setTemplates, profiles, teams, companyId, pr
       project_id: projectId, company_id: companyId, name: item.title,
       assignee_id: item.assignee_id || null, assigned_team_id: item.assigned_team_id || null,
       is_monetary: item.is_monetary || false, estimated_cost: item.estimated_cost || 0,
-      due_date: await resolveDateAsync(item), is_completed: false,
+      due_date: await resolveItemDate(item, selected.items), is_completed: false,
     })));
     console.log('[template] tasksToCreate:', tasksToCreate);
     await onApply(tasksToCreate);
@@ -542,9 +552,10 @@ function TemplateModal({ templates, setTemplates, profiles, teams, companyId, pr
                         <span className="text-[10px] text-slate-400 flex items-center gap-1">
                           <Calendar size={9} />
                           {item.due_offset_days === 0 ? 'On ' : item.due_offset_days > 0 ? `+${item.due_offset_days}d from ` : `${item.due_offset_days}d from `}
-                          {ANCHORS.find(a => a.value === item.due_anchor)?.label || item.due_anchor}
+                          {ANCHORS.find(a => a.value === item.due_anchor)?.label
+                            || (/^task_(\d+)$/.exec(item.due_anchor || '') ? `After: ${selected.items[Number(/^task_(\d+)$/.exec(item.due_anchor || '')![1])]?.title || 'task'}` : item.due_anchor)}
                           {' → '}
-                          <span className="font-medium text-indigo-600">{resolvedDates[item.id] ?? resolveDate(item) ?? '—'}</span>
+                          <span className="font-medium text-indigo-600">{resolvedDates[item.id] ?? '—'}</span>
                           {item.due_offset_mode === 'business' && (
                             <span className="text-slate-300"> ({item.due_offset_state} business days)</span>
                           )}
@@ -606,6 +617,9 @@ function TemplateModal({ templates, setTemplates, profiles, teams, companyId, pr
                             const next = [...editItems]; next[idx] = { ...next[idx], due_anchor: e.target.value }; setEditItems(next);
                           }} className="w-full px-3 py-1.5 border border-slate-200 rounded-full text-[11px] outline-none bg-white">
                             {ANCHORS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+                            {editItems.slice(0, idx).filter(i => i.title).map((i, prevIdx) => (
+                              <option key={`task_${prevIdx}`} value={`task_${prevIdx}`}>After: {i.title || `Task ${prevIdx + 1}`}</option>
+                            ))}
                           </select>
                         </div>
                       </div>
