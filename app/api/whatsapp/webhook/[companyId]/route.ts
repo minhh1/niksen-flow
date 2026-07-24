@@ -118,7 +118,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ com
   const payload = JSON.parse(rawBody);
 
   const rows: Record<string, unknown>[] = [];
-  const botMessages: { waId: string; messageId: string; text: string; groupId: string | null; reactionTargetId?: string }[] = [];
+  const botMessages: { waId: string; messageId: string; text: string; groupId: string | null; contactName: string | null; reactionTargetId?: string }[] = [];
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
       const value = change.value ?? {};
@@ -129,11 +129,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ com
       );
 
       for (const message of value.messages ?? []) {
+        const contactName = contactsByWaId.get(message.from) ?? null;
         rows.push({
           company_id: companyId,
           wa_phone_number_id: credentials.phone_number_id,
           contact_wa_id: message.from,
-          contact_name: contactsByWaId.get(message.from) ?? null,
+          contact_name: contactName,
           direction: "inbound",
           message_type: message.type,
           body: message.text?.body ?? null,
@@ -142,7 +143,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ com
         });
 
         if (message.type === "text" && message.text?.body) {
-          botMessages.push({ waId: message.from, messageId: message.id, text: message.text.body, groupId: message.group_id ?? null });
+          botMessages.push({ waId: message.from, messageId: message.id, text: message.text.body, groupId: message.group_id ?? null, contactName });
         }
         // A 👍 reaction counts as a lightweight "yes" -- lets someone
         // confirm a pending create/update without typing a word. Verified
@@ -153,7 +154,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ com
         // ignored rather than blindly confirming whatever's pending. Matches
         // the base thumbs-up regardless of skin-tone modifier.
         if (message.type === "reaction" && message.reaction?.emoji?.startsWith("\u{1F44D}") && message.reaction?.message_id) {
-          botMessages.push({ waId: message.from, messageId: message.id, text: "\u{1F44D}", groupId: message.group_id ?? null, reactionTargetId: message.reaction.message_id });
+          botMessages.push({ waId: message.from, messageId: message.id, text: "\u{1F44D}", groupId: message.group_id ?? null, contactName, reactionTargetId: message.reaction.message_id });
         }
       }
     }
@@ -185,6 +186,7 @@ interface IncomingMessage {
   messageId: string;
   text: string;
   groupId: string | null;
+  contactName: string | null;
   reactionTargetId?: string;
 }
 
@@ -198,8 +200,20 @@ function destinationFor(msg: IncomingMessage): WhatsAppDestination {
   return msg.groupId ? { type: "group", groupId: msg.groupId } : { type: "individual", waId: msg.waId };
 }
 
+// In a shared WhatsApp group, several people can have their own pending
+// create/update flow going at once -- everything the bot posts is visible
+// to the whole group with no other indication of who a prompt/result is
+// for, which reads as one shared queue even though the underlying state
+// (whatsapp_bot_pending_actions, keyed by linked_account_id) is already
+// isolated per person. Prefixing with the sender's own WhatsApp display
+// name (only needed in a group -- a 1:1 chat is unambiguous) makes that
+// isolation visible instead of just real.
+function attribute(text: string, msg: IncomingMessage): string {
+  return msg.groupId && msg.contactName ? `${msg.contactName}: ${text}` : text;
+}
+
 async function handleMessage(admin: any, companyId: string, credentials: WhatsAppCredentials, msg: IncomingMessage) {
-  const reply = (text: string) => sendWhatsAppReply(credentials, destinationFor(msg), msg.messageId, text);
+  const reply = (text: string) => sendWhatsAppReply(credentials, destinationFor(msg), msg.messageId, attribute(text, msg));
 
   const { data: linked } = await admin
     .from("whatsapp_bot_linked_accounts")
@@ -380,7 +394,7 @@ async function handleToolCall(
   sourceTypes: string[],
   toolCall: ToolCall
 ) {
-  const reply = (text: string) => sendWhatsAppReply(credentials, destinationFor(msg), msg.messageId, text);
+  const reply = (text: string) => sendWhatsAppReply(credentials, destinationFor(msg), msg.messageId, attribute(text, msg));
   const args = toolCall.arguments as Record<string, string | boolean | undefined>;
 
   const askAbout = async (kind: string, result: { status: "ambiguous"; candidates: { name: string }[] } | { status: "not_found" }, name: string) => {
@@ -503,7 +517,7 @@ async function applyAdvanceResult(
   actionType: string,
   result: Awaited<ReturnType<typeof advanceAction>>
 ) {
-  const reply = (text: string) => sendWhatsAppReply(credentials, destinationFor(msg), msg.messageId, text);
+  const reply = (text: string) => sendWhatsAppReply(credentials, destinationFor(msg), msg.messageId, attribute(text, msg));
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
   if (result.status === "collecting") {
@@ -533,7 +547,7 @@ async function applyFileAdvanceResult(
   actionType: string,
   result: FileAdvanceResult
 ) {
-  const reply = (text: string) => sendWhatsAppReply(credentials, destinationFor(msg), msg.messageId, text);
+  const reply = (text: string) => sendWhatsAppReply(credentials, destinationFor(msg), msg.messageId, attribute(text, msg));
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
   if (result.status === "collecting") {

@@ -157,6 +157,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ com
   const serviceUrl: string = activity.serviceUrl;
   const conversationId: string = activity.conversation?.id;
   const activityId: string = activity.id;
+  // Several people can have their own pending create/update flow going at
+  // once in a shared channel/group chat -- everything the bot posts there
+  // is visible to everyone with no other indication of who a prompt/result
+  // is for, which reads as one shared queue even though the underlying
+  // state (teams_bot_pending_actions, keyed by linked_account_id) is
+  // already isolated per person. senderName (only needed outside a 1:1,
+  // which is unambiguous on its own) is used to prefix the bot's replies --
+  // see attribute() below.
+  const isGroup = conversationType !== "personal";
+  const senderName: string | undefined = activity.from?.name;
 
   if (!aadObjectId || !tenantId || !question) {
     return NextResponse.json({ ok: true });
@@ -174,7 +184,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ com
   // the same message when it didn't see a timely-enough response (observed
   // as duplicate teams_bot_link_requests rows for the same identity).
   after(() =>
-    handleMessage(admin, companyId, creds, { aadObjectId, tenantId, serviceUrl, conversationId, activityId, question, reactionTargetId }).catch((err) =>
+    handleMessage(admin, companyId, creds, { aadObjectId, tenantId, serviceUrl, conversationId, activityId, question, reactionTargetId, isGroup, senderName }).catch((err) =>
       console.error("Teams bot message handling failed:", err)
     )
   );
@@ -190,6 +200,12 @@ interface IncomingMessage {
   activityId: string;
   question: string;
   reactionTargetId?: string;
+  isGroup: boolean;
+  senderName?: string;
+}
+
+function attribute(text: string, msg: IncomingMessage): string {
+  return msg.isGroup && msg.senderName ? `${msg.senderName}: ${text}` : text;
 }
 
 async function handleMessage(admin: any, companyId: string, botCreds: BotCredentials, msg: IncomingMessage) {
@@ -201,6 +217,7 @@ async function handleMessage(admin: any, companyId: string, botCreds: BotCredent
     .maybeSingle();
 
   const botToken = await getBotToken(botCreds);
+  const reply = (text: string) => sendReply(msg.serviceUrl, msg.conversationId, msg.activityId, botToken, attribute(text, msg));
 
   if (!linked) {
     const code = randomCode();
@@ -213,13 +230,7 @@ async function handleMessage(admin: any, companyId: string, botCreds: BotCredent
       teams_service_url: msg.serviceUrl,
     });
     const linkUrl = `${APP_URL}/link-teams?code=${code}`;
-    await sendReply(
-      msg.serviceUrl,
-      msg.conversationId,
-      msg.activityId,
-      botToken,
-      `I don't recognize your account yet. Link it to Diract first, then send your question again: ${linkUrl}`
-    );
+    await reply(`I don't recognize your account yet. Link it to Diract first, then send your question again: ${linkUrl}`);
     return;
   }
 
@@ -263,7 +274,7 @@ async function handleMessage(admin: any, companyId: string, botCreds: BotCredent
       } catch (err) {
         resultText = `Sorry, that didn't work: ${err instanceof Error ? err.message : String(err)}`;
       }
-      await sendReply(msg.serviceUrl, msg.conversationId, msg.activityId, botToken, resultText);
+      await reply(resultText);
     }
     return;
   }
@@ -272,7 +283,7 @@ async function handleMessage(admin: any, companyId: string, botCreds: BotCredent
     const normalized = msg.question.trim().toLowerCase();
     if (isCancelMessage(msg.question)) {
       await admin.from("teams_bot_pending_actions").delete().eq("linked_account_id", linked.id);
-      await sendReply(msg.serviceUrl, msg.conversationId, msg.activityId, botToken, "Cancelled.");
+      await reply("Cancelled.");
       return;
     }
 
@@ -293,20 +304,14 @@ async function handleMessage(admin: any, companyId: string, botCreds: BotCredent
       } catch (err) {
         resultText = `Sorry, that didn't work: ${err instanceof Error ? err.message : String(err)}`;
       }
-      await sendReply(msg.serviceUrl, msg.conversationId, msg.activityId, botToken, resultText);
+      await reply(resultText);
       return;
     }
   }
 
   const tokenCap = settings?.monthly_token_cap ?? 2000000;
   if (await isTokenCapReached(admin, companyId, tokenCap)) {
-    await sendReply(
-      msg.serviceUrl,
-      msg.conversationId,
-      msg.activityId,
-      botToken,
-      "This company's monthly AI token cap has been reached -- ask a company admin to raise it in Admin -> AI Assistant."
-    );
+    await reply("This company's monthly AI token cap has been reached -- ask a company admin to raise it in Admin -> AI Assistant.");
     return;
   }
 
@@ -340,13 +345,7 @@ async function handleMessage(admin: any, companyId: string, botCreds: BotCredent
   if (provider === "self_hosted") {
     const discovered = await resolveDefaultSelfHostedModel(ollamaUrl!);
     if (!discovered) {
-      await sendReply(
-        msg.serviceUrl,
-        msg.conversationId,
-        msg.activityId,
-        botToken,
-        "No self-hosted model is currently available -- ask a company admin to check the Ollama connection in Admin -> AI Assistant."
-      );
+      await reply("No self-hosted model is currently available -- ask a company admin to check the Ollama connection in Admin -> AI Assistant.");
       return;
     }
     modelId = discovered;
@@ -397,7 +396,7 @@ async function handleMessage(admin: any, companyId: string, botCreds: BotCredent
       // same question twice).
       await admin.from("ai_messages").insert({ conversation_id: conversationId, role: "assistant", content: toolResult.content, citations });
       const citationLines = citations.length ? "\n\nSources: " + citations.map((c, i) => `[${i + 1}] ${c.sourceType}`).join(", ") : "";
-      await sendReply(msg.serviceUrl, msg.conversationId, msg.activityId, botToken, toolResult.content + citationLines);
+      await reply(toolResult.content + citationLines);
       return;
     }
   }
@@ -409,7 +408,7 @@ async function handleMessage(admin: any, companyId: string, botCreds: BotCredent
         ? await callHostedModel(modelId, modelMessages)
         : await callSelfHostedModel(ollamaUrl!, modelId, modelMessages);
   } catch (err) {
-    await sendReply(msg.serviceUrl, msg.conversationId, msg.activityId, botToken, "Sorry, I couldn't get an answer just now -- please try again shortly.");
+    await reply("Sorry, I couldn't get an answer just now -- please try again shortly.");
     console.error("Teams bot model call failed:", err);
     return;
   }
@@ -430,7 +429,7 @@ async function handleMessage(admin: any, companyId: string, botCreds: BotCredent
   const citationLines = citations.length
     ? "\n\nSources: " + citations.map((c, i) => `[${i + 1}] ${c.sourceType}`).join(", ")
     : "";
-  await sendReply(msg.serviceUrl, msg.conversationId, msg.activityId, botToken, usage.content + citationLines);
+  await reply(usage.content + citationLines);
 }
 
 interface LinkedAccount {
@@ -454,7 +453,7 @@ async function handleToolCall(
   sourceTypes: string[],
   toolCall: ToolCall
 ) {
-  const reply = (text: string) => sendReply(msg.serviceUrl, msg.conversationId, msg.activityId, botToken, text);
+  const reply = (text: string) => sendReply(msg.serviceUrl, msg.conversationId, msg.activityId, botToken, attribute(text, msg));
   const args = toolCall.arguments as Record<string, string | boolean | undefined>;
 
   const askAbout = async (kind: string, result: { status: "ambiguous"; candidates: { name: string }[] } | { status: "not_found" }, name: string) => {
@@ -609,7 +608,7 @@ async function applyAdvanceResult(
   actionType: string,
   result: Awaited<ReturnType<typeof advanceAction>>
 ) {
-  const reply = (text: string) => sendReply(msg.serviceUrl, msg.conversationId, msg.activityId, botToken, text);
+  const reply = (text: string) => sendReply(msg.serviceUrl, msg.conversationId, msg.activityId, botToken, attribute(text, msg));
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
   if (result.status === "collecting") {
@@ -659,7 +658,7 @@ async function applyFileAdvanceResult(
   actionType: string,
   result: FileAdvanceResult
 ) {
-  const reply = (text: string) => sendReply(msg.serviceUrl, msg.conversationId, msg.activityId, botToken, text);
+  const reply = (text: string) => sendReply(msg.serviceUrl, msg.conversationId, msg.activityId, botToken, attribute(text, msg));
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
   if (result.status === "collecting") {
