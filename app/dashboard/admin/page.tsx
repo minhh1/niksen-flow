@@ -22,6 +22,7 @@ import AdminOneDriveTab from "@/components/admin/AdminOneDriveTab";
 import AdminAiAssistantTab from "@/components/admin/AdminAiAssistantTab";
 import AdminPerfTab from "@/components/admin/AdminPerfTab";
 import AdminPlatformHealthTab from "@/components/admin/AdminPlatformHealthTab";
+import AdminArchiveRequestsTab from "@/components/admin/AdminArchiveRequestsTab";
 
 interface Member {
   id: string;
@@ -99,14 +100,14 @@ function buildCalendarFormat(tokens: string[], separator: string): string {
   return tokens.map(t => `{${t}}`).join(separator);
 }
 
-type AdminTab = 'members' | 'teams' | 'views' | 'company' | 'invites' | 'gmail' | 'gmailSync' | 'virtualComputers' | 'whatsapp' | 'msTeams' | 'oneDrive' | 'aiAssistant' | 'perf' | 'platformHealth';
-const ADMIN_TABS: AdminTab[] = ['members', 'teams', 'views', 'company', 'invites', 'gmail', 'gmailSync', 'virtualComputers', 'whatsapp', 'msTeams', 'oneDrive', 'aiAssistant', 'perf', 'platformHealth'];
+type AdminTab = 'members' | 'teams' | 'views' | 'company' | 'invites' | 'gmail' | 'gmailSync' | 'virtualComputers' | 'whatsapp' | 'msTeams' | 'oneDrive' | 'aiAssistant' | 'perf' | 'platformHealth' | 'archiveRequests';
+const ADMIN_TABS: AdminTab[] = ['members', 'teams', 'views', 'company', 'invites', 'gmail', 'gmailSync', 'virtualComputers', 'whatsapp', 'msTeams', 'oneDrive', 'aiAssistant', 'perf', 'platformHealth', 'archiveRequests'];
 const ADMIN_TAB_LABELS: Record<AdminTab, string> = {
   members: 'Members', teams: 'Teams', views: 'Default views', invites: 'Invite links',
   gmail: 'Gmail', gmailSync: 'Gmail sync', whatsapp: 'WhatsApp', msTeams: 'Microsoft Teams',
   oneDrive: 'OneDrive',
   aiAssistant: 'AI Assistant', virtualComputers: 'Virtual computers', company: 'Company', perf: 'Performance',
-  platformHealth: 'Platform health',
+  platformHealth: 'Platform health', archiveRequests: 'Archive requests',
 };
 
 export default function AdminPage() {
@@ -831,6 +832,11 @@ export default function AdminPage() {
           {/* ── Platform health (site-admin only) ── */}
           {activeTab === 'platformHealth' && isSiteAdmin && (
             <AdminPlatformHealthTab />
+          )}
+
+          {/* ── Archive requests ── */}
+          {activeTab === 'archiveRequests' && company?.id && (
+            <AdminArchiveRequestsTab companyId={company.id} />
           )}
 
           {/* ── Virtual computers ── */}

@@ -22,7 +22,8 @@
 // projects). Every field that isn't available for a given item is simply
 // omitted rather than shown as a placeholder.
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { Trash2, RotateCcw, Loader2, Table2, AlertTriangle, Search } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Trash2, RotateCcw, Loader2, Table2, AlertTriangle, Search, Shield } from "lucide-react";
 import * as LucideIcons from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useCompany } from "@/components/CompanyContext";
@@ -70,7 +71,8 @@ function fmtDate(iso: string | null) {
 }
 
 export default function TrashPage() {
-  const { companyId, userId } = useCompany();
+  const router = useRouter();
+  const { companyId, userId, isAdmin, loading: companyLoading } = useCompany();
   const [items, setItems] = useState<TrashItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -345,6 +347,23 @@ export default function TrashPage() {
 
   const isEmpty = !loading && items.length === 0;
   const noResults = !loading && items.length > 0 && filtered.length === 0;
+
+  if (companyLoading) return null;
+
+  if (!isAdmin) return (
+    <div className="flex flex-col items-center justify-center h-screen gap-3">
+      <Shield size={32} className="text-slate-200" />
+      <p className="text-slate-400 font-bold text-[11px] uppercase tracking-widest">
+        Admin access required
+      </p>
+      <button
+        onClick={() => router.back()}
+        className="text-[11px] text-indigo-600 font-bold hover:underline"
+      >
+        Go back
+      </button>
+    </div>
+  );
 
   return (
     <div className="max-w-3xl mx-auto p-8 space-y-6">

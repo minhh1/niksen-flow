@@ -3,11 +3,13 @@
 
 import React, { useState, useCallback, useMemo, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { Search, Settings2, LayoutGrid, X, Plus, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
+import { Search, Settings2, LayoutGrid, X, Plus, ChevronDown, ChevronUp, Trash2, Download } from "lucide-react";
 import * as LucideIcons from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { useCustomTable } from "@/lib/hooks/useCustomTable";
 import { createRecord, deleteRecord } from "@/lib/services/customTableService";
+import { useCompany } from "@/components/CompanyContext";
+import { createArchiveRequest, usePendingArchiveRequests } from "@/lib/archiveRequests";
 import SpreadsheetEditor from "@/components/SpreadsheetEditor";
 import type { CustomTable } from "@/lib/hooks/useCustomTables";
 import type { CustomTableField, CustomTableRecord } from "@/lib/hooks/useCustomTable";
@@ -103,6 +105,7 @@ function CustomTableMasterPageInner({ tableSlug }: Props) {
   const selectedId = searchParams.get('id');
 
   const { tableDef, fields, records, loading, refetch } = useCustomTable(tableSlug);
+  const { isAdmin } = useCompany();
 
   const [search, setSearch] = useState('');
   const [isConfigOpen, setIsConfigOpen] = useState(false);
@@ -111,6 +114,7 @@ function CustomTableMasterPageInner({ tableSlug }: Props) {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [companyId, setCompanyId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  const { pendingIds: pendingArchiveIds, refreshPendingArchiveRequests } = usePendingArchiveRequests("company_table_records", companyId);
 
   // Which fields are visible as table columns
   const [visibleFieldIds, setVisibleFieldIds] = useState<Set<string> | null>(null);
@@ -167,14 +171,53 @@ function CustomTableMasterPageInner({ tableSlug }: Props) {
     }
   };
 
-  const handleDelete = async (id: string, e: React.MouseEvent) => {
+  const handleDelete = async (record: CustomTableRecord, e: React.MouseEvent) => {
     e.stopPropagation();
+    const label = primaryField ? (record.displayValues[primaryField.field_key] ?? String(record.values[primaryField.field_key] ?? 'this record')) : 'this record';
+
+    if (!isAdmin) {
+      if (!window.confirm(`Request archiving "${label}"? A company admin will need to approve it.`)) return;
+      if (!companyId) return;
+      const result = await createArchiveRequest("company_table_records", record.id, String(label), companyId);
+      if (!result.ok) { window.alert(result.error); return; }
+      window.alert(result.alreadyPending ? "Already requested — waiting on admin review." : "Archive requested — a company admin will review it.");
+      refreshPendingArchiveRequests();
+      return;
+    }
+
     if (!window.confirm('Archive this record?')) return;
-    setDeletingId(id);
-    const result = await deleteRecord(id);
+    setDeletingId(record.id);
+    const result = await deleteRecord(record.id);
     if (result && 'error' in result) window.alert(result.error);
     setDeletingId(null);
     refetch();
+  };
+
+  // Exports ALL fields (not just visible columns) for the records currently
+  // shown (so an active search narrows the export). Relation fields export
+  // their resolved display label, not the raw record id; currency/date/number
+  // export raw stored values so the spreadsheet can compute over them.
+  const handleExportCsv = () => {
+    const esc = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
+    const csvValue = (record: CustomTableRecord, field: CustomTableField): string => {
+      const value = record.values[field.field_key];
+      if (value === null || value === undefined || value === '') return '';
+      if (RELATION_FIELD_TYPES.includes(field.field_type)) return record.displayValues[field.field_key] ?? '';
+      if (field.field_type === 'boolean') return value ? 'Yes' : 'No';
+      return String(value);
+    };
+    const rows = [
+      fields.map(f => esc(f.label)).join(','),
+      ...filteredRecords.map(r => fields.map(f => esc(csvValue(r, f))).join(',')),
+    ];
+    // BOM so Excel/Sheets detect UTF-8
+    const blob = new Blob(['\uFEFF' + rows.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${tableSlug}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleToggleField = (fieldId: string) => {
@@ -249,6 +292,12 @@ function CustomTableMasterPageInner({ tableSlug }: Props) {
                 className="flex items-center gap-2 px-4 py-2 bg-slate-50 border border-slate-200 rounded-full text-[11px] font-bold transition-all hover:bg-slate-100"
               >
                 <LayoutGrid size={16} /> Spreadsheet
+              </button>
+              <button
+                onClick={handleExportCsv}
+                className="flex items-center gap-2 px-4 py-2 bg-slate-50 border border-slate-200 rounded-full text-[11px] font-bold transition-all hover:bg-slate-100"
+              >
+                <Download size={16} /> Export CSV
               </button>
               <button
                 onClick={handleCreate}
@@ -364,11 +413,16 @@ function CustomTableMasterPageInner({ tableSlug }: Props) {
                       className="w-24 shrink-0 flex items-center justify-end gap-1 px-4"
                       onClick={e => e.stopPropagation()}
                     >
+                      {pendingArchiveIds.has(record.id) && (
+                        <span className="px-2 py-0.5 rounded-full text-[8px] font-bold uppercase bg-amber-50 text-amber-600 whitespace-nowrap">
+                          Archive requested
+                        </span>
+                      )}
                       {isDeleting ? (
                         <LucideIcons.Loader2 size={14} className="animate-spin text-slate-300" />
                       ) : (
                         <button
-                          onClick={e => handleDelete(record.id, e)}
+                          onClick={e => handleDelete(record, e)}
                           className="p-1.5 rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100"
                           title="Archive"
                         >

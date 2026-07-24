@@ -10,10 +10,13 @@ import FieldCard from "./schema/FieldCard";
 import { FIELD_TYPES, SYSTEM_TABLES, getFieldTypeConfig } from "./schema/types";
 import type { CustomField, FieldType } from "./schema/types";
 import { logSchemaChange } from "@/lib/services/schemaChangeLog";
+import { useCompany } from "@/components/CompanyContext";
+import { createArchiveRequest } from "@/lib/archiveRequests";
 
 export default function SchemaVisualisation() {
   const { tables: customTables } = useCustomTables();
 
+  const { isAdmin } = useCompany();
   const [activeTable, setActiveTable] = useState<string>('properties');
   const [isCustomTable, setIsCustomTable] = useState(false);
   const [customTableId, setCustomTableId] = useState<string | null>(null);
@@ -280,6 +283,16 @@ const handleSaveField = async (updates: Partial<CustomField>) => {
     if (!selectedFieldId) return;
     const before = fields.find(f => f.id === selectedFieldId);
     if (!before) return;
+
+    if (!isAdmin) {
+      if (!window.confirm(`Request deleting the "${before.label}" field? A company admin will need to approve it.`)) return;
+      if (!companyId) return;
+      const entityTable = isCustomTable ? "company_table_fields" : "company_custom_fields";
+      const result = await createArchiveRequest(entityTable, selectedFieldId, `Field: ${before.label}`, companyId);
+      if (!result.ok) { window.alert(result.error); return; }
+      window.alert(result.alreadyPending ? "Already requested — waiting on admin review." : "Deletion requested — a company admin will review it.");
+      return;
+    }
 
     const valueTable = isCustomTable ? 'company_table_values' : 'company_custom_field_values';
     const { count } = await supabase

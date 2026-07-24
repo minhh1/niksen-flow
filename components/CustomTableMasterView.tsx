@@ -6,6 +6,8 @@ import { Plus, Search, Trash2, ChevronDown, ChevronUp } from "lucide-react";
 import * as LucideIcons from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { createRecord, deleteRecord } from "@/lib/services/customTableService";
+import { useCompany } from "@/components/CompanyContext";
+import { createArchiveRequest, usePendingArchiveRequests } from "@/lib/archiveRequests";
 import type { CustomTable, } from "@/lib/hooks/useCustomTables";
 import type { CustomTableField, CustomTableRecord } from "@/lib/hooks/useCustomTable";
 
@@ -18,6 +20,8 @@ export default function CustomTableMasterView({
   onRefresh: () => void;
 }) {
   const router = useRouter();
+  const { isAdmin, companyId } = useCompany();
+  const { pendingIds: pendingArchiveIds, refreshPendingArchiveRequests } = usePendingArchiveRequests("company_table_records", companyId);
   const [search, setSearch] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
@@ -54,10 +58,22 @@ export default function CustomTableMasterView({
     }
   };
 
-  const handleDelete = async (id: string, e: React.MouseEvent) => {
+  const handleDelete = async (record: CustomTableRecord, e: React.MouseEvent) => {
     e.stopPropagation();
+    const label = primaryField ? (record.displayValues[primaryField.field_key] ?? String(record.values[primaryField.field_key] ?? 'this record')) : 'this record';
+
+    if (!isAdmin) {
+      if (!window.confirm(`Request archiving "${label}"? A company admin will need to approve it.`)) return;
+      if (!companyId) return;
+      const result = await createArchiveRequest("company_table_records", record.id, String(label), companyId);
+      if (!result.ok) { window.alert(result.error); return; }
+      window.alert(result.alreadyPending ? "Already requested — waiting on admin review." : "Archive requested — a company admin will review it.");
+      refreshPendingArchiveRequests();
+      return;
+    }
+
     if (!window.confirm('Archive this record?')) return;
-    const result = await deleteRecord(id);
+    const result = await deleteRecord(record.id);
     if (result && 'error' in result) window.alert(result.error);
     onRefresh();
   };
@@ -166,8 +182,13 @@ export default function CustomTableMasterView({
                       </div>
                     ))}
                     <div className="px-4 py-5 flex items-center justify-end gap-1">
+                      {pendingArchiveIds.has(record.id) && (
+                        <span className="px-2 py-0.5 rounded-full text-[8px] font-bold uppercase bg-amber-50 text-amber-600 whitespace-nowrap">
+                          Archive requested
+                        </span>
+                      )}
                       <button
-                        onClick={e => handleDelete(record.id, e)}
+                        onClick={e => handleDelete(record, e)}
                         className="p-1.5 rounded-full text-slate-300 hover:text-red-500 hover:bg-red-50 transition-all opacity-0 group-hover:opacity-100"
                       >
                         <Trash2 size={14} />
