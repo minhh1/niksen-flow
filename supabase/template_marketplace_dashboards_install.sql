@@ -183,12 +183,12 @@ BEGIN
           company_id, table_id, field_key, label, field_type, select_options,
           linked_table_id, linked_system_table, linked_display_field,
           is_required, is_unique, show_in_table, display_order, section_name, help_text,
-          auto_number_prefix, auto_number_start
+          auto_number_prefix, auto_number_start, auto_number_pad
         ) VALUES (
           p_company_id, v_target_table_id, v_fld.field_key, v_fld.label, v_fld.field_type, v_fld.select_options,
           v_linked_table_id, v_fld.linked_system_table, v_fld.linked_display_field,
           v_fld.is_required, v_fld.is_unique, v_fld.show_in_table, v_fld.display_order, v_fld.section_name, v_fld.help_text,
-          v_fld.auto_number_prefix, v_fld.auto_number_start
+          v_fld.auto_number_prefix, v_fld.auto_number_start, v_fld.auto_number_pad
         );
       END LOOP;
     END IF;

@@ -23,6 +23,7 @@ ALTER TABLE template_definition_table_fields ADD COLUMN IF NOT EXISTS formula_re
 ALTER TABLE template_definition_table_fields ADD COLUMN IF NOT EXISTS formula_relation_field_key text;
 ALTER TABLE template_definition_table_fields ADD COLUMN IF NOT EXISTS auto_number_prefix text;
 ALTER TABLE template_definition_table_fields ADD COLUMN IF NOT EXISTS auto_number_start bigint;
+ALTER TABLE template_definition_table_fields ADD COLUMN IF NOT EXISTS auto_number_pad int;
 
 -- Re-declared in full from template_marketplace.sql; changes are marked
 -- with "formula/ledger:" comments.

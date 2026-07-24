@@ -87,6 +87,9 @@ export default function SchemaVisualisation() {
         show_in_table: f.show_in_table,
         help_text: f.help_text,
         isCustomTable: true,
+        auto_number_prefix: f.auto_number_prefix ?? null,
+        auto_number_start: f.auto_number_start ?? null,
+        auto_number_pad: f.auto_number_pad ?? null,
         formula_type: f.formula_type,
         formula_field_a_id: f.formula_field_a_id,
         formula_field_b_id: f.formula_field_b_id,
@@ -236,6 +239,9 @@ const handleSaveField = async (updates: Partial<CustomField>) => {
         formula_field_a_id: updates.formula_field_a_id ?? null,
         formula_field_b_id: updates.formula_field_b_id ?? null,
         formula_percent: updates.formula_percent ?? null,
+        auto_number_prefix: updates.auto_number_prefix ?? null,
+        auto_number_start: updates.auto_number_start ?? null,
+        auto_number_pad: updates.auto_number_pad ?? null,
       })
       .eq('id', selectedFieldId);
   } else {

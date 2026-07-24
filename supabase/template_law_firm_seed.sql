@@ -198,18 +198,6 @@ BEGIN
       formula_type = 'multiply', formula_field_a_key = 'rate', formula_field_b_key = 'duration_hours'
     WHERE template_table_id = v_timefees_table_id AND field_key = 'amount' AND formula_type IS NULL;
 
-  -- A time entry with no date/matter/staff/rate/duration/billable isn't
-  -- billable to anyone -- added after the fact, so (like the formula UPDATE
-  -- above) this is a guarded UPDATE rather than part of the INSERT tuple,
-  -- to upgrade a previously-seeded catalog too.
-  UPDATE template_definition_table_fields SET is_required = true
-    WHERE template_table_id = v_timefees_table_id
-      AND field_key IN ('matter', 'staff', 'date', 'rate', 'duration_hours', 'billable')
-      AND is_required = false;
-
-  UPDATE template_definition_table_fields SET label = 'Duration (Hours)'
-    WHERE template_table_id = v_timefees_table_id AND field_key = 'duration_hours' AND label = 'Duration Hours';
-
   -- ── Disbursements ────────────────────────────────────────────────────
   INSERT INTO template_definition_tables (template_id, slug, name, icon, color, primary_field_key, display_order)
   SELECT v_template_id, 'disbursements', 'Disbursements', 'Receipt', '#b45309', 'description', 2
@@ -291,7 +279,7 @@ BEGIN
     (template_table_id, field_key, label, field_type, select_options, linked_system_table, linked_template_table_id, linked_display_field, display_order, auto_number_prefix, help_text)
   SELECT v_leads_table_id, v.field_key, v.label, v.field_type, v.select_options, v.linked_system_table, v.linked_template_table_id, v.linked_display_field, v.display_order, v.auto_number_prefix, v.help_text
   FROM (VALUES
-    ('lead_number',        'Lead Number',        'text',     NULL::jsonb, NULL::text,       NULL::uuid, NULL::text,   0,  NULL::text, 'Assigned automatically -- leave blank'::text),
+    ('lead_number',        'Lead Number',        'text',     NULL::jsonb, NULL::text,       NULL::uuid, NULL::text,   0,  NULL::text, 'Assigned automatically if left blank -- you can change it; numbers must stay unique'::text),
     ('lead_name',          'Client''s name',     'text',     NULL::jsonb, NULL::text,       NULL::uuid, NULL::text,   1,  NULL, NULL),
     ('email',              'Email',              'text',     NULL::jsonb, NULL::text,       NULL::uuid, NULL::text,   2,  NULL, NULL),
     ('phone',              'Phone',              'text',     NULL::jsonb, NULL::text,       NULL::uuid, NULL::text,   3,  NULL, NULL),
@@ -316,6 +304,14 @@ BEGIN
   -- catalog seeded before this change (old 'LD-' prefix) is corrected too.
   UPDATE template_definition_table_fields SET auto_number_prefix = '', auto_number_start = 260001
     WHERE template_table_id = v_leads_table_id AND field_key = 'lead_number' AND auto_number_start IS NULL;
+
+  -- Lead numbers stay user-editable (auto-assignment only fills a BLANK
+  -- lead_number -- see createRecord in lib/services/customTableService.ts),
+  -- so flag the field unique to keep hand-entered numbers collision-safe.
+  -- Guarded so a catalog seeded before this change is corrected too.
+  UPDATE template_definition_table_fields
+    SET is_unique = true, help_text = 'Assigned automatically if left blank -- you can change it; numbers must stay unique'
+    WHERE template_table_id = v_leads_table_id AND field_key = 'lead_number' AND is_unique IS DISTINCT FROM true;
 
   -- ── Lead Activities ──────────────────────────────────────────────────
   -- Follow-up log: one row per touchpoint, linked back to its lead.
@@ -398,12 +394,6 @@ BEGIN
   ]'::jsonb
   WHERE template_id = v_template_id AND slug = 'trust-account';
 
-  -- Named "client-billing", not "billing" -- app/dashboard/billing/ is a
-  -- static route (subscription/platform billing settings), which Next.js
-  -- always resolves ahead of the dynamic dashboard/table route for an exact
-  -- path match, so a dashboard literally named "billing" is silently
-  -- unreachable (confirmed: /dashboard/billing always renders the settings
-  -- page, never this dashboard, no matter what's installed).
   INSERT INTO template_definition_dashboards (template_id, source_template_table_id, name, slug, icon, color, display_order, widgets_template)
   SELECT v_template_id, v_invoices_table_id, 'Client Billing', 'client-billing', 'Receipt', '#0891b2', 2, '[
     {"id":"bi1","type":"filter_bar","layout":{"x":0,"y":0,"w":12,"h":2},"config":{"fieldIds":["matter","debtor"]}},

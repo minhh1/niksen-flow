@@ -32,6 +32,8 @@ export default function GmailPage() {
   const [parentCode, setParentCode] = useState('');
   const [labelTokens, setLabelTokens] = useState<string[]>(['matter_number', 'project_name']);
   const [sublabelSeparator, setSublabelSeparator] = useState(' — ');
+  const [archiveLabel, setArchiveLabel] = useState('');
+  const [leadsLabel, setLeadsLabel] = useState('');
 
   // ── Messages
   const [messages, setMessages] = useState<GmailMessage[]>([]);
@@ -169,7 +171,7 @@ export default function GmailPage() {
 
     const { data: company } = await supabase
       .from('companies')
-      .select('name, gmail_label_format, gmail_parent_label, gmail_label_tokens, gmail_parent_code, gmail_sublabel_separator')
+      .select('name, gmail_label_format, gmail_parent_label, gmail_label_tokens, gmail_parent_code, gmail_sublabel_separator, gmail_archive_label, gmail_leads_label')
       .eq('id', prof.active_company_id)
       .single();
 
@@ -179,6 +181,8 @@ export default function GmailPage() {
     if (company?.gmail_parent_code) setParentCode(company.gmail_parent_code);
     if (company?.gmail_label_tokens?.length) setLabelTokens(company.gmail_label_tokens);
     if (company?.gmail_sublabel_separator) setSublabelSeparator(company.gmail_sublabel_separator);
+    setArchiveLabel(company?.gmail_archive_label || '');
+    setLeadsLabel(company?.gmail_leads_label || '');
 
     // Load searchable fields
     const { data: customFields } = await supabase
@@ -535,11 +539,15 @@ export default function GmailPage() {
     newCode: string,
     newTokens: string[],
     newSeparator: string,
+    newArchiveLabel: string,
+    newLeadsLabel: string,
   ) => {
     setParentLabel(newParent);
     setParentCode(newCode);
     setLabelTokens(newTokens);
     setSublabelSeparator(newSeparator);
+    setArchiveLabel(newArchiveLabel);
+    setLeadsLabel(newLeadsLabel);
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
     const { data: prof } = await supabase
@@ -550,6 +558,8 @@ export default function GmailPage() {
       gmail_parent_code: newCode,
       gmail_label_tokens: newTokens,
       gmail_sublabel_separator: newSeparator,
+      gmail_archive_label: newArchiveLabel || null,
+      gmail_leads_label: newLeadsLabel || null,
     }).eq('id', prof.active_company_id);
   };
 
@@ -743,6 +753,9 @@ export default function GmailPage() {
           format={labelFormat}
           sublabelTokens={labelTokens}
           sublabelSeparator={sublabelSeparator}
+          archiveLabel={archiveLabel}
+          leadsLabel={leadsLabel}
+          companyName={companyName}
           onSave={handleLabelFormatChange}
           onClose={() => setShowLabelSettings(false)}
         />

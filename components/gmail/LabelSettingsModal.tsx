@@ -10,11 +10,19 @@ interface Props {
   sublabelTokens: string[];
   sublabelSeparator: string;
   format: string;
+  // Company-wide label names shared with the archive worker and (future)
+  // leads intake -- kept here so every Gmail label name is configured in
+  // one place. Empty string = use the fallback shown in the placeholder.
+  archiveLabel: string;
+  leadsLabel: string;
+  companyName: string;
   onSave: (
     parentLabel: string,
     parentCode: string,
     tokens: string[],
-    separator: string
+    separator: string,
+    archiveLabel: string,
+    leadsLabel: string
   ) => void;
   onClose: () => void;
 }
@@ -38,6 +46,9 @@ export default function LabelSettingsModal({
   parentCode: initCode,
   sublabelTokens: initTokens,
   sublabelSeparator: initSep,
+  archiveLabel: initArchive,
+  leadsLabel: initLeads,
+  companyName,
   onSave,
   onClose,
 }: Props) {
@@ -45,6 +56,8 @@ export default function LabelSettingsModal({
   const [parentCode, setParentCode]   = useState(initCode);
   const [tokens, setTokens]           = useState<string[]>(initTokens);
   const [separator, setSeparator]     = useState(initSep);
+  const [archiveLabel, setArchiveLabel] = useState(initArchive);
+  const [leadsLabel, setLeadsLabel]   = useState(initLeads);
   const [dragIdx, setDragIdx]         = useState<number | null>(null);
 
   // Build live preview
@@ -75,7 +88,7 @@ export default function LabelSettingsModal({
   };
 
   const handleSave = () => {
-    onSave(parentLabel, parentCode, tokens, separator);
+    onSave(parentLabel, parentCode, tokens, separator, archiveLabel.trim(), leadsLabel.trim());
     onClose();
   };
 
@@ -138,6 +151,38 @@ export default function LabelSettingsModal({
               maxLength={6}
               className="w-full px-4 py-3 border border-slate-200 rounded-2xl text-sm font-light focus:outline-none focus:border-indigo-400 uppercase"
               placeholder="e.g. HL26"
+            />
+          </div>
+
+          {/* Shared label names — archive + leads, kept beside the parent
+              label so every Gmail label name lives in one place */}
+          <div className="space-y-2">
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+              Archive label name
+            </p>
+            <p className="text-[11px] text-slate-400">
+              Approved archive requests move a matter&apos;s emails under this parent label.
+            </p>
+            <input
+              value={archiveLabel}
+              onChange={e => setArchiveLabel(e.target.value)}
+              className="w-full px-4 py-3 border border-slate-200 rounded-2xl text-sm font-light focus:outline-none focus:border-indigo-400"
+              placeholder={`${companyName || 'Company'} Archive`}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+              Leads label name
+            </p>
+            <p className="text-[11px] text-slate-400">
+              Emails filed under this label are treated as incoming leads.
+            </p>
+            <input
+              value={leadsLabel}
+              onChange={e => setLeadsLabel(e.target.value)}
+              className="w-full px-4 py-3 border border-slate-200 rounded-2xl text-sm font-light focus:outline-none focus:border-indigo-400"
+              placeholder="Leads"
             />
           </div>
 

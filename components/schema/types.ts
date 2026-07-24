@@ -39,6 +39,14 @@ export interface CustomField {
   show_in_table: boolean;
   help_text: string | null;
   isCustomTable?: boolean;
+  // Auto numbering — custom-table fields only (see
+  // supabase/company_table_field_sequences.sql). Non-null prefix marks the
+  // field auto-numbered ('' = bare numbers); prefix may contain {YY}/{YYYY}/
+  // {MM} date tokens. pad is the zero-pad width (null = 6), start the
+  // minimum counter value (null = 1).
+  auto_number_prefix?: string | null;
+  auto_number_start?: number | null;
+  auto_number_pad?: number | null;
   // Computed/formula fields — custom-table fields only (see
   // supabase/company_table_fields_formula.sql). null means an ordinary,
   // user-entered field.
