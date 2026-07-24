@@ -113,6 +113,7 @@ export default function DashboardWidgetRenderer({
           emptyRowCount={mode === 'preview' ? 0 : (widget.config.emptyRowCount || 0)}
           columnWidths={widget.config.columnWidths}
           columnHighlights={widget.config.columnHighlights}
+          showTotalsRow={widget.config.showTotalsRow}
           fieldById={fieldById}
           fixedValues={fixedValues}
           isAdmin={mode === 'view' ? isAdmin : undefined}

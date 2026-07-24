@@ -53,6 +53,38 @@ interface Props {
   // it's attached to.
   columnHighlights?: GridWidget['config']['columnHighlights'];
   fieldById?: Map<string, CustomTableField>;
+  // Appends a footer row summing every number/currency gridField across the
+  // (filtered) `records` prop -- see GridWidget.config in
+  // lib/dashboardWidgets/types.ts.
+  showTotalsRow?: boolean;
+}
+
+// Same formatting as DashboardSummaryTiles' formatTileValue -- duplicated
+// rather than shared, matching this widget system's existing per-file
+// convention (see dsl.ts's serialize functions) rather than introducing a
+// cross-component import for two lines of Intl formatting.
+function formatTotal(value: number, fieldType: string): string {
+  if (fieldType === 'currency') {
+    return `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+// A draft row can't be created until every is_required field on the table
+// has a value -- customTableService's validateFieldConstraints rejects
+// anything less, and unlike the quick-add form (one shared value bag,
+// submitted only on "Add"), a grid draft row commits per-cell as the user
+// types. Without this gate, the very first keystroke into any cell would
+// attempt createRecord with just that one field set and immediately fail
+// on every other required field. Mirrors validateFieldConstraints' own
+// exemptions (auto-numbered / sum_related fields are populated after the
+// fact, not by the caller, so they're never "missing" here).
+function isReadyToCreate(fields: CustomTableField[], values: Record<string, any>): boolean {
+  return fields.every(f => {
+    if (!f.is_required || f.auto_number_prefix != null || f.formula_type === 'sum_related') return true;
+    const v = values[f.field_key];
+    return v !== undefined && v !== null && v !== '';
+  });
 }
 
 // A blank row-in-progress, before it has a real company_table_records row
@@ -66,7 +98,7 @@ interface DraftRow { key: string; recordId: string | null; values: Record<string
 // section of a composed dashboard, not a standalone page.
 export default function DashboardGrid({
   tableId, companyId, userId, fields, gridFieldIds, records, onChanged, readOnly, emptyRowCount = 0,
-  columnWidths, isAdmin, onReorder, onResize, fixedValues, columnHighlights, fieldById,
+  columnWidths, isAdmin, onReorder, onResize, fixedValues, columnHighlights, fieldById, showTotalsRow,
 }: Props) {
   const gridFields = gridFieldIds
     .map(id => fields.find(f => f.id === id))
@@ -197,6 +229,9 @@ export default function DashboardGrid({
     setDraftRows(prev => prev.map(d => d.key === draftKey ? { ...d, values: nextValues } : d));
 
     if (!draft.recordId) {
+      // Buffer locally (already done above) until every required field is
+      // filled in -- see isReadyToCreate's doc comment.
+      if (!isReadyToCreate(fields, { ...nextValues, ...fixedValues })) return;
       const record = await createRecord(tableId, companyId, userId, { ...nextValues, ...fixedValues }, fields);
       if (record && 'error' in record) { window.alert(record.error); return; }
       if (record) {
@@ -299,6 +334,20 @@ export default function DashboardGrid({
             </tr>
           )}
         </tbody>
+        {showTotalsRow && (
+          <tfoot>
+            <tr className="border-t border-slate-200 bg-slate-50 font-bold">
+              {gridFields.map((f, idx) => (
+                <td key={f.id} className="px-4 py-2 text-[11px] text-slate-700" style={{ width: widthFor(f.id), minWidth: widthFor(f.id), maxWidth: widthFor(f.id) }}>
+                  {f.field_type === 'number' || f.field_type === 'currency'
+                    ? formatTotal(records.reduce((sum, r) => sum + (Number(r.values[f.field_key]) || 0), 0), f.field_type)
+                    : idx === 0 ? 'Total' : ''}
+                </td>
+              ))}
+              {!readOnly && <td className="px-2" />}
+            </tr>
+          </tfoot>
+        )}
       </table>
     </div>
   );
