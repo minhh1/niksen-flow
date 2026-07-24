@@ -3,8 +3,9 @@
 -- template schema editor. Modeled on a real practice-management export
 -- (Matters/Invoices/Billed & Unbilled Time & Fees/Disbursements), consolidated
 -- down to: Matter fields on the existing `projects` system table (a Matter
--- *is* a project, not a separate custom table) + four custom tables
--- (Invoices, Time & Fee Entries, Disbursements, Trust Transactions).
+-- *is* a project, not a separate custom table) + six custom tables
+-- (Invoices, Time & Fee Entries, Disbursements, Trust Transactions, plus a
+-- Leads intake pipeline: Leads and a Lead Activities follow-up log).
 -- "Billed" vs "unbilled" from the source export collapses into a nullable
 -- Invoice link + Billable flag.
 -- Idempotent -- safe to re-run; every insert is guarded by a natural-key
@@ -21,10 +22,10 @@
 -- per-matter running balances and an overdraw guard, per Legal Profession
 -- Uniform General Rules 2015 rr 36/40/47.
 --
--- Also bundles three dashboards (see template_marketplace_dashboards.sql) --
--- Time Entry, Trust Account (includes a trust_reconciliation widget) and
--- Billing (includes a ledes_export widget) -- so installing the template
--- creates ready-to-use dashboards, not just bare tables.
+-- Also bundles four dashboards (see template_marketplace_dashboards.sql) --
+-- Time Entry, Trust Account (includes a trust_reconciliation widget),
+-- Billing (includes a ledes_export widget) and Leads -- so installing the
+-- template creates ready-to-use dashboards, not just bare tables.
 --
 -- Deliberately excludes Medicare/Centrelink/Corrections/passport/PO-Box/
 -- forwarding/registered-agent-address fields from the raw export -- too
@@ -38,6 +39,8 @@ DECLARE
   v_timefees_table_id uuid;
   v_disb_table_id uuid;
   v_trust_table_id uuid;
+  v_leads_table_id uuid;
+  v_leadact_table_id uuid;
 BEGIN
   SELECT active_company_id INTO v_owner_company_id FROM profiles WHERE email = 'minh@huynhco.com';
   IF v_owner_company_id IS NULL THEN
@@ -274,6 +277,69 @@ BEGIN
     SELECT 1 FROM template_definition_table_fields WHERE template_table_id = v_trust_table_id AND field_key = v.field_key
   );
 
+  -- ── Leads ────────────────────────────────────────────────────────────
+  -- Intake pipeline for prospective clients. Matter Type mirrors the
+  -- projects matter_type options so a converted lead maps cleanly onto the
+  -- Matter it becomes (linked via converted_matter).
+  INSERT INTO template_definition_tables (template_id, slug, name, icon, color, primary_field_key, display_order)
+  SELECT v_template_id, 'leads', 'Leads', 'UserPlus', '#16a34a', 'lead_name', 4
+  WHERE NOT EXISTS (SELECT 1 FROM template_definition_tables WHERE template_id = v_template_id AND slug = 'leads');
+
+  SELECT id INTO v_leads_table_id FROM template_definition_tables WHERE template_id = v_template_id AND slug = 'leads';
+
+  INSERT INTO template_definition_table_fields
+    (template_table_id, field_key, label, field_type, select_options, linked_system_table, linked_template_table_id, linked_display_field, display_order, auto_number_prefix, help_text)
+  SELECT v_leads_table_id, v.field_key, v.label, v.field_type, v.select_options, v.linked_system_table, v.linked_template_table_id, v.linked_display_field, v.display_order, v.auto_number_prefix, v.help_text
+  FROM (VALUES
+    ('lead_number',        'Lead Number',        'text',     NULL::jsonb, NULL::text,       NULL::uuid, NULL::text,   0,  NULL::text, 'Assigned automatically -- leave blank'::text),
+    ('lead_name',          'Client''s name',     'text',     NULL::jsonb, NULL::text,       NULL::uuid, NULL::text,   1,  NULL, NULL),
+    ('email',              'Email',              'text',     NULL::jsonb, NULL::text,       NULL::uuid, NULL::text,   2,  NULL, NULL),
+    ('phone',              'Phone',              'text',     NULL::jsonb, NULL::text,       NULL::uuid, NULL::text,   3,  NULL, NULL),
+    ('matter_type',        'Matter Type',        'select',   to_jsonb(ARRAY['Conveyancing','Family Law','Wills & Estates','Commercial','Litigation','Migration','Criminal','Other']), NULL::text, NULL::uuid, NULL::text, 4, NULL, NULL),
+    ('source',             'Source',             'select',   to_jsonb(ARRAY['Referral','Existing Client','Website','Phone Enquiry','Walk-in','Social Media','Advertising','Other']), NULL::text, NULL::uuid, NULL::text, 5, NULL, NULL),
+    ('referred_by',        'Referred By',        'text',     NULL::jsonb, NULL::text,       NULL::uuid, NULL::text,   6,  NULL, 'Who referred them (when Source = Referral)'),
+    ('status',             'Status',             'select',   to_jsonb(ARRAY['New','Contacted','Consultation Booked','Consultation Held','Quote Sent','Converted','Declined','Lost']), NULL::text, NULL::uuid, NULL::text, 7, NULL, NULL),
+    ('person_responsible', 'Person Responsible', 'entity',   NULL::jsonb, 'entities'::text, NULL::uuid, 'name'::text, 8,  NULL, NULL),
+    ('date_received',      'Date Received',      'date',     NULL::jsonb, NULL::text,       NULL::uuid, NULL::text,   9,  NULL, NULL),
+    ('next_follow_up',     'Next Follow-up',     'date',     NULL::jsonb, NULL::text,       NULL::uuid, NULL::text,   10, NULL, NULL),
+    ('converted_matter',   'Converted Matter',   'project',  NULL::jsonb, 'projects'::text, NULL::uuid, 'name',       11, NULL, 'The Matter opened for this lead once it converts'),
+    ('notes',              'Notes',              'text',     NULL::jsonb, NULL::text,       NULL::uuid, NULL::text,   12, NULL, NULL)
+  ) AS v(field_key, label, field_type, select_options, linked_system_table, linked_template_table_id, linked_display_field, display_order, auto_number_prefix, help_text)
+  WHERE NOT EXISTS (
+    SELECT 1 FROM template_definition_table_fields WHERE template_table_id = v_leads_table_id AND field_key = v.field_key
+  );
+
+  -- Bare lead numbers 260001, 260002, ... -- the '' prefix (non-NULL) still
+  -- marks the field auto-numbered, and auto_number_start seeds the counter
+  -- when next_field_sequence first creates it (see
+  -- company_table_field_sequences.sql). Guarded on auto_number_start so a
+  -- catalog seeded before this change (old 'LD-' prefix) is corrected too.
+  UPDATE template_definition_table_fields SET auto_number_prefix = '', auto_number_start = 260001
+    WHERE template_table_id = v_leads_table_id AND field_key = 'lead_number' AND auto_number_start IS NULL;
+
+  -- ── Lead Activities ──────────────────────────────────────────────────
+  -- Follow-up log: one row per touchpoint, linked back to its lead.
+  INSERT INTO template_definition_tables (template_id, slug, name, icon, color, primary_field_key, display_order)
+  SELECT v_template_id, 'lead-activities', 'Lead Activities', 'PhoneCall', '#db2777', 'activity', 5
+  WHERE NOT EXISTS (SELECT 1 FROM template_definition_tables WHERE template_id = v_template_id AND slug = 'lead-activities');
+
+  SELECT id INTO v_leadact_table_id FROM template_definition_tables WHERE template_id = v_template_id AND slug = 'lead-activities';
+
+  INSERT INTO template_definition_table_fields
+    (template_table_id, field_key, label, field_type, select_options, linked_system_table, linked_template_table_id, linked_display_field, display_order)
+  SELECT v_leadact_table_id, v.field_key, v.label, v.field_type, v.select_options, v.linked_system_table, v.linked_template_table_id, v.linked_display_field, v.display_order
+  FROM (VALUES
+    ('activity', 'Activity',        'text',           NULL::jsonb, NULL::text,       NULL::uuid,        NULL::text,        0),
+    ('lead',     'Lead',            'table_relation', NULL::jsonb, NULL::text,       v_leads_table_id,  'lead_name'::text, 1),
+    ('type',     'Type',            'select',         to_jsonb(ARRAY['Call','Email','Meeting','SMS','Letter','Other']), NULL::text, NULL::uuid, NULL::text, 2),
+    ('date',     'Date',            'date',           NULL::jsonb, NULL::text,       NULL::uuid,        NULL::text,        3),
+    ('done_by',  'Done By',         'entity',         NULL::jsonb, 'entities'::text, NULL::uuid,        'name',            4),
+    ('outcome',  'Outcome / Notes', 'text',           NULL::jsonb, NULL::text,       NULL::uuid,        NULL::text,        5)
+  ) AS v(field_key, label, field_type, select_options, linked_system_table, linked_template_table_id, linked_display_field, display_order)
+  WHERE NOT EXISTS (
+    SELECT 1 FROM template_definition_table_fields WHERE template_table_id = v_leadact_table_id AND field_key = v.field_key
+  );
+
   -- ── Dashboards ───────────────────────────────────────────────────────
   -- widgets_template uses field_key text (not ids) for every field
   -- reference -- see template_marketplace_dashboards.sql for how
@@ -351,4 +417,17 @@ BEGIN
     {"id":"bi9","type":"ledes_export","layout":{"x":0,"y":16,"w":12,"h":6},"config":{}}
   ]'::jsonb
   WHERE NOT EXISTS (SELECT 1 FROM template_definition_dashboards WHERE template_id = v_template_id AND slug = 'client-billing');
+
+  INSERT INTO template_definition_dashboards (template_id, source_template_table_id, name, slug, icon, color, display_order, widgets_template)
+  SELECT v_template_id, v_leads_table_id, 'Leads', 'leads', 'UserPlus', '#16a34a', 3, '[
+    {"id":"ld1","type":"filter_bar","layout":{"x":0,"y":0,"w":12,"h":2},"config":{"fieldIds":["person_responsible","date_received"]}},
+    {"id":"ld2","type":"quick_add_form","layout":{"x":0,"y":2,"w":12,"h":2},"config":{"fieldIds":["lead_name","email","phone","matter_type","source","referred_by","status","person_responsible","date_received","next_follow_up"]}},
+    {"id":"ld3","type":"summary_tile","layout":{"x":0,"y":4,"w":3,"h":2},"config":{"label":"New","fieldId":null,"aggregate":"count","filterFieldId":"status","filterValue":"New"}},
+    {"id":"ld4","type":"summary_tile","layout":{"x":3,"y":4,"w":3,"h":2},"config":{"label":"Consultations booked","fieldId":null,"aggregate":"count","filterFieldId":"status","filterValue":"Consultation Booked"}},
+    {"id":"ld5","type":"summary_tile","layout":{"x":6,"y":4,"w":3,"h":2},"config":{"label":"Converted","fieldId":null,"aggregate":"count","filterFieldId":"status","filterValue":"Converted"}},
+    {"id":"ld6","type":"summary_tile","layout":{"x":9,"y":4,"w":3,"h":2},"config":{"label":"Leads","fieldId":null,"aggregate":"count"}},
+    {"id":"ld7","type":"chart","layout":{"x":0,"y":6,"w":12,"h":4},"config":{"dateFieldId":"date_received","valueFieldId":null,"aggregate":"count"}},
+    {"id":"ld8","type":"grid","layout":{"x":0,"y":10,"w":12,"h":6},"config":{"fieldIds":["lead_number","lead_name","email","phone","matter_type","source","status","person_responsible","date_received","next_follow_up","converted_matter"]}}
+  ]'::jsonb
+  WHERE NOT EXISTS (SELECT 1 FROM template_definition_dashboards WHERE template_id = v_template_id AND slug = 'leads');
 END $$;

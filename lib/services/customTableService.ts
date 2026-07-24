@@ -75,7 +75,7 @@ async function validateFieldConstraints(
   excludeRecordId: string | null, touchedKeys: Set<string> | null
 ): Promise<string | null> {
   for (const field of fields) {
-    if (!field.is_required || field.auto_number_prefix || field.formula_type === 'sum_related') continue;
+    if (!field.is_required || field.auto_number_prefix != null || field.formula_type === 'sum_related') continue;
     if (touchedKeys && !touchedKeys.has(field.field_key)) continue;
     if (isEmptyValue(finalValues[field.field_key])) return `"${field.label}" is required.`;
   }
@@ -132,7 +132,8 @@ export async function createRecord(
   // supabase/company_table_field_sequences.sql.
   const withNumbers = { ...values };
   for (const field of fields) {
-    if (field.auto_number_prefix && !withNumbers[field.field_key]) {
+    // != null, not truthiness: '' is a valid prefix (bare numbers, e.g. lead numbers)
+    if (field.auto_number_prefix != null && !withNumbers[field.field_key]) {
       const { data: num } = await supabase.rpc('next_field_sequence', { p_field_id: field.id });
       if (num) withNumbers[field.field_key] = num;
     }

@@ -9,6 +9,11 @@
 
 ALTER TABLE company_table_fields ADD COLUMN IF NOT EXISTS auto_number_prefix text;
 
+-- Optional starting value for the counter (default 1). The prefix may be ''
+-- (empty, non-NULL) for bare numbers -- e.g. the Law Firm template's Lead
+-- Number field starts at 260001 with no prefix.
+ALTER TABLE company_table_fields ADD COLUMN IF NOT EXISTS auto_number_start bigint;
+
 CREATE TABLE IF NOT EXISTS company_table_field_sequences (
   field_id uuid PRIMARY KEY REFERENCES company_table_fields(id) ON DELETE CASCADE,
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -42,7 +47,7 @@ BEGIN
   END IF;
 
   INSERT INTO company_table_field_sequences (field_id, company_id, next_value)
-    VALUES (p_field_id, v_field.company_id, 2)
+    VALUES (p_field_id, v_field.company_id, COALESCE(v_field.auto_number_start, 1) + 1)
   ON CONFLICT (field_id) DO UPDATE SET next_value = company_table_field_sequences.next_value + 1
   RETURNING next_value - 1 INTO v_seq;
 
