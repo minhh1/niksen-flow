@@ -460,6 +460,13 @@ function TemplateModal({ templates, setTemplates, profiles, teams, companyId, pr
       is_monetary: item.is_monetary || false, estimated_cost: item.estimated_cost || 0,
       due_date: await resolveItemDate(item, selected.items), is_completed: false,
     })));
+    // Create tasks in due-date order (undated tasks last) rather than the template's raw entry order.
+    tasksToCreate.sort((a, b) => {
+      if (a.due_date && b.due_date) return a.due_date.localeCompare(b.due_date);
+      if (a.due_date && !b.due_date) return -1;
+      if (!a.due_date && b.due_date) return 1;
+      return 0;
+    });
     console.log('[template] tasksToCreate:', tasksToCreate);
     await onApply(tasksToCreate);
     setSaving(false);
@@ -542,7 +549,18 @@ function TemplateModal({ templates, setTemplates, profiles, teams, companyId, pr
               <p className="text-[11px] text-slate-500 mb-4">
                 The following {selected.items.filter(i => !i.parent_item_id).length} tasks will be created with dates calculated from the project.
               </p>
-              {selected.items.filter(i => !i.parent_item_id).map(item => (
+              {selected.items
+                .filter(i => !i.parent_item_id)
+                .slice()
+                .sort((a, b) => {
+                  const da = resolvedDates[a.id];
+                  const db = resolvedDates[b.id];
+                  if (da && db) return da.localeCompare(db);
+                  if (da && !db) return -1;
+                  if (!da && db) return 1;
+                  return a.display_order - b.display_order;
+                })
+                .map(item => (
                 <div key={item.id} className="flex items-start gap-3 px-4 py-3 bg-slate-50 rounded-2xl">
                   <CheckSquare size={14} className="text-indigo-400 mt-0.5 shrink-0" />
                   <div className="flex-1">
