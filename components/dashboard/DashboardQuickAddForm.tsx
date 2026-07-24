@@ -13,6 +13,10 @@ interface Props {
   fields: CustomTableField[]; // full field list -- formula fields need their dependencies
   quickAddFieldIds: string[]; // ordered subset to show
   onAdded: () => void;
+  // Extra field_key -> value pairs merged into every created record, invisible
+  // to the form itself -- e.g. a record-scoped dashboard tab (see
+  // RecordDashboardTab.tsx) stamping the link field back to its parent record.
+  fixedValues?: Record<string, any>;
 }
 
 // Live-computes every formula field's preview value from the in-progress
@@ -69,7 +73,7 @@ function FieldSlot({ field, value, onCommit, wide }: { field: CustomTableField; 
   );
 }
 
-export default function DashboardQuickAddForm({ tableId, companyId, userId, fields, quickAddFieldIds, onAdded }: Props) {
+export default function DashboardQuickAddForm({ tableId, companyId, userId, fields, quickAddFieldIds, onAdded, fixedValues }: Props) {
   const quickAddFields = quickAddFieldIds
     .map(id => fields.find(f => f.id === id))
     .filter((f): f is CustomTableField => !!f);
@@ -91,7 +95,7 @@ export default function DashboardQuickAddForm({ tableId, companyId, userId, fiel
   const handleAdd = async () => {
     setSaving(true);
     setError(null);
-    const record = await createRecord(tableId, companyId, userId, values, fields);
+    const record = await createRecord(tableId, companyId, userId, { ...values, ...fixedValues }, fields);
     setSaving(false);
     if (record && 'error' in record) {
       // e.g. a trust-ledger overdraw refusal -- see customTableService's

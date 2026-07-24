@@ -388,11 +388,15 @@ function TemplateModal({ templates, setTemplates, profiles, teams, companyId, pr
     }
     if (!anchor) return null;
     if (item.due_offset_mode === 'business' && item.due_offset_state) {
-      const fromDateStr = anchor.toISOString().split('T')[0];
-      const { data, error } = await supabase.functions.invoke('date-calc', {
-        body: { fromDate: fromDateStr, days: item.due_offset_days, mode: 'business', state: item.due_offset_state },
-      });
-      if (!error && data?.resultDate) return data.resultDate;
+      try {
+        const fromDateStr = anchor.toISOString().split('T')[0];
+        const { data, error } = await supabase.functions.invoke('date-calc', {
+          body: { fromDate: fromDateStr, days: item.due_offset_days, mode: 'business', state: item.due_offset_state },
+        });
+        if (!error && data?.resultDate) return data.resultDate;
+      } catch (err) {
+        console.error('[template] date-calc call failed, falling back to calendar days:', err);
+      }
     }
     anchor.setDate(anchor.getDate() + (item.due_offset_days || 0));
     return anchor.toISOString().split('T')[0];

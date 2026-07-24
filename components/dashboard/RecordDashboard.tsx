@@ -21,6 +21,7 @@ import GridTabEditor from "./GridTabEditor";
 import TeamMemberLinkCard from "./TeamMemberLinkCard";
 import { useCustomTables } from "@/lib/hooks/useCustomTables";
 import { getCompanyId } from "@/lib/services/schemaService";
+import { createArchiveRequest, type ArchiveEntityTable } from "@/lib/archiveRequests";
 import { useProgressBarWhile } from "@/components/TopProgressBar";
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -63,13 +64,23 @@ export default function RecordDashboard({
   const resizingRef = useRef<{ startY: number; startH: number } | null>(null);
   const [linkedItems, setLinkedItems] = useState<Record<string, { id: string; name: string }[]>>({});
   const [isAdmin, setIsAdmin] = useState(false);
-
+  const [hasPendingArchiveRequest, setHasPendingArchiveRequest] = useState(false);
 
   const recordTable = systemTable || tableId || '';
 
   // ── Effects ────────────────────────────────────────────────────
 
   useEffect(() => { loadAll(); }, [recordId]);
+
+  useEffect(() => {
+    const entityTable = systemTable || 'company_table_records';
+    supabase.from('archive_requests')
+      .select('id', { head: true, count: 'exact' })
+      .eq('entity_table', entityTable)
+      .eq('entity_id', recordId)
+      .eq('status', 'pending')
+      .then(({ count }) => setHasPendingArchiveRequest(!!count));
+  }, [recordId, systemTable]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -688,6 +699,19 @@ export default function RecordDashboard({
   // ── Delete ─────────────────────────────────────────────────────
 
   const handleDelete = async () => {
+    const label = record ? (record.name || record.street_address || record[fields[0]?.field_key] || 'this record') : 'this record';
+
+    if (!isAdmin) {
+      if (!window.confirm(`Request archiving "${label}"? A company admin will need to approve it.`)) return;
+      if (!companyId) return;
+      const entityTable = systemTable || 'company_table_records';
+      const result = await createArchiveRequest(entityTable as ArchiveEntityTable, recordId, label, companyId);
+      if (!result.ok) { alert(result.error); return; }
+      setHasPendingArchiveRequest(true);
+      alert(result.alreadyPending ? "Already requested — waiting on admin review." : "Archive requested — a company admin will review it.");
+      return;
+    }
+
     if (!window.confirm('Archive this record?')) return;
     if (systemTable) {
       await supabase
@@ -980,6 +1004,11 @@ export default function RecordDashboard({
                 <Pencil size={12} />
                 {isEditingLayout ? 'Done' : 'Edit layout'}
               </button>
+            )}
+            {hasPendingArchiveRequest && (
+              <span className="px-2.5 py-1 rounded-full text-[9px] font-bold uppercase bg-amber-50 text-amber-600">
+                Archive requested
+              </span>
             )}
             <button
               onClick={handleDelete}

@@ -1,14 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { 
   ChevronDown, ChevronUp, Circle, CheckCircle2, 
   Clock, Users, DollarSign, Bell, Trash2, Tag, User 
 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { useCompany } from "@/components/CompanyContext";
+import { createArchiveRequest } from "@/lib/archiveRequests";
 
 export default function TaskItem({ task, onRefresh }: { task: any; onRefresh: () => void }) {
+  const { isAdmin, companyId } = useCompany();
   const [isExpanded, setIsExpanded] = useState(false);
+  const [hasPendingArchiveRequest, setHasPendingArchiveRequest] = useState(false);
+
+  useEffect(() => {
+    supabase.from("archive_requests")
+      .select("id", { head: true, count: "exact" })
+      .eq("entity_table", "tasks")
+      .eq("entity_id", task.id)
+      .eq("status", "pending")
+      .then(({ count }) => setHasPendingArchiveRequest(!!count));
+  }, [task.id]);
 
   const getStatusStyles = (label: string) => {
     if (label === 'Urgent') return 'bg-red-50 text-red-600 border-red-100';
@@ -28,6 +41,17 @@ export default function TaskItem({ task, onRefresh }: { task: any; onRefresh: ()
 
   const handleArchive = async (e: React.MouseEvent) => {
     e.stopPropagation();
+
+    if (!isAdmin) {
+      if (!window.confirm(`Request archiving "${task.name}"? A company admin will need to approve it.`)) return;
+      if (!companyId) return;
+      const result = await createArchiveRequest("tasks", task.id, task.name, companyId);
+      if (!result.ok) { alert(result.error); return; }
+      setHasPendingArchiveRequest(true);
+      alert(result.alreadyPending ? "Already requested — waiting on admin review." : "Archive requested — a company admin will review it.");
+      return;
+    }
+
     const { error } = await supabase.from("tasks").update({ deleted_at: new Date().toISOString() }).eq("id", task.id);
     if (!error) {
       await logAudit("Archived task", { task_name: task.name });
@@ -101,7 +125,11 @@ export default function TaskItem({ task, onRefresh }: { task: any; onRefresh: ()
             </div>
             <div className="flex flex-col justify-end gap-3">
               <button className="w-full py-4 bg-black text-white text-[11px] font-black uppercase tracking-widest rounded-full shadow-xl hover:bg-slate-800 transition-all">Save Changes</button>
-              <button onClick={handleArchive} className="w-full py-4 border border-slate-200 text-slate-400 text-[11px] font-black uppercase rounded-full hover:text-red-600 hover:border-red-100 transition-all flex items-center justify-center gap-2 group"><Trash2 size={16} /> Archive Task</button>
+              {hasPendingArchiveRequest ? (
+                <span className="w-full py-4 text-center text-amber-600 bg-amber-50 text-[11px] font-black uppercase rounded-full">Archive requested</span>
+              ) : (
+                <button onClick={handleArchive} className="w-full py-4 border border-slate-200 text-slate-400 text-[11px] font-black uppercase rounded-full hover:text-red-600 hover:border-red-100 transition-all flex items-center justify-center gap-2 group"><Trash2 size={16} /> Archive Task</button>
+              )}
             </div>
           </div>
         </div>

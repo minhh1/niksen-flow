@@ -51,15 +51,20 @@ export default function DateCalculator({ defaultFromDate, onApply, triggerClassN
     setLoading(true);
     setError(null);
     setResult(null);
-    const { data, error: fnError } = await supabase.functions.invoke('date-calc', {
-      body: { fromDate, days, mode, state: mode === 'business' ? state : undefined },
-    });
-    setLoading(false);
-    if (fnError || data?.error) {
-      setError(data?.error || fnError?.message || 'Calculation failed');
-      return;
+    try {
+      const { data, error: fnError } = await supabase.functions.invoke('date-calc', {
+        body: { fromDate, days, mode, state: mode === 'business' ? state : undefined },
+      });
+      if (fnError || data?.error) {
+        setError(data?.error || fnError?.message || 'Calculation failed');
+        return;
+      }
+      setResult(data);
+    } catch (err: any) {
+      setError(err?.message || 'Calculation failed');
+    } finally {
+      setLoading(false);
     }
-    setResult(data);
   };
 
   return (

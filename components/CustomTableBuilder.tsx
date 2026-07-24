@@ -6,6 +6,8 @@ import { Plus, Trash2, Loader2, Check, X, Settings, Pencil, Store } from "lucide
 import * as LucideIcons from "lucide-react";
 import { useCustomTables } from "@/lib/hooks/useCustomTables";
 import { logSchemaChange } from "@/lib/services/schemaChangeLog";
+import { useCompany } from "@/components/CompanyContext";
+import { createArchiveRequest, usePendingArchiveRequests } from "@/lib/archiveRequests";
 
 const ICON_OPTIONS = [
   'Table2', 'FileText', 'Briefcase', 'Users', 'Home',
@@ -22,6 +24,8 @@ const COLOR_OPTIONS = [
 
 export default function CustomTableBuilder() {
   const { tables, loading, refetch } = useCustomTables();
+  const { isAdmin, companyId } = useCompany();
+  const { pendingIds: pendingArchiveIds, refreshPendingArchiveRequests } = usePendingArchiveRequests("company_tables", companyId);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [newIcon, setNewIcon] = useState('Table2');
@@ -88,6 +92,16 @@ export default function CustomTableBuilder() {
   };
 
   const handleDelete = async (tableId: string, tableName: string) => {
+    if (!isAdmin) {
+      if (!window.confirm(`Request deleting the "${tableName}" table? A company admin will need to approve it.`)) return;
+      if (!companyId) return;
+      const result = await createArchiveRequest("company_tables", tableId, `Custom table: ${tableName}`, companyId);
+      if (!result.ok) { window.alert(result.error); return; }
+      window.alert(result.alreadyPending ? "Already requested — waiting on admin review." : "Deletion requested — a company admin will review it.");
+      refreshPendingArchiveRequests();
+      return;
+    }
+
     const { count } = await supabase
       .from('company_table_records')
       .select('id', { count: 'exact', head: true })
@@ -228,6 +242,11 @@ export default function CustomTableBuilder() {
                 <p className="text-[13px] font-bold text-slate-800">{table.name}</p>
                 <p className="text-[10px] text-slate-400">/dashboard/{table.slug}</p>
               </div>
+              {pendingArchiveIds.has(table.id) && (
+                <span className="px-2 py-0.5 rounded-full text-[8px] font-bold uppercase bg-amber-50 text-amber-600 whitespace-nowrap">
+                  Deletion requested
+                </span>
+              )}
               <button
                 onClick={() => handlePublish(table)}
                 className="p-1.5 text-slate-300 hover:text-emerald-500 hover:bg-emerald-50 rounded-full transition-all"

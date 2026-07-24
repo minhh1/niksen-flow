@@ -4,10 +4,19 @@ import { useState, useEffect } from "react";
 import { X, GripVertical } from "lucide-react";
 import FieldValueInput from "./FieldValueInput";
 import { createRecord, updateRecord, deleteRecord } from "@/lib/services/customTableService";
+import { evaluateCondition } from "@/lib/dashboardWidgets/compute";
 import type { CustomTableField, CustomTableRecord } from "@/lib/hooks/useCustomTable";
+import type { GridWidget } from "@/lib/dashboardWidgets/types";
 
 const DEFAULT_COLUMN_WIDTH = 140;
 const MIN_COLUMN_WIDTH = 80;
+
+// Tailwind needs literal class strings, not template-built ones -- this map
+// is what makes the 'red' | 'amber' | 'emerald' union in GridWidget.config
+// actually render instead of purging.
+const HIGHLIGHT_BG: Record<string, string> = {
+  red: 'bg-red-50', amber: 'bg-amber-50', emerald: 'bg-emerald-50',
+};
 
 interface Props {
   tableId: string;
@@ -35,6 +44,15 @@ interface Props {
   isAdmin?: boolean;
   onReorder?: (fieldIds: string[]) => void;
   onResize?: (fieldId: string, width: number) => void;
+  // Extra field_key -> value pairs merged into every record a draft row
+  // creates -- see DashboardQuickAddForm's identical prop.
+  fixedValues?: Record<string, any>;
+  // Per-column conditional cell highlight -- see GridWidget.config in
+  // lib/dashboardWidgets/types.ts. Needs fieldById (not just `fields`) since
+  // a highlight's condition can reference any field, not just the column
+  // it's attached to.
+  columnHighlights?: GridWidget['config']['columnHighlights'];
+  fieldById?: Map<string, CustomTableField>;
 }
 
 // A blank row-in-progress, before it has a real company_table_records row
@@ -48,11 +66,19 @@ interface DraftRow { key: string; recordId: string | null; values: Record<string
 // section of a composed dashboard, not a standalone page.
 export default function DashboardGrid({
   tableId, companyId, userId, fields, gridFieldIds, records, onChanged, readOnly, emptyRowCount = 0,
-  columnWidths, isAdmin, onReorder, onResize,
+  columnWidths, isAdmin, onReorder, onResize, fixedValues, columnHighlights, fieldById,
 }: Props) {
   const gridFields = gridFieldIds
     .map(id => fields.find(f => f.id === id))
     .filter((f): f is CustomTableField => !!f);
+
+  const highlightBgFor = (record: CustomTableRecord, fieldId: string): string => {
+    const rule = columnHighlights?.[fieldId];
+    if (!rule || !fieldById) return '';
+    const condField = fieldById.get(rule.condition.fieldId);
+    if (!condField) return '';
+    return evaluateCondition(rule.condition, record.values[condField.field_key]) ? HIGHLIGHT_BG[rule.color] || '' : '';
+  };
 
   // Drag-to-reorder state (which column index is currently being dragged).
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
@@ -171,7 +197,7 @@ export default function DashboardGrid({
     setDraftRows(prev => prev.map(d => d.key === draftKey ? { ...d, values: nextValues } : d));
 
     if (!draft.recordId) {
-      const record = await createRecord(tableId, companyId, userId, nextValues, fields);
+      const record = await createRecord(tableId, companyId, userId, { ...nextValues, ...fixedValues }, fields);
       if (record && 'error' in record) { window.alert(record.error); return; }
       if (record) {
         setDraftRows(prev => prev.map(d => d.key === draftKey ? { ...d, recordId: record.id } : d));
@@ -232,7 +258,7 @@ export default function DashboardGrid({
           {records.map(r => (
             <tr key={r.id} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
               {gridFields.map(f => (
-                <td key={f.id} className="px-4 py-2" style={{ width: widthFor(f.id), minWidth: widthFor(f.id), maxWidth: widthFor(f.id) }}>
+                <td key={f.id} className={`px-4 py-2 ${highlightBgFor(r, f.id)}`} style={{ width: widthFor(f.id), minWidth: widthFor(f.id), maxWidth: widthFor(f.id) }}>
                   <FieldValueInput
                     field={f}
                     value={valueFor(r, f)}

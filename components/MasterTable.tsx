@@ -9,6 +9,7 @@ import RelationSubTable from "@/components/RelationSubTable";
 import UniversalSelectionModal from "@/components/UniversalSelectionModal";
 import RecordEditModal from "@/components/RecordEditModal";
 import { updateRecord, softDeleteRecord } from "@/lib/genericRecordActions";
+import { createArchiveRequest, usePendingArchiveRequests, type ArchiveEntityTable } from "@/lib/archiveRequests";
 import type { RelationDef } from "@/lib/relationDefinitions";
 import type { LogParentType } from "@/lib/logging";
 
@@ -77,6 +78,9 @@ export default function MasterTable({
   sort, onSort, addressSortOpen, onAddressSortOpenChange, resolveColLabel, resolveColTooltip,
 }: MasterTableProps) {
   const router = useRouter();
+  const { pendingIds: pendingArchiveIds, refreshPendingArchiveRequests } = usePendingArchiveRequests(
+    (baseTable || "projects") as ArchiveEntityTable, companyId || null
+  );
   const [editingCell, setEditingCell] = useState<{ rowId: string; colId: string } | null>(null);
   const [savingCell, setSavingCell] = useState<{ rowId: string; colId: string } | null>(null);
   const [cellErrors, setCellErrors] = useState<Map<string, string>>(new Map());
@@ -171,6 +175,17 @@ export default function MasterTable({
     e.stopPropagation();
     if (!canEdit) return;
     const label = item.street_address || item.name || 'this record';
+
+    if (!isAdmin) {
+      if (!window.confirm(`Request archiving ${label}? A company admin will need to approve it.`)) return;
+      const result = await createArchiveRequest(baseTable as ArchiveEntityTable, item.id, label, companyId!);
+      if (!result.ok) { alert(result.error); return; }
+      alert(result.alreadyPending ? "Already requested — waiting on admin review." : "Archive requested — a company admin will review it.");
+      refreshPendingArchiveRequests();
+      onRowMutated?.();
+      return;
+    }
+
     if (!window.confirm(`Archive ${label}? It will be hidden from lists but not permanently deleted.`)) return;
 
     await softDeleteRecord({
@@ -396,6 +411,11 @@ export default function MasterTable({
                     );
                   })}
                   <td className="p-6 flex items-center justify-center gap-1">
+                    {pendingArchiveIds.has(item.id) && (
+                      <span className="px-2 py-0.5 rounded-full text-[8px] font-bold uppercase bg-amber-50 text-amber-600 whitespace-nowrap">
+                        Archive requested
+                      </span>
+                    )}
                     {canEdit && (
                       <button
                         onClick={(e) => handleRowDelete(item, e)}

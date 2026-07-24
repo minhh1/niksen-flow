@@ -13,8 +13,10 @@ function isEmptyValue(v: any): boolean {
 // Loose-typed on purpose (matches this DSL/widget system's existing
 // "never throw on mismatched input" posture -- see dsl.ts's error-collecting
 // parser): 'gt'/'gte'/'lt'/'lte' against a non-numeric value just compare as
-// NaN (always false) rather than throwing.
-function evaluateCondition(cond: TileCondition, rawValue: any): boolean {
+// NaN (always false) rather than throwing. Exported -- used directly by
+// DashboardGrid for per-column highlight rules (a single row's match/no-match,
+// not a whole-set filter, so it doesn't go through filterByConditions below).
+export function evaluateCondition(cond: TileCondition, rawValue: any): boolean {
   switch (cond.operator) {
     case 'is_set': return !isEmptyValue(rawValue);
     case 'is_empty': return isEmptyValue(rawValue);
@@ -27,6 +29,24 @@ function evaluateCondition(cond: TileCondition, rawValue: any): boolean {
     case 'lte': return Number(rawValue) <= Number(cond.value);
     default: return true;
   }
+}
+
+// Keeps only rows matching every condition (AND) -- shared by
+// computeSummaryTileValue's own conditions below and GridWidget's
+// row-filter conditions (see DashboardWidgetRenderer's 'grid' case).
+// A condition referencing a deleted field silently drops (doesn't zero
+// every row), matching every other condition consumer in this file.
+export function filterByConditions(
+  records: CustomTableRecord[], conditions: TileCondition[] | undefined, fieldById: Map<string, CustomTableField>
+): CustomTableRecord[] {
+  if (!conditions?.length) return records;
+  let rows = records;
+  for (const cond of conditions) {
+    const condField = fieldById.get(cond.fieldId);
+    if (!condField) continue;
+    rows = rows.filter(r => evaluateCondition(cond, r.values[condField.field_key]));
+  }
+  return rows;
 }
 
 // Normalizes a tile's conditions, preferring the new array but falling back
@@ -45,12 +65,7 @@ export function computeSummaryTileValue(
   fieldById: Map<string, CustomTableField>
 ): { value: number; fieldType: string } {
   const field = config.fieldId ? fieldById.get(config.fieldId) : undefined;
-  let rows = records;
-  for (const cond of resolveConditions(config)) {
-    const condField = fieldById.get(cond.fieldId);
-    if (!condField) continue; // referenced field deleted -- condition silently drops rather than zeroing every row
-    rows = rows.filter(r => evaluateCondition(cond, r.values[condField.field_key]));
-  }
+  const rows = filterByConditions(records, resolveConditions(config), fieldById);
   const sumOf = (f: CustomTableField | undefined) =>
     rows.reduce((sum, r) => sum + (f ? Number(r.values[f.field_key]) || 0 : 0), 0);
   const value = config.aggregate === 'count'

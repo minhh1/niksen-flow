@@ -63,6 +63,22 @@ export interface GridWidget extends BaseWidget {
     // per-table-slug row, since a grid widget's columns are already
     // per-dashboard, not shared across every view of the source table.
     columnWidths?: Record<string, number>;
+    // Only shows rows matching every condition (AND) -- a static, saved-with-
+    // the-widget filter, distinct from the interactive filter bar (which the
+    // viewer changes at will). Identical shape/semantics to a summary tile's
+    // conditions -- see TileCondition below and computeSummaryTileValue's
+    // sibling `filterByConditions` in compute.ts, which this reuses.
+    conditions?: TileCondition[];
+    // Per-column conditional highlight: when `condition` matches a row,
+    // that row's cell in this column gets `color`'s background instead of
+    // filtering rows out (that's `conditions` above) -- e.g. highlight
+    // Duration red when it's over 8 hours, or Status amber when Overdue.
+    // Condition can reference ANY field, not just the column it's attached
+    // to (e.g. highlight Amount when Status = Overdue). One rule per
+    // column; canvas-only (like columnWidths) -- not part of the DSL
+    // grammar, dropped like any other visual-only setting on a code-mode
+    // round-trip.
+    columnHighlights?: Record<string, { condition: TileCondition; color: 'red' | 'amber' | 'emerald' }>;
   };
 }
 

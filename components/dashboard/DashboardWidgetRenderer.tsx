@@ -15,7 +15,7 @@ import LedesExportWidget from "./LedesExportWidget";
 import TrustLedgerStatementWidget from "./TrustLedgerStatementWidget";
 import TrustCashBookWidget from "./TrustCashBookWidget";
 import TrustAgedBalancesWidget from "./TrustAgedBalancesWidget";
-import { computeSummaryTileValue, computeChartSeries } from "@/lib/dashboardWidgets/compute";
+import { computeSummaryTileValue, computeChartSeries, filterByConditions } from "@/lib/dashboardWidgets/compute";
 import type { DashboardWidget } from "@/lib/dashboardWidgets/types";
 import type { CustomTableField, CustomTableRecord } from "@/lib/hooks/useCustomTable";
 
@@ -53,11 +53,15 @@ interface Props {
   // widget's own config panel (gear icon) is the one place to edit it
   // instead of live drag interactions on a preview that isn't the real thing.
   onWidgetChange?: (updated: DashboardWidget) => void;
+  // Extra field_key -> value pairs merged into every record created via the
+  // quick_add_form/grid widgets below -- see DashboardQuickAddForm's doc
+  // comment. Undefined everywhere except record-scoped dashboard tabs.
+  fixedValues?: Record<string, any>;
 }
 
 export default function DashboardWidgetRenderer({
   widget, fields, fieldById, records, allRecords, tableId, companyId, userId, filters, setFilter, onChanged, mode = 'view', isLedger,
-  isAdmin, onWidgetChange,
+  isAdmin, onWidgetChange, fixedValues,
 }: Props) {
   switch (widget.type) {
     case 'heading': {
@@ -91,6 +95,7 @@ export default function DashboardWidgetRenderer({
           fields={fields}
           quickAddFieldIds={widget.config.fieldIds}
           onAdded={onChanged}
+          fixedValues={fixedValues}
         />
       );
 
@@ -102,11 +107,14 @@ export default function DashboardWidgetRenderer({
           userId={userId}
           fields={fields}
           gridFieldIds={widget.config.fieldIds}
-          records={records}
+          records={filterByConditions(records, widget.config.conditions, fieldById)}
           onChanged={mode === 'preview' ? () => {} : onChanged}
           readOnly={isLedger}
           emptyRowCount={mode === 'preview' ? 0 : (widget.config.emptyRowCount || 0)}
           columnWidths={widget.config.columnWidths}
+          columnHighlights={widget.config.columnHighlights}
+          fieldById={fieldById}
+          fixedValues={fixedValues}
           isAdmin={mode === 'view' ? isAdmin : undefined}
           onReorder={onWidgetChange ? (fieldIds) => onWidgetChange({ ...widget, config: { ...widget.config, fieldIds } }) : undefined}
           onResize={onWidgetChange ? (fieldId, width) => onWidgetChange({

@@ -2,6 +2,8 @@
 
 import { Trash2 } from "lucide-react";
 import { supabase } from "@/lib/supabase";
+import { useCompany } from "@/components/CompanyContext";
+import { createArchiveRequest } from "@/lib/archiveRequests";
 
 interface Props {
   table: "properties" | "entities" | "projects";
@@ -12,8 +14,20 @@ interface Props {
 }
 
 export default function DeleteAction({ table, id, identifier, onRefresh, variant = "icon" }: Props) {
+  const { isAdmin, companyId } = useCompany();
+
   const handleDelete = async (e: React.MouseEvent) => {
     e.stopPropagation();
+
+    if (!isAdmin) {
+      const confirmed = window.confirm(`Request archiving "${identifier}"? A company admin will need to approve it.`);
+      if (!confirmed || !companyId) return;
+      const result = await createArchiveRequest(table, id, identifier, companyId);
+      if (!result.ok) { alert(result.error); return; }
+      alert(result.alreadyPending ? "Already requested — waiting on admin review." : "Archive requested — a company admin will review it.");
+      return;
+    }
+
     const confirm = window.confirm(`Move "${identifier}" to deleted items?`);
     if (!confirm) return;
 
