@@ -195,9 +195,15 @@ export default function MasterTable({
               const isActiveSortCol = sort?.colId === colId;
 
               return (
-                <th key={colId} style={{ width: colWidths[colId] || 250 }} className="relative border-r border-slate-100 group/header select-none p-0">
-                  <div className="flex items-center h-full">
+                <th key={colId} style={{ width: colWidths[colId] || 250 }} className="relative group/header select-none p-0">
+                  <div className="relative flex items-center h-full">
                     {isAdmin && (
+                      // Absolutely positioned so it overlays the label's own
+                      // left padding on hover instead of taking up flex space —
+                      // otherwise this being admin-only shifted the header
+                      // label out of alignment with its data cells below,
+                      // and admin/non-admin views ended up with different
+                      // column alignment entirely.
                       <div
                         draggable
                         onDragStart={() => setDraggedIdx(idx)}
@@ -210,16 +216,16 @@ export default function MasterTable({
                           onReorder(next);
                           setDraggedIdx(null);
                         }}
-                        className="p-4 cursor-move opacity-0 group-hover/header:opacity-100 transition-opacity shrink-0"
+                        className="absolute left-1.5 top-1/2 -translate-y-1/2 p-1 rounded cursor-move opacity-0 group-hover/header:opacity-100 hover:bg-slate-200 transition-opacity z-10"
                         title="Reorder column (admin only)"
                       >
-                        <GripVertical size={14} />
+                        <GripVertical size={13} />
                       </div>
                     )}
 
                     <div
                       title={resolveColTooltip ? resolveColTooltip(colId) : resolveColLabel ? resolveColLabel(colId) : undefined}
-                      className={`flex-1 py-5 px-2 uppercase text-[10px] font-bold tracking-widest truncate ${isActiveSortCol ? 'text-indigo-600' : ''}`}
+                      className={`flex-1 py-5 pl-6 pr-2 uppercase text-[10px] font-bold tracking-widest truncate ${isActiveSortCol ? 'text-indigo-600' : ''}`}
                     >
                       {resolveColLabel ? resolveColLabel(colId) : colId.replace('_id', '').replace('.', ' ')}
                     </div>
@@ -335,7 +341,7 @@ export default function MasterTable({
                       <td
                         key={colId}
                         title={!isEditing && rawValue != null && rawValue !== '' ? String(rawValue) : undefined}
-                        className="p-6 border-r border-slate-50 truncate font-medium text-slate-700"
+                        className="p-6 truncate font-medium text-slate-700"
                       >
                         {isEditing && !relationalConfig ? (
                           <input

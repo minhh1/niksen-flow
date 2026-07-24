@@ -25,7 +25,7 @@ export default function DataTable({
       className={`flex-1 overflow-auto min-h-0 custom-scrollbar ${className}`}
     >
       <div
-        className="bg-white rounded-[40px] border border-slate-200 shadow-sm overflow-hidden inline-block min-w-full"
+        className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden inline-block min-w-full"
         style={{ minWidth: `${minWidth}px` }}
       >
         <table className="w-full table-fixed border-collapse text-left text-[13px]">
