@@ -16,7 +16,7 @@ export default function DashboardViewPage({ slug }: { slug: string }) {
   const router = useRouter();
   const { companyId, userId, isAdmin } = useCompany();
   const {
-    dashboard, tableDef, fields, fieldById, records, allRecords, loading, filters, setFilter, refetch, updateWidget,
+    dashboard, tableDef, sourceTableSlug, fields, fieldById, records, allRecords, loading, filters, setFilter, refetch, updateWidget,
   } = useDashboardData(slug);
 
   useProgressBarWhile(loading || !companyId || !userId);
@@ -75,6 +75,7 @@ export default function DashboardViewPage({ slug }: { slug: string }) {
             records={records}
             allRecords={allRecords}
             tableId={dashboard.source_table_id}
+            sourceTableSlug={sourceTableSlug}
             companyId={companyId}
             userId={userId}
             filters={filters}

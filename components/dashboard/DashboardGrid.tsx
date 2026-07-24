@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X, GripVertical } from "lucide-react";
+import Link from "next/link";
+import { X, GripVertical, Maximize2 } from "lucide-react";
 import FieldValueInput from "./FieldValueInput";
-import { createRecord, updateRecord, deleteRecord } from "@/lib/services/customTableService";
+import { updateRecord, deleteRecord } from "@/lib/services/customTableService";
 import { evaluateCondition } from "@/lib/dashboardWidgets/compute";
 import type { CustomTableField, CustomTableRecord } from "@/lib/hooks/useCustomTable";
 import type { GridWidget } from "@/lib/dashboardWidgets/types";
@@ -21,7 +22,6 @@ const HIGHLIGHT_BG: Record<string, string> = {
 interface Props {
   tableId: string;
   companyId: string;
-  userId: string; // draft rows create records, same as DashboardQuickAddForm
   fields: CustomTableField[]; // full field list -- formula recompute needs dependencies
   gridFieldIds: string[]; // ordered subset of columns to show
   records: CustomTableRecord[];
@@ -29,8 +29,11 @@ interface Props {
   // Ledger tables (company_tables.is_ledger) are append-only -- cells render
   // disabled and the delete column is hidden entirely.
   readOnly?: boolean;
-  // Blank rows always kept at the bottom for fast entry -- typing into any
-  // cell of one creates a new record from it (see DraftRow state below).
+  // Blank rows always kept at the bottom -- purely visual padding (a table
+  // with only 1-2 real rows otherwise looks sparse/broken next to its
+  // sibling widgets), NOT an editable fast-entry surface -- see the
+  // fullscreenHref doc comment below for how a spreadsheet-style multi-row
+  // entry flow is offered instead.
   emptyRowCount?: number;
   // Per-column pixel width, keyed by field id -- see GridWidget.config in
   // lib/dashboardWidgets/types.ts. Missing entries fall back to DEFAULT_COLUMN_WIDTH.
@@ -44,9 +47,6 @@ interface Props {
   isAdmin?: boolean;
   onReorder?: (fieldIds: string[]) => void;
   onResize?: (fieldId: string, width: number) => void;
-  // Extra field_key -> value pairs merged into every record a draft row
-  // creates -- see DashboardQuickAddForm's identical prop.
-  fixedValues?: Record<string, any>;
   // Per-column conditional cell highlight -- see GridWidget.config in
   // lib/dashboardWidgets/types.ts. Needs fieldById (not just `fields`) since
   // a highlight's condition can reference any field, not just the column
@@ -57,6 +57,13 @@ interface Props {
   // (filtered) `records` prop -- see GridWidget.config in
   // lib/dashboardWidgets/types.ts.
   showTotalsRow?: boolean;
+  // Link target for the fullscreen-expand button (top-right of the grid) --
+  // the source table's own full master-table page (/dashboard/<slug>, see
+  // CustomTableMasterPage), which shows every field (not just this widget's
+  // configured subset) and has real spreadsheet-style multi-row entry.
+  // Undefined hides the button entirely -- see DashboardWidgetRenderer's
+  // sourceTableSlug doc comment for which contexts have it.
+  fullscreenHref?: string;
 }
 
 // Same formatting as DashboardSummaryTiles' formatTileValue -- duplicated
@@ -70,35 +77,13 @@ function formatTotal(value: number, fieldType: string): string {
   return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-// A draft row can't be created until every is_required field on the table
-// has a value -- customTableService's validateFieldConstraints rejects
-// anything less, and unlike the quick-add form (one shared value bag,
-// submitted only on "Add"), a grid draft row commits per-cell as the user
-// types. Without this gate, the very first keystroke into any cell would
-// attempt createRecord with just that one field set and immediately fail
-// on every other required field. Mirrors validateFieldConstraints' own
-// exemptions (auto-numbered / sum_related fields are populated after the
-// fact, not by the caller, so they're never "missing" here).
-function isReadyToCreate(fields: CustomTableField[], values: Record<string, any>): boolean {
-  return fields.every(f => {
-    if (!f.is_required || f.auto_number_prefix != null || f.formula_type === 'sum_related') return true;
-    const v = values[f.field_key];
-    return v !== undefined && v !== null && v !== '';
-  });
-}
-
-// A blank row-in-progress, before it has a real company_table_records row
-// (recordId null) and after (recordId set, but not yet reflected in the
-// `records` prop -- see the graduation effect below).
-interface DraftRow { key: string; recordId: string | null; values: Record<string, any> }
-
 // A lightweight grid scoped to a dashboard's configured columns, distinct
 // from components/CustomTableMasterPage.tsx's full-featured master-table
 // view (column drawer, search, expand-row) -- this is meant to be one
 // section of a composed dashboard, not a standalone page.
 export default function DashboardGrid({
-  tableId, companyId, userId, fields, gridFieldIds, records, onChanged, readOnly, emptyRowCount = 0,
-  columnWidths, isAdmin, onReorder, onResize, fixedValues, columnHighlights, fieldById, showTotalsRow,
+  tableId, companyId, fields, gridFieldIds, records, onChanged, readOnly, emptyRowCount = 0,
+  columnWidths, isAdmin, onReorder, onResize, columnHighlights, fieldById, showTotalsRow, fullscreenHref,
 }: Props) {
   const gridFields = gridFieldIds
     .map(id => fields.find(f => f.id === id))
@@ -199,58 +184,29 @@ export default function DashboardGrid({
     onChanged();
   };
 
-  // Ledger tables can only be created through the quick-add form's
-  // single-shot flow (a second commit on an unrefreshed draft would hit the
-  // ledger's append-only guard) -- see readOnly's own doc comment.
-  const showDraftRows = emptyRowCount > 0 && !readOnly;
-  const [draftRows, setDraftRows] = useState<DraftRow[]>([]);
-
-  // Keeps exactly `emptyRowCount` blank drafts available: drops a draft once
-  // its created record shows up in `records` (a real refetch landed, so it
-  // now renders through the normal records.map below instead) and tops back
-  // up to the configured count.
-  useEffect(() => {
-    if (!showDraftRows) { setDraftRows([]); return; }
-    setDraftRows(prev => {
-      const remaining = prev.filter(d => !d.recordId || !records.some(r => r.id === d.recordId));
-      const blanks = remaining.filter(d => !d.recordId).length;
-      const need = Math.max(0, emptyRowCount - blanks);
-      const additions: DraftRow[] = Array.from({ length: need }, () => ({
-        key: crypto.randomUUID(), recordId: null, values: {},
-      }));
-      return need > 0 || remaining.length !== prev.length ? [...remaining, ...additions] : prev;
-    });
-  }, [records, emptyRowCount, showDraftRows]);
-
-  const handleDraftCommit = async (draftKey: string, field: CustomTableField, value: any) => {
-    const draft = draftRows.find(d => d.key === draftKey);
-    if (!draft) return;
-    const nextValues = { ...draft.values, [field.field_key]: value };
-    setDraftRows(prev => prev.map(d => d.key === draftKey ? { ...d, values: nextValues } : d));
-
-    if (!draft.recordId) {
-      // Buffer locally (already done above) until every required field is
-      // filled in -- see isReadyToCreate's doc comment.
-      if (!isReadyToCreate(fields, { ...nextValues, ...fixedValues })) return;
-      const record = await createRecord(tableId, companyId, userId, { ...nextValues, ...fixedValues }, fields);
-      if (record && 'error' in record) { window.alert(record.error); return; }
-      if (record) {
-        setDraftRows(prev => prev.map(d => d.key === draftKey ? { ...d, recordId: record.id } : d));
-        onChanged();
-      }
-      return;
-    }
-    const result = await updateRecord(draft.recordId, tableId, companyId, { [field.field_key]: value }, fields);
-    if (result && 'error' in result) { window.alert(result.error); return; }
-    onChanged();
-  };
+  // Purely visual padding rows -- see emptyRowCount's doc comment. Not
+  // offered on ledger tables (nothing here is editable anyway, but a ledger
+  // grid also always renders exactly its real rows, no filler).
+  const paddingRowCount = readOnly ? 0 : emptyRowCount;
 
   if (gridFields.length === 0) {
     return <p className="text-center text-[11px] text-slate-300 italic py-6">No columns configured</p>;
   }
 
   return (
-    <div className="overflow-x-auto border border-slate-200 rounded-2xl bg-white">
+    <div className="border border-slate-200 rounded-2xl bg-white overflow-hidden">
+      {fullscreenHref && (
+        <div className="flex justify-end px-3 py-1.5 border-b border-slate-100">
+          <Link
+            href={fullscreenHref}
+            title="Open full view (all fields)"
+            className="flex items-center gap-1.5 text-[10px] font-bold text-slate-400 hover:text-indigo-600 transition-colors"
+          >
+            <Maximize2 size={12} /> Full screen
+          </Link>
+        </div>
+      )}
+      <div className="overflow-x-auto">
       <table className="w-full text-[12px]">
         <thead>
           <tr className="border-b border-slate-100 bg-slate-50">
@@ -274,7 +230,7 @@ export default function DashboardGrid({
                     </div>
                   )}
                   <div className={`flex-1 py-2.5 truncate whitespace-nowrap ${isAdmin && onReorder ? 'px-2' : 'px-4'}`}>
-                    {f.label}
+                    {f.label}{f.is_required && <span className="text-red-400 ml-1">*</span>}
                   </div>
                   {isAdmin && onResize && (
                     <div
@@ -312,21 +268,15 @@ export default function DashboardGrid({
               )}
             </tr>
           ))}
-          {showDraftRows && draftRows.map(draft => (
-            <tr key={draft.key} className="border-b border-slate-50">
+          {Array.from({ length: paddingRowCount }, (_, i) => (
+            <tr key={`pad-${i}`} className="border-b border-slate-50 select-none" aria-hidden="true">
               {gridFields.map(f => (
-                <td key={f.id} className="px-4 py-2" style={{ width: widthFor(f.id), minWidth: widthFor(f.id), maxWidth: widthFor(f.id) }}>
-                  <FieldValueInput
-                    field={f}
-                    value={draft.values[f.field_key]}
-                    onCommit={v => handleDraftCommit(draft.key, f, v)}
-                  />
-                </td>
+                <td key={f.id} className="px-4 py-2" style={{ width: widthFor(f.id), minWidth: widthFor(f.id), maxWidth: widthFor(f.id) }} />
               ))}
               <td className="px-2" />
             </tr>
           ))}
-          {records.length === 0 && !(showDraftRows && draftRows.length > 0) && (
+          {records.length === 0 && paddingRowCount === 0 && (
             <tr>
               <td colSpan={gridFields.length + (readOnly ? 0 : 1)} className="text-center py-8 text-[11px] text-slate-300 italic">
                 No entries yet
@@ -349,6 +299,7 @@ export default function DashboardGrid({
           </tfoot>
         )}
       </table>
+      </div>
     </div>
   );
 }
