@@ -2,15 +2,10 @@
 
 import type { CustomTableField } from "@/lib/hooks/useCustomTable";
 import RelationPicker from "./RelationPicker";
+import { getValueColumn, isRelationType, isNumericType } from "@/lib/schema/fieldCapabilities";
 
 // Which company_table_values column stores a given field_type's value.
-export function valueColumnFor(fieldType: string): string {
-  if (['number', 'currency'].includes(fieldType)) return 'value_number';
-  if (fieldType === 'date') return 'value_date';
-  if (fieldType === 'boolean') return 'value_boolean';
-  if (['property', 'entity', 'project', 'table_relation'].includes(fieldType)) return 'value_record_id';
-  return 'value_text';
-}
+export const valueColumnFor = getValueColumn;
 
 const inputClass =
   "w-full bg-slate-50 border border-slate-200 rounded-full py-2 px-3.5 text-[13px] font-medium outline-none focus:ring-2 focus:ring-indigo-100";
@@ -84,7 +79,7 @@ export default function FieldValueInput({ field, value, onCommit, disabled, disp
     );
   }
 
-  if (['number', 'currency'].includes(type)) {
+  if (isNumericType(type)) {
     return (
       <input
         type="number"
@@ -97,7 +92,24 @@ export default function FieldValueInput({ field, value, onCommit, disabled, disp
     );
   }
 
-  if (['property', 'entity', 'project', 'table_relation'].includes(type)) {
+  if (isRelationType(type)) {
+    if (field.allow_multiple) {
+      return (
+        <RelationPicker
+          linkedSystemTable={field.linked_system_table}
+          linkedTableId={field.linked_system_table ? null : field.linked_table_id}
+          displayField={field.linked_display_field}
+          searchFieldKeys={field.linked_search_field_keys}
+          filterColumn={field.linked_filter_column}
+          filterValue={field.linked_filter_value}
+          multiple
+          values={Array.isArray(value) ? value : []}
+          onSelectMulti={ids => onCommit(ids)}
+          disabled={disabled}
+          placeholder={field.label}
+        />
+      );
+    }
     return (
       <RelationPicker
         linkedSystemTable={field.linked_system_table}
@@ -115,7 +127,7 @@ export default function FieldValueInput({ field, value, onCommit, disabled, disp
     );
   }
 
-  // text / email / url / auto_id / link fallback
+  // text / email / url / auto_id fallback
   return (
     <input
       type={type === 'email' ? 'email' : type === 'url' ? 'url' : 'text'}

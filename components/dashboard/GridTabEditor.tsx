@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabase";
 import type { CustomTableField } from "@/lib/hooks/useCustomTable";
 import FieldValueInput, { valueColumnFor } from "./FieldValueInput";
 import { useProgressBarWhile } from "@/components/TopProgressBar";
+import { relationCandidates as computeRelationCandidates, parentKindLabel, type ParentSystemTable } from "@/lib/dashboardWidgets/linkField";
 
 const COLS = 3;
 
@@ -32,6 +33,7 @@ interface Props {
   recordId: string;
   companyId: string;
   isEditing: boolean;
+  recordSystemTable?: ParentSystemTable;
 }
 
 const newKey = () =>
@@ -63,7 +65,7 @@ function coalesce(v: any): any {
   return v.value_text ?? v.value_number ?? v.value_date ?? v.value_boolean ?? v.value_record_id ?? null;
 }
 
-export default function GridTabEditor({ tabId, linkedTableId, recordId, companyId, isEditing }: Props) {
+export default function GridTabEditor({ tabId, linkedTableId, recordId, companyId, isEditing, recordSystemTable }: Props) {
   const [loading, setLoading] = useState(true);
   const [fields, setFields] = useState<CustomTableField[]>([]);
   const [cells, setCells] = useState<GridCell[]>([]);
@@ -110,13 +112,14 @@ export default function GridTabEditor({ tabId, linkedTableId, recordId, companyI
       setRows(rowCount);
       setCells(normalize(anchors, rowCount));
 
-      // Resolve link field — auto-set if exactly one project- or entity-relation field
+      // Resolve link field — auto-set if exactly one field on the linked
+      // table plausibly points back at this parent record (scoped to the
+      // parent's own system table when known, so an unrelated relation
+      // field of a different kind on the same table doesn't cause a false
+      // ambiguity — see lib/dashboardWidgets/linkField.ts).
       let lf: string | null = tab?.link_field_id ?? null;
       if (!lf) {
-        const candidates = fieldList.filter(
-          f => f.field_type === 'project' || f.linked_system_table === 'projects' ||
-               f.field_type === 'entity' || f.linked_system_table === 'entities'
-        );
+        const candidates = computeRelationCandidates(fieldList, recordSystemTable);
         if (candidates.length === 1) {
           lf = candidates[0].id;
           await supabase.from('record_tabs').update({ link_field_id: lf }).eq('id', tabId);
@@ -126,7 +129,7 @@ export default function GridTabEditor({ tabId, linkedTableId, recordId, companyI
       setLoading(false);
     })();
     return () => { active = false; };
-  }, [tabId, linkedTableId]);
+  }, [tabId, linkedTableId, recordSystemTable]);
 
   // ── Load records (display mode) ──────────────────────────────────
   const loadRecords = useCallback(async () => {
@@ -148,8 +151,30 @@ export default function GridTabEditor({ tabId, linkedTableId, recordId, companyI
       });
       if (linksHere) matched.push({ id: rec.id, values });
     });
+
+    // allow_multiple fields hold their links in a separate junction table
+    // (see supabase/company_table_field_allow_multiple.sql) -- overwrite
+    // those fields' values with the real string[] once loaded, same as
+    // useCustomTable.ts's load().
+    const multiFields = fields.filter(f => f.allow_multiple);
+    if (multiFields.length && matched.length) {
+      const { data: links } = await supabase
+        .from('company_table_value_links')
+        .select('record_id, field_id, value_record_id')
+        .in('field_id', multiFields.map(f => f.id))
+        .in('record_id', matched.map(r => r.id));
+      const byRecordField = new Map<string, string[]>();
+      (links || []).forEach(l => {
+        const key = `${l.record_id}:${l.field_id}`;
+        (byRecordField.get(key) || byRecordField.set(key, []).get(key)!).push(l.value_record_id);
+      });
+      matched.forEach(r => {
+        multiFields.forEach(f => { r.values[f.id] = byRecordField.get(`${r.id}:${f.id}`) || []; });
+      });
+    }
+
     setRecords(matched);
-  }, [linkFieldId, linkedTableId, recordId]);
+  }, [linkFieldId, linkedTableId, recordId, fields]);
 
   useEffect(() => {
     if (!isEditing) loadRecords();
@@ -234,6 +259,22 @@ export default function GridTabEditor({ tabId, linkedTableId, recordId, companyI
 
   // ── Value editing (display mode) ─────────────────────────────────
   const commitValue = async (recId: string, field: CustomTableField, value: any) => {
+    // allow_multiple relation fields hold a string[] of linked ids -- can't
+    // go through the single-value_record_id upsert below (see
+    // supabase/company_table_field_allow_multiple.sql), so they're routed
+    // to company_table_value_links instead, same replace-all approach as
+    // saveValues in lib/services/customTableService.ts.
+    if (field.allow_multiple) {
+      const ids: string[] = Array.isArray(value) ? value.filter(Boolean) : [];
+      await supabase.from('company_table_value_links').delete().eq('record_id', recId).eq('field_id', field.id);
+      if (ids.length) {
+        await supabase.from('company_table_value_links').insert(
+          ids.map(id => ({ company_id: companyId, record_id: recId, field_id: field.id, value_record_id: id }))
+        );
+      }
+      setRecords(prev => prev.map(r => r.id === recId ? { ...r, values: { ...r.values, [field.id]: ids } } : r));
+      return;
+    }
     const col = valueColumnFor(field.field_type);
     await supabase.from('company_table_values').upsert({
       company_id: companyId,
@@ -266,7 +307,8 @@ export default function GridTabEditor({ tabId, linkedTableId, recordId, companyI
     setAddingRecord(false);
   };
 
-  const relationCandidates = fields.filter(f => f.field_type === 'project' || f.linked_system_table === 'projects');
+  const relationCandidates = computeRelationCandidates(fields, recordSystemTable);
+  const parentKind = parentKindLabel(recordSystemTable);
 
   if (loading) return null;
 
@@ -306,7 +348,7 @@ export default function GridTabEditor({ tabId, linkedTableId, recordId, companyI
         {(!linkFieldId && relationCandidates.length > 1) && (
           <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
             <label className="text-[9px] font-bold text-amber-700 uppercase tracking-widest block mb-1.5">
-              Which field links a record to this project?
+              Which field links a record to this {parentKind}?
             </label>
             <select
               value={linkFieldId || ''}
@@ -422,7 +464,7 @@ export default function GridTabEditor({ tabId, linkedTableId, recordId, companyI
     return (
       <div className="flex flex-col items-center justify-center py-20 gap-2 text-center">
         <p className="text-slate-300 text-[11px] font-bold uppercase tracking-widest">Not configured</p>
-        <p className="text-[12px] text-slate-400">Switch to edit mode and pick the field that links a record to this project.</p>
+        <p className="text-[12px] text-slate-400">Switch to edit mode and pick the field that links a record to this {parentKind}.</p>
       </div>
     );
   }

@@ -13,9 +13,9 @@
 //   filter_bar fields=<key>[,<key>...]
 //   quick_add_form fields=<key>[,<key>...]
 //   grid fields=<key>[,<key>...] [empty_rows=<n>] [when=<cond>[,<cond>...]] [totals=true]
-//   tile "<label>" field=<key> agg=sum|count|net [field_b=<key>] [when=<cond>[,<cond>...]]
+//   tile "<label>" field=<key> agg=sum|count|net|count-distinct [field_b=<key>] [when=<cond>[,<cond>...]]
 //   chart date=<key> [value=<key> agg=sum|count] [group=day|week|month]
-//   series ["<label>"] field=<key> agg=sum|count [when=<cond>[,<cond>...]]
+//   series ["<label>"] field=<key> agg=sum|count|count-distinct [when=<cond>[,<cond>...]]
 //   trust_reconciliation
 //   ledes_export
 //   trust_ledger_statement
@@ -198,9 +198,9 @@ export function parseDSL(source: string, fields: CustomTableField[]): DslParseRe
       const qMatch = remainder.match(/^"([^"]*)"\s*([\s\S]*)$/);
       if (qMatch) { label = qMatch[1]; remainder = qMatch[2]; }
       const kv = parseKeyValues(remainder);
-      const aggregate = kv.agg === 'count' ? 'count' : 'sum';
-      if (aggregate === 'sum' && !kv.field) {
-        errors.push({ line: lineNo, message: `series with agg=sum requires a valid field=<field> (or agg=count)` });
+      const aggregate = kv.agg === 'count' ? 'count' : kv.agg === 'count-distinct' ? 'count-distinct' : 'sum';
+      if (aggregate !== 'count' && !kv.field) {
+        errors.push({ line: lineNo, message: `series with agg=sum or agg=count-distinct requires a valid field=<field> (or agg=count)` });
         return;
       }
       const valueFieldId = kv.field ? resolveFieldToken(kv.field, lineNo) : null;
@@ -270,7 +270,7 @@ export function parseDSL(source: string, fields: CustomTableField[]): DslParseRe
         break;
       }
       case 'summary_tile': {
-        const aggregate = kv.agg === 'count' ? 'count' : kv.agg === 'net' ? 'net' : 'sum';
+        const aggregate = kv.agg === 'count' ? 'count' : kv.agg === 'net' ? 'net' : kv.agg === 'count-distinct' ? 'count-distinct' : 'sum';
         // A count doesn't need a field at all; sum/net are meaningless
         // without one -- mirrors chart's `date=` requirement below (a tile
         // silently defaulting to showing 0 forever, with no error, was the

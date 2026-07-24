@@ -18,6 +18,31 @@ async function getProfileId(email: string): Promise<string | null> {
   return data?.id || null;
 }
 
+async function isCompanyAdmin(email: string, companyId: string): Promise<boolean> {
+  const profileId = await getProfileId(email);
+  if (!profileId) return false;
+  const { data } = await db.from('company_memberships').select('role')
+    .eq('user_id', profileId).eq('company_id', companyId).maybeSingle();
+  return data?.role === 'company_admin';
+}
+
+// Mirrors lib/schema/fieldCapabilities.ts (Next.js app) — kept in sync
+// manually since this Deno function can't import from the app.
+const RELATION_FIELD_TYPES = ['table_relation', 'property', 'entity', 'project', 'link'];
+function isRelationFieldType(fieldType: string): boolean {
+  return RELATION_FIELD_TYPES.includes(fieldType);
+}
+function valueColumnForFieldType(fieldType: string): string {
+  if (fieldType === 'number' || fieldType === 'currency') return 'value_number';
+  if (fieldType === 'date') return 'value_date';
+  if (fieldType === 'boolean') return 'value_boolean';
+  if (isRelationFieldType(fieldType)) return 'value_record_id';
+  return 'value_text';
+}
+function isEmptyFieldValue(v: unknown): boolean {
+  return v === undefined || v === null || v === '';
+}
+
 async function logTaskActivity(params: { taskId: string; companyId: string; actorId: string | null; action: string; detail?: string | null }) {
   await db.from('task_activity_log').insert({
     task_id: params.taskId,
@@ -485,6 +510,7 @@ Deno.serve(async (req) => {
     if (req.method === 'POST' && path === '/create-project') {
       const body = await req.json();
       const { projectName, matterNumber, status, messageId, companyId } = body;
+      const customFieldValues: Record<string, string> = body.customFieldValues || {};
 
       if (!projectName || !companyId) return json({ error: 'Missing required fields' }, 400, headers);
 
@@ -516,14 +542,45 @@ Deno.serve(async (req) => {
       const sublabel = cleanParts.join(separator) + ` [${labelCode}]`;
       const fullLabelName = `${parentLabel}/${sublabel}`;
 
+      // All configurable fields for projects, used for required/unique
+      // enforcement and to know which DB column each value belongs in.
+      const { data: projectFields } = await db
+        .from('company_custom_fields')
+        .select('id, label, field_key, field_type, is_required, is_unique')
+        .eq('company_id', companyId)
+        .eq('table_name', 'projects')
+        .is('deleted_at', null);
+      const allFields = projectFields || [];
+
+      // The dedicated "matter number" input (tied to the Gmail label format,
+      // see gmail_label_tokens above) maps onto whichever custom field looks
+      // like a matter number, same heuristic used since this field predates
+      // the generic customFieldValues collection below.
+      const fieldValues: Record<string, string> = { ...customFieldValues };
+      if (matterNumber) {
+        const matterField = allFields.find((f: any) =>
+          f.label.toLowerCase().includes('matter') && f.label.toLowerCase().includes('number')
+        );
+        if (matterField && isEmptyFieldValue(fieldValues[matterField.id])) {
+          fieldValues[matterField.id] = matterNumber;
+        }
+      }
+
+      // Required-field check — relation-type fields (property/entity/project/
+      // link) have no input widget in the add-on, so they're excluded from
+      // this check; a company with such a field marked required can only
+      // create projects from the web app, not from Gmail.
+      const missingRequired = allFields.find((f: any) =>
+        f.is_required && !isRelationFieldType(f.field_type) && isEmptyFieldValue(fieldValues[f.id])
+      );
+      if (missingRequired) {
+        return json({ error: `"${missingRequired.label}" is required.` }, 400, headers);
+      }
+
       // Check field constraints before creating
       const fieldsToCheck = [{ key: 'name', value: projectName }];
-      if (matterNumber) {
-        const { data: matterField } = await db
-          .from('company_custom_fields')
-          .select('id').eq('company_id', companyId).eq('table_name', 'projects')
-          .ilike('label', '%matter%number%').maybeSingle();
-        if (matterField) fieldsToCheck.push({ key: `custom:${matterField.id}`, value: matterNumber });
+      for (const [fieldId, value] of Object.entries(fieldValues)) {
+        if (!isEmptyFieldValue(value)) fieldsToCheck.push({ key: `custom:${fieldId}`, value: String(value) });
       }
       const constraintCheck = await checkFieldConstraints(companyId, 'projects', fieldsToCheck);
       if (!constraintCheck.ok) {
@@ -545,38 +602,33 @@ Deno.serve(async (req) => {
         return json({ error: projErr?.message || 'Failed to create project' }, 500, headers);
       }
 
-      // Create custom field values — check all unique constraints
-      if (matterNumber) {
-        const { data: allUniqueFields } = await db
-          .from('company_custom_fields')
-          .select('id, label')
-          .eq('company_id', companyId)
-          .eq('table_name', 'projects')
-          .eq('is_unique', true);
-
-        // Find matter number field specifically
-        const matterField = (allUniqueFields || []).find((f: any) =>
-          f.label.toLowerCase().includes('matter') && f.label.toLowerCase().includes('number')
-        );
-
-        if (matterField) {
-          const { error: cfErr } = await db.from('company_custom_field_values').insert({
+      // Create custom field values
+      const fieldById = new Map(allFields.map((f: any) => [f.id, f]));
+      const cfInserts = Object.entries(fieldValues)
+        .filter(([, value]) => !isEmptyFieldValue(value))
+        .map(([fieldId, value]) => {
+          const field: any = fieldById.get(fieldId);
+          if (!field) return null;
+          const valueCol = valueColumnForFieldType(field.field_type);
+          const typedValue = valueCol === 'value_number' ? parseFloat(value)
+            : valueCol === 'value_boolean' ? value === 'true'
+            : value;
+          return {
             company_id: companyId,
-            field_id: matterField.id,
+            field_id: fieldId,
             record_id: project.id,
             table_name: 'projects',
-            value_text: matterNumber,
-          });
+            [valueCol]: typedValue,
+          };
+        })
+        .filter((v): v is NonNullable<typeof v> => v !== null);
 
-          if (cfErr) {
-            await db.from('projects').delete().eq('id', project.id);
-            const isDuplicate = cfErr.code === '23505' || cfErr.message.includes('unique') || cfErr.message.includes('Duplicate');
-            return json({
-              error: isDuplicate
-                ? `"${matterField.label}" "${matterNumber}" already exists — must be unique`
-                : cfErr.message
-            }, isDuplicate ? 409 : 500, headers);
-          }
+      if (cfInserts.length > 0) {
+        const { error: cfErr } = await db.from('company_custom_field_values').insert(cfInserts);
+        if (cfErr) {
+          await db.from('projects').delete().eq('id', project.id);
+          const isDuplicate = cfErr.code === '23505' || cfErr.message.includes('unique') || cfErr.message.includes('Duplicate');
+          return json({ error: isDuplicate ? 'One of these values must be unique — it already exists on another project' : cfErr.message }, isDuplicate ? 409 : 500, headers);
         }
       }
 
@@ -596,7 +648,7 @@ Deno.serve(async (req) => {
         // its label is worse than no project at all (see 2026-07-22 incident:
         // this insert's result was never checked, so the client was told
         // "success" while the label row never existed).
-        if (matterNumber) {
+        if (cfInserts.length > 0) {
           await db.from('company_custom_field_values').delete().eq('record_id', project.id);
         }
         await db.from('projects').delete().eq('id', project.id);
@@ -618,6 +670,211 @@ Deno.serve(async (req) => {
       }
 
       return json({ ok: true, projectId: project.id, labelName: fullLabelName, labelCode }, 200, headers);
+    }
+
+    // ── GET /project-field-settings ─────────────────────────────────
+    // Powers both the admin "required fields" settings card and the
+    // "Create project" form's dynamic custom fields.
+    if (req.method === 'GET' && path === '/project-field-settings') {
+      const companyId = url.searchParams.get('companyId') || '';
+      if (!companyId) return json({ error: 'Missing companyId' }, 400, headers);
+
+      const { data: fields } = await db
+        .from('company_custom_fields')
+        .select('id, field_key, label, field_type, is_required, is_unique, select_options, display_order')
+        .eq('company_id', companyId)
+        .eq('table_name', 'projects')
+        .is('deleted_at', null)
+        .order('display_order');
+
+      const isAdmin = await isCompanyAdmin(userEmail, companyId);
+
+      return json({
+        isAdmin,
+        fields: (fields || []).map((f: any) => ({
+          id: f.id,
+          fieldKey: f.field_key,
+          label: f.label,
+          fieldType: f.field_type,
+          isRequired: f.is_required,
+          isUnique: f.is_unique,
+          selectOptions: f.select_options || [],
+          isRelationType: isRelationFieldType(f.field_type),
+        })),
+      }, 200, headers);
+    }
+
+    // ── POST /project-field-settings ────────────────────────────────
+    if (req.method === 'POST' && path === '/project-field-settings') {
+      const body = await req.json();
+      const { companyId, updates } = body;
+      if (!companyId) return json({ error: 'Missing companyId' }, 400, headers);
+
+      if (!await isCompanyAdmin(userEmail, companyId)) {
+        return json({ error: 'Only a company admin can change these settings' }, 403, headers);
+      }
+
+      for (const u of (updates || []) as { id: string; isRequired: boolean }[]) {
+        const { error } = await db.from('company_custom_fields')
+          .update({ is_required: !!u.isRequired })
+          .eq('id', u.id)
+          .eq('company_id', companyId)
+          .eq('table_name', 'projects');
+        if (error) return json({ error: error.message }, 500, headers);
+      }
+
+      return json({ ok: true }, 200, headers);
+    }
+
+    // ── GET /custom-tables ───────────────────────────────────────────
+    if (req.method === 'GET' && path === '/custom-tables') {
+      const companyId = url.searchParams.get('companyId') || '';
+      if (!companyId) return json({ error: 'Missing companyId' }, 400, headers);
+
+      // Ledger tables (see supabase/company_table_ledger.sql) can only be
+      // written through insert_ledger_record's special balance/overdraw
+      // handling — not offered here, same as the web app's plain-insert path.
+      const { data: tables } = await db
+        .from('company_tables')
+        .select('id, name, is_ledger')
+        .eq('company_id', companyId)
+        .is('deleted_at', null)
+        .order('name');
+
+      return json({
+        tables: (tables || []).filter((t: any) => !t.is_ledger).map((t: any) => ({ id: t.id, name: t.name })),
+      }, 200, headers);
+    }
+
+    // ── GET /custom-table-fields ─────────────────────────────────────
+    if (req.method === 'GET' && path === '/custom-table-fields') {
+      const tableId = url.searchParams.get('tableId') || '';
+      if (!tableId) return json({ error: 'Missing tableId' }, 400, headers);
+
+      const { data: fields } = await db
+        .from('company_table_fields')
+        .select('id, field_key, label, field_type, is_required, is_unique, select_options, auto_number_prefix, formula_type')
+        .eq('table_id', tableId)
+        .is('deleted_at', null)
+        .order('display_order');
+      const allFields = fields || [];
+
+      // Relation fields (need a search-and-pick UI against other records)
+      // and formula fields (computed, not hand-entered — and this endpoint
+      // doesn't evaluate formulas) have no input widget in the add-on. A
+      // required field of either kind means this table can't be completed
+      // from Gmail at all.
+      const blocked = allFields.find((f: any) => f.is_required && (isRelationFieldType(f.field_type) || f.formula_type));
+      const canCreate = !blocked;
+
+      return json({
+        canCreate,
+        blockedReason: blocked ? `"${blocked.label}" is required but its field type can only be set from the web app.` : null,
+        fields: allFields.map((f: any) => ({
+          id: f.id,
+          fieldKey: f.field_key,
+          label: f.label,
+          fieldType: f.field_type,
+          isRequired: f.is_required,
+          isUnique: f.is_unique,
+          selectOptions: f.select_options || [],
+          isAutoNumber: f.auto_number_prefix != null,
+          isFormula: !!f.formula_type,
+          isRelationType: isRelationFieldType(f.field_type),
+        })),
+      }, 200, headers);
+    }
+
+    // ── POST /create-table-record ───────────────────────────────────
+    if (req.method === 'POST' && path === '/create-table-record') {
+      const body = await req.json();
+      const { tableId, companyId } = body;
+      const values: Record<string, string> = body.values || {};
+      if (!tableId || !companyId) return json({ error: 'Missing tableId or companyId' }, 400, headers);
+
+      const { data: profile } = await db.from('profiles').select('id').eq('email', userEmail).single();
+      if (!profile) return json({ error: 'User not found' }, 404, headers);
+
+      const { data: table } = await db.from('company_tables').select('id, is_ledger').eq('id', tableId).is('deleted_at', null).maybeSingle();
+      if (!table) return json({ error: 'Table not found' }, 404, headers);
+      if (table.is_ledger) return json({ error: "Ledger tables can't be created from the add-on — use the web app." }, 400, headers);
+
+      const { data: fields } = await db
+        .from('company_table_fields')
+        .select('id, label, field_key, field_type, is_required, is_unique, auto_number_prefix, formula_type')
+        .eq('table_id', tableId)
+        .is('deleted_at', null);
+      const allFields = fields || [];
+
+      const blocked = allFields.find((f: any) => f.is_required && (isRelationFieldType(f.field_type) || f.formula_type));
+      if (blocked) {
+        return json({ error: `"${blocked.label}" is required but its field type can only be set from the web app.` }, 400, headers);
+      }
+
+      const hasContent = allFields.some((f: any) => f.auto_number_prefix == null && !f.formula_type && !isEmptyFieldValue(values[f.id]));
+      if (!hasContent) {
+        return json({ error: 'Fill in at least one field before creating a record.' }, 400, headers);
+      }
+
+      const missingRequired = allFields.find((f: any) =>
+        f.is_required && f.auto_number_prefix == null && !f.formula_type && isEmptyFieldValue(values[f.id])
+      );
+      if (missingRequired) {
+        return json({ error: `"${missingRequired.label}" is required.` }, 400, headers);
+      }
+
+      // Auto-numbered fields (e.g. invoice/lead numbers) are assigned
+      // server-side so the sequence stays consecutive under concurrent
+      // writers — see supabase/company_table_field_sequences.sql.
+      const withNumbers: Record<string, string> = { ...values };
+      for (const field of allFields) {
+        if (field.auto_number_prefix != null && isEmptyFieldValue(withNumbers[field.id])) {
+          const { data: num } = await db.rpc('next_field_sequence', { p_field_id: field.id });
+          if (num) withNumbers[field.id] = num;
+        }
+      }
+
+      const { data: record, error: recErr } = await db
+        .from('company_table_records')
+        .insert({ table_id: tableId, company_id: companyId, created_by: profile.id })
+        .select('id').single();
+      if (recErr || !record) return json({ error: recErr?.message || 'Failed to create record' }, 500, headers);
+
+      // Atomically claim every is_unique field's value — see
+      // supabase/company_table_unique_locks.sql. On the first failure,
+      // release everything already claimed by this call and roll back.
+      const claimed: { fieldId: string; value: string }[] = [];
+      for (const field of allFields) {
+        if (!field.is_unique || isEmptyFieldValue(withNumbers[field.id])) continue;
+        const value = withNumbers[field.id];
+        const { data: ok } = await db.rpc('claim_unique_value', { p_field_id: field.id, p_record_id: record.id, p_value: String(value) });
+        if (!ok) {
+          await Promise.all(claimed.map(c => db.rpc('release_unique_value', { p_field_id: c.fieldId, p_record_id: record.id, p_value: String(c.value) })));
+          await db.from('company_table_records').delete().eq('id', record.id);
+          return json({ error: `"${field.label}" must be unique — this value is already used on another record.` }, 409, headers);
+        }
+        claimed.push({ fieldId: field.id, value });
+      }
+
+      const valueInserts = allFields
+        .filter((f: any) => !isEmptyFieldValue(withNumbers[f.id]))
+        .map((f: any) => {
+          const valueCol = valueColumnForFieldType(f.field_type);
+          const raw = withNumbers[f.id];
+          const typedValue = valueCol === 'value_number' ? parseFloat(raw) : valueCol === 'value_boolean' ? raw === 'true' : raw;
+          return { company_id: companyId, table_id: tableId, record_id: record.id, field_id: f.id, [valueCol]: typedValue };
+        });
+
+      if (valueInserts.length > 0) {
+        const { error: valErr } = await db.from('company_table_values').insert(valueInserts);
+        if (valErr) {
+          console.error('[create-table-record] values insert failed:', valErr.message);
+          await db.from('company_table_records').delete().eq('id', record.id);
+          return json({ error: 'Could not save this record — please try again.' }, 500, headers);
+        }
+      }
+
+      return json({ ok: true, recordId: record.id }, 200, headers);
     }
 
     // ── POST /import-label ─────────────────────────────────────────

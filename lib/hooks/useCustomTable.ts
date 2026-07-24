@@ -39,6 +39,13 @@ export interface CustomTableField {
   // Server-assigned consecutive numbering (see
   // supabase/company_table_field_sequences.sql), e.g. 'TR-' -> TR-000001.
   auto_number_prefix: string | null;
+  // Multi-record relations (see
+  // supabase/company_table_field_allow_multiple.sql) -- relation-type
+  // fields only; false means the normal single-value behavior every other
+  // field type also has. When true, `values[field_key]` on a
+  // CustomTableRecord is a string[] of linked record ids instead of a
+  // single id -- see this file's own load() below.
+  allow_multiple: boolean;
 }
 
 export interface CustomTableRecord {
@@ -64,8 +71,12 @@ async function resolveRelationLabels(fieldList: CustomTableField[], records: Cus
   if (relationFields.length === 0) return;
 
   await Promise.all(relationFields.map(async field => {
+    // allow_multiple fields hold a string[]; every other relation field
+    // holds a single string -- flatten both into one flat id list to
+    // resolve, same as if every field were scalar.
+    const rawValues = records.map(r => r.values[field.field_key]);
     const targetIds = Array.from(new Set(
-      records.map(r => r.values[field.field_key]).filter((v): v is string => typeof v === 'string' && v.length > 0)
+      rawValues.flatMap(v => Array.isArray(v) ? v : [v]).filter((v): v is string => typeof v === 'string' && v.length > 0)
     ));
     if (targetIds.length === 0) return;
 
@@ -100,6 +111,11 @@ async function resolveRelationLabels(fieldList: CustomTableField[], records: Cus
 
     records.forEach(rec => {
       const targetId = rec.values[field.field_key];
+      if (Array.isArray(targetId)) {
+        const labels = targetId.map(id => labelById.get(id)).filter((l): l is string => !!l);
+        if (labels.length) rec.displayValues[field.field_key] = labels.join(', ');
+        return;
+      }
       const label = typeof targetId === 'string' ? labelById.get(targetId) : undefined;
       if (label !== undefined) rec.displayValues[field.field_key] = label;
     });
@@ -169,6 +185,32 @@ export function useCustomTable(tableSlug: string | null): {
       });
       return { id: rec.id, table_id: rec.table_id, created_at: rec.created_at, values, displayValues: {} };
     });
+
+    // Multi-record relations (allow_multiple) hold their links in a
+    // separate junction table, not company_table_values -- overwrite those
+    // fields' values with the real string[] once loaded. field_id already
+    // scopes to this table (a field belongs to exactly one table), so no
+    // need to also filter by this table's record ids.
+    const multiFields = fieldList.filter(f => f.allow_multiple);
+    if (multiFields.length) {
+      const { data: links } = await supabase
+        .from('company_table_value_links')
+        .select('record_id, field_id, value_record_id')
+        .in('field_id', multiFields.map(f => f.id));
+      const byRecord = new Map<string, Record<string, string[]>>();
+      (links || []).forEach(l => {
+        const field = fieldMap.get(l.field_id);
+        if (!field) return;
+        if (!byRecord.has(l.record_id)) byRecord.set(l.record_id, {});
+        const rec = byRecord.get(l.record_id)!;
+        (rec[field.field_key] ||= []).push(l.value_record_id);
+      });
+      for (const rec of hydratedRecords) {
+        for (const field of multiFields) {
+          rec.values[field.field_key] = byRecord.get(rec.id)?.[field.field_key] || [];
+        }
+      }
+    }
 
     await resolveRelationLabels(fieldList, hydratedRecords);
     setRecords(hydratedRecords);

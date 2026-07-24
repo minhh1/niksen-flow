@@ -1,13 +1,6 @@
 import { supabase } from "@/lib/supabase";
 import type { CustomTableField } from "@/lib/hooks/useCustomTable";
-
-function getValueColumn(fieldType: string): string {
-  if (['number', 'currency'].includes(fieldType)) return 'value_number';
-  if (fieldType === 'date') return 'value_date';
-  if (fieldType === 'boolean') return 'value_boolean';
-  if (['property', 'entity', 'project', 'table_relation'].includes(fieldType)) return 'value_record_id';
-  return 'value_text';
-}
+import { getValueColumn } from "@/lib/schema/fieldCapabilities";
 
 // Ledger guard violations arrive as raw Postgres exception messages (see
 // supabase/company_table_ledger.sql); translate the coded prefixes into
@@ -31,6 +24,7 @@ async function isLedgerTable(tableId: string): Promise<boolean> {
 }
 
 function isEmptyValue(v: any): boolean {
+  if (Array.isArray(v)) return v.length === 0; // allow_multiple relation fields
   return v === undefined || v === null || v === '';
 }
 
@@ -116,6 +110,18 @@ export async function createRecord(
       return { error: ledgerErrorMessage(error.message) || error.message };
     }
     return { id: data.id };
+  }
+
+  // Refuse valueless creates outright -- every "new record" surface (the
+  // NewRecordModal prompt, quick-add forms, grid draft rows, AI actions)
+  // must supply at least one real value. Auto-number and formula fields
+  // don't count: both are derived, so they'd make an otherwise-empty
+  // record look filled.
+  const hasContent = fields.some(f =>
+    f.auto_number_prefix == null && !f.formula_type && !isEmptyValue(values[f.field_key])
+  );
+  if (!hasContent) {
+    return { error: 'Fill in at least one field before creating a record.' };
   }
 
   // Validate before assigning an auto-number or inserting the record row --
@@ -343,11 +349,21 @@ async function claimAllUniqueValues(
 }
 
 // (relationFieldId, parentRecordId) pairs present in a value map -- the
-// parents whose sum_related rollups a change to this row can affect.
+// parents whose sum_related rollups a change to this row can affect. A
+// multi-relation field can touch several parents from one row (one pair per
+// linked id) instead of at most one.
 function relationTouches(fields: CustomTableField[], values: Record<string, any>): { relationFieldId: string; parentId: string }[] {
-  return fields
-    .filter(f => f.field_type === 'table_relation' && values[f.field_key])
-    .map(f => ({ relationFieldId: f.id, parentId: String(values[f.field_key]) }));
+  const touches: { relationFieldId: string; parentId: string }[] = [];
+  for (const f of fields) {
+    if (f.field_type !== 'table_relation') continue;
+    const v = values[f.field_key];
+    if (Array.isArray(v)) {
+      for (const id of v) if (id) touches.push({ relationFieldId: f.id, parentId: String(id) });
+    } else if (v) {
+      touches.push({ relationFieldId: f.id, parentId: String(v) });
+    }
+  }
+  return touches;
 }
 
 // Recomputes sum_related rollup fields (e.g. Invoice Fees = sum of linked
@@ -387,12 +403,18 @@ async function recomputeRelatedRollups(
   for (const rf of rollupFields) {
     const parentIds = [...new Set(touches.filter(t => t.relationFieldId === rf.formula_relation_field_id).map(t => t.parentId))];
     for (const parentId of parentIds) {
-      const { data: links } = await supabase
-        .from('company_table_values')
-        .select('record_id')
-        .eq('field_id', rf.formula_relation_field_id)
-        .eq('value_record_id', parentId);
-      const childIds = (links || []).map(l => l.record_id);
+      // Queries both stores rather than checking the relation field's own
+      // allow_multiple first -- a non-multi field never has rows in
+      // company_table_value_links and a multi field never has rows in
+      // company_table_values for it, so this is correct either way without
+      // an extra lookup to find out which.
+      const [{ data: scalarLinks }, { data: multiLinks }] = await Promise.all([
+        supabase.from('company_table_values').select('record_id')
+          .eq('field_id', rf.formula_relation_field_id).eq('value_record_id', parentId),
+        supabase.from('company_table_value_links').select('record_id')
+          .eq('field_id', rf.formula_relation_field_id).eq('value_record_id', parentId),
+      ]);
+      const childIds = [...new Set([...(scalarLinks || []), ...(multiLinks || [])].map(l => l.record_id))];
 
       let sum = 0;
       if (childIds.length) {
@@ -445,6 +467,26 @@ async function getCurrentValues(recordId: string, fields: CustomTableField[]): P
     if (!key) return;
     result[key] = v.value_text ?? v.value_number ?? v.value_date ?? v.value_boolean ?? v.value_record_id ?? null;
   });
+
+  // allow_multiple fields hold their links in a separate junction table --
+  // without this, their "current" value would always look empty (nothing
+  // for them is ever written to company_table_values), so a change that
+  // REMOVES a link would never see the old parent as touched, and its
+  // rollup would go stale. See relationTouches, which this feeds.
+  const multiFields = fields.filter(f => f.allow_multiple);
+  if (multiFields.length) {
+    const { data: links } = await supabase
+      .from('company_table_value_links')
+      .select('field_id, value_record_id')
+      .eq('record_id', recordId)
+      .in('field_id', multiFields.map(f => f.id));
+    for (const field of multiFields) result[field.field_key] = [];
+    (links || []).forEach(l => {
+      const key = fieldKeyById.get(l.field_id);
+      if (key) result[key].push(l.value_record_id);
+    });
+  }
+
   return result;
 }
 
@@ -493,10 +535,20 @@ async function saveValues(
   fields: CustomTableField[]
 ): Promise<{ error: { message: string } | null }> {
     const fieldMap = new Map(fields.map(f => [f.field_key, f]));
+    // allow_multiple fields hold a string[] of linked record ids -- they
+    // can't go through the single-value_record_id upsert below, so they're
+    // routed to company_table_value_links instead (see
+    // supabase/company_table_field_allow_multiple.sql).
+    const multiWrites: { field: CustomTableField; ids: string[] }[] = [];
     const upserts = Object.entries(values)
     .map(([key, value]) => {
         const field = fieldMap.get(key);
-        if (!field || value === undefined || value === null || value === '') return null;
+        if (!field) return null;
+        if (field.allow_multiple) {
+          if (Array.isArray(value)) multiWrites.push({ field, ids: value.filter(Boolean) });
+          return null;
+        }
+        if (value === undefined || value === null || value === '') return null;
         const valueCol = getValueColumn(field.field_type);
         return {
         company_id: companyId,
@@ -512,7 +564,26 @@ async function saveValues(
     const { error } = await supabase
       .from('company_table_values')
       .upsert(upserts, { onConflict: 'record_id,field_id' });
-    return { error };
+    if (error) return { error };
   }
+
+  for (const { field, ids } of multiWrites) {
+    // Replace-all (delete then insert) -- a multi-relation's link set is a
+    // handful of records, not thousands, so diffing old vs new for a
+    // minimal patch isn't worth the extra round-trip this avoids.
+    const { error: delErr } = await supabase
+      .from('company_table_value_links')
+      .delete()
+      .eq('record_id', recordId)
+      .eq('field_id', field.id);
+    if (delErr) return { error: delErr };
+    if (ids.length) {
+      const { error: insErr } = await supabase
+        .from('company_table_value_links')
+        .insert(ids.map(id => ({ company_id: companyId, record_id: recordId, field_id: field.id, value_record_id: id })));
+      if (insErr) return { error: insErr };
+    }
+  }
+
   return { error: null };
 }

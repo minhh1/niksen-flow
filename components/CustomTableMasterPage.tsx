@@ -14,6 +14,7 @@ import SpreadsheetEditor from "@/components/SpreadsheetEditor";
 import type { CustomTable } from "@/lib/hooks/useCustomTables";
 import type { CustomTableField, CustomTableRecord } from "@/lib/hooks/useCustomTable";
 import RecordDashboard from "@/components/dashboard/RecordDashboard";
+import NewRecordModal, { pickCreateFields } from "@/components/dashboard/NewRecordModal";
 
 interface Props {
   tableSlug: string;
@@ -150,25 +151,30 @@ function CustomTableMasterPageInner({ tableSlug }: Props) {
     });
   }, [records, search, primaryField]);
 
-  const handleCreate = async () => {
-    setIsCreating(true);
+  // Fields the NewRecordModal prompts for -- the primary field plus every
+  // other required field, so creating a record here never starts from an
+  // empty row or leaves a required field unset.
+  const createFields = useMemo(
+    () => pickCreateFields(fields, tableDef?.primary_field_key),
+    [fields, tableDef]
+  );
+
+  const handleCreate = async (newValues: Record<string, any>): Promise<string | null> => {
     const { data: { user } } = await supabase.auth.getUser();
     const { data: prof } = await supabase
       .from('profiles').select('active_company_id').eq('id', user?.id).single();
     const cid = prof?.active_company_id;
     setCompanyId(cid || null);
-    if (!cid || !user || !tableDef) { setIsCreating(false); return; }
+    if (!cid || !user || !tableDef) return 'Not signed in.';
 
-    const rec = await createRecord(tableDef.id, cid, user.id, {}, fields);
-    setIsCreating(false);
-    if (rec && 'error' in rec) {
-      window.alert(rec.error);
-      return;
-    }
+    const rec = await createRecord(tableDef.id, cid, user.id, newValues, fields);
+    if (rec && 'error' in rec) return rec.error;
     if (rec) {
       refetch();
       router.push(`/dashboard/${tableSlug}?id=${rec.id}`);
+      return null;
     }
+    return 'Could not create the record.';
   };
 
   const handleDelete = async (record: CustomTableRecord, e: React.MouseEvent) => {
@@ -300,15 +306,16 @@ function CustomTableMasterPageInner({ tableSlug }: Props) {
                 <Download size={16} /> Export CSV
               </button>
               <button
-                onClick={handleCreate}
-                disabled={isCreating}
+                onClick={() => {
+                  if (!createFields.length) {
+                    window.alert('Add a field to this table first — records can\'t be created empty.');
+                    return;
+                  }
+                  setIsCreating(true);
+                }}
                 className="bg-slate-900 text-white px-6 py-2 rounded-full text-[11px] font-bold shadow-sm disabled:opacity-50 flex items-center gap-2"
               >
-                {isCreating ? (
-                  <LucideIcons.Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Plus size={14} />
-                )}
+                <Plus size={14} />
                 New record
               </button>
             </div>
@@ -329,6 +336,16 @@ function CustomTableMasterPageInner({ tableSlug }: Props) {
           </div>
         </div>
       </header>
+
+      {/* ── New record prompt ── */}
+      {isCreating && createFields.length > 0 && (
+        <NewRecordModal
+          tableName={tableDef.name}
+          fields={createFields}
+          onCreate={handleCreate}
+          onClose={() => setIsCreating(false)}
+        />
+      )}
 
       {/* ── Column config drawer ── */}
       <CustomColumnDrawer

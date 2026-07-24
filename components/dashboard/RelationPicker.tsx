@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { Loader2, X } from "lucide-react";
+import { Loader2, X, Check } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 
 interface RelationOption { id: string; label: string }
@@ -80,8 +80,23 @@ interface Props {
   // still displays correctly.
   filterColumn?: string | null;
   filterValue?: string | null;
-  value: string | null;
-  onSelect: (id: string | null, label: string | null) => void;
+  // Required in single-select mode (the default); unused when `multiple` is
+  // true, so optional here rather than forcing every multi-select caller to
+  // pass a no-op.
+  value?: string | null;
+  onSelect?: (id: string | null, label: string | null) => void;
+  // Multi-select mode (field.allow_multiple) -- renders every selected
+  // option as a removable chip instead of one label, and clicking an option
+  // in the dropdown toggles it instead of selecting-and-closing. Reuses this
+  // component's existing search/options fetching untouched (it's shape-
+  // agnostic); only selection state and rendering branch on this. `value`/
+  // `onSelect` above are ignored when true -- use `values`/`onSelectMulti`
+  // instead. Kept as a second prop pair rather than overloading value's type
+  // to string | string[], so every existing single-select caller (the vast
+  // majority) needs zero changes.
+  multiple?: boolean;
+  values?: string[];
+  onSelectMulti?: (ids: string[]) => void;
   disabled?: boolean;
   placeholder?: string;
   // Already-resolved label for `value`, when the caller has one (e.g. a
@@ -125,13 +140,18 @@ async function fetchCustomTableRecordLabels(tableId: string, recordIds?: string[
 
 export default function RelationPicker({
   linkedSystemTable, linkedTableId, displayField, searchFieldKeys, filterColumn, filterValue,
-  value, onSelect, disabled, placeholder, initialLabel,
+  value, onSelect, multiple, values, onSelectMulti, disabled, placeholder, initialLabel,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [options, setOptions] = useState<RelationOption[]>([]);
   const [loading, setLoading] = useState(false);
   const [currentLabel, setCurrentLabel] = useState(initialLabel ?? '');
+  // Multi-select mode only -- id -> resolved label, for rendering chips.
+  // Options already carry their own label once fetched/searched, so this
+  // only needs to cover ids selected before their label was ever seen in
+  // `options` (e.g. on initial load of a record with existing links).
+  const [multiLabels, setMultiLabels] = useState<Record<string, string>>({});
   const containerRef = useRef<HTMLDivElement>(null);
   // Which value id `currentLabel` is already known-correct for -- set
   // synchronously by the picker's own click handler (it already knows the
@@ -148,7 +168,7 @@ export default function RelationPicker({
 
   // Resolve the current value's display label whenever it changes.
   useEffect(() => {
-    if (!value) { setCurrentLabel(''); resolvedForRef.current = null; return; }
+    if (multiple || !value) { setCurrentLabel(''); resolvedForRef.current = null; return; }
     if (resolvedForRef.current === value) return;
     let active = true;
     const cacheKey = `label:${linkedSystemTable ?? ''}:${linkedTableId ?? ''}:${displayField ?? ''}:${value}`;
@@ -172,7 +192,38 @@ export default function RelationPicker({
       if (active) { setCurrentLabel(label); resolvedForRef.current = value; }
     });
     return () => { active = false; };
-  }, [value, linkedSystemTable, linkedTableId, displayField]);
+  }, [multiple, value, linkedSystemTable, linkedTableId, displayField]);
+
+  // Multi-select mode: resolve labels for every selected id not already
+  // known (from a prior search's `options`, or already resolved). Runs
+  // whenever the selected id set changes -- e.g. loading a record with
+  // existing links, or after toggling a new one on.
+  useEffect(() => {
+    if (!multiple) return;
+    const ids = values || [];
+    const known = new Set([...Object.keys(multiLabels), ...options.map(o => o.id)]);
+    const unresolved = ids.filter(id => !known.has(id));
+    if (unresolved.length === 0) return;
+    let active = true;
+    (async () => {
+      let resolved: RelationOption[] = [];
+      if (linkedSystemTable) {
+        const col = displayField || 'name';
+        const { data } = await supabase.from(linkedSystemTable).select(`id, ${col}`).in('id', unresolved).is('deleted_at', null);
+        resolved = (data || []).map((r: any) => ({ id: r.id, label: String(r[col] ?? 'Untitled') }));
+      } else if (linkedTableId) {
+        resolved = await fetchCustomTableRecordLabels(linkedTableId, unresolved);
+      }
+      if (active && resolved.length) {
+        setMultiLabels(prev => {
+          const next = { ...prev };
+          resolved.forEach(r => { next[r.id] = r.label; });
+          return next;
+        });
+      }
+    })();
+    return () => { active = false; };
+  }, [multiple, values, linkedSystemTable, linkedTableId, displayField]);
 
   // Auto-fills a "Signed-in user only" field the moment it mounts empty --
   // that filter can only ever match zero or one row (the entity linked to
@@ -189,7 +240,7 @@ export default function RelationPicker({
   // request always resolved with the right row, just always into an
   // `active === false` closure.
   useEffect(() => {
-    if (value || userClearedRef.current || !linkedSystemTable || filterColumn !== 'linked_profile_id' || filterValue !== CURRENT_USER_SENTINEL) return;
+    if (multiple || value || userClearedRef.current || !linkedSystemTable || filterColumn !== 'linked_profile_id' || filterValue !== CURRENT_USER_SENTINEL) return;
     let active = true;
     const col = displayField || 'name';
     const cacheKey = `autoSelect:${linkedSystemTable}:${filterColumn}:${filterValue}:${col}`;
@@ -203,7 +254,7 @@ export default function RelationPicker({
         const label = String(row[col] ?? '');
         setCurrentLabel(label);
         resolvedForRef.current = row.id;
-        onSelect(row.id, label);
+        onSelect?.(row.id, label);
       }
     });
     return () => { active = false; };
@@ -213,7 +264,7 @@ export default function RelationPicker({
     // fetch via the cleanup's `active = false`) on every unrelated parent
     // re-render, before the request had a chance to resolve. Matches the
     // same omission already made in the label-resolution effect above.
-  }, [value, linkedSystemTable, filterColumn, filterValue, displayField]);
+  }, [multiple, value, linkedSystemTable, filterColumn, filterValue, displayField]);
 
   // Search as the dropdown is open / query changes.
   useEffect(() => {
@@ -289,9 +340,83 @@ export default function RelationPicker({
   }, [open]);
 
   if (disabled) {
+    const label = multiple
+      ? (values || []).map(id => multiLabels[id] ?? options.find(o => o.id === id)?.label).filter(Boolean).join(', ')
+      : currentLabel;
     return (
       <div className="w-full bg-slate-50 border border-slate-200 rounded-full py-2 px-3.5 text-[13px] font-medium text-slate-500 truncate">
-        {currentLabel || '—'}
+        {label || '—'}
+      </div>
+    );
+  }
+
+  if (multiple) {
+    const selectedIds = values || [];
+    const labelOf = (id: string) => multiLabels[id] ?? options.find(o => o.id === id)?.label ?? '…';
+    const toggle = (opt: RelationOption) => {
+      const next = selectedIds.includes(opt.id)
+        ? selectedIds.filter(id => id !== opt.id)
+        : [...selectedIds, opt.id];
+      setMultiLabels(prev => ({ ...prev, [opt.id]: opt.label }));
+      onSelectMulti?.(next);
+    };
+    return (
+      <div ref={containerRef} className="relative w-full">
+        <div
+          onClick={() => setOpen(true)}
+          className="w-full min-h-[38px] bg-slate-50 border border-slate-200 rounded-2xl py-1.5 px-2.5 text-[13px] font-medium outline-none cursor-pointer flex flex-wrap items-center gap-1.5 focus-within:ring-2 focus-within:ring-indigo-100"
+        >
+          {selectedIds.map(id => (
+            <span key={id} className="flex items-center gap-1 bg-indigo-50 text-indigo-700 rounded-full pl-2.5 pr-1.5 py-1 text-[11px] font-semibold">
+              {labelOf(id)}
+              <button
+                type="button"
+                onClick={e => { e.stopPropagation(); onSelectMulti?.(selectedIds.filter(x => x !== id)); }}
+                className="text-indigo-400 hover:text-red-500"
+              >
+                <X size={10} />
+              </button>
+            </span>
+          ))}
+          {open ? (
+            <input
+              autoFocus
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder={selectedIds.length ? '' : (placeholder || 'Search...')}
+              className="flex-1 min-w-[80px] bg-transparent outline-none"
+            />
+          ) : selectedIds.length === 0 ? (
+            <span className="text-slate-400">{placeholder || 'Select...'}</span>
+          ) : null}
+        </div>
+
+        {open && (
+          <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl z-50 max-h-60 overflow-y-auto">
+            {loading ? (
+              <div className="flex justify-center py-4"><Loader2 size={14} className="animate-spin text-slate-300" /></div>
+            ) : options.length === 0 ? (
+              <p className="text-[11px] text-slate-300 italic text-center py-4">No matches</p>
+            ) : (
+              options.map(opt => {
+                const checked = selectedIds.includes(opt.id);
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => toggle(opt)}
+                    className={`w-full text-left px-4 py-2 text-[12px] font-medium flex items-center gap-2 transition-colors ${checked ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700 hover:bg-indigo-50'}`}
+                  >
+                    <span className={`w-3.5 h-3.5 rounded border-2 flex items-center justify-center shrink-0 ${checked ? 'bg-indigo-600 border-indigo-600' : 'border-slate-300'}`}>
+                      {checked && <Check size={9} className="text-white" />}
+                    </span>
+                    {opt.label}
+                  </button>
+                );
+              })
+            )}
+          </div>
+        )}
       </div>
     );
   }
@@ -318,7 +443,7 @@ export default function RelationPicker({
         {currentLabel && !open && (
           <button
             type="button"
-            onClick={e => { e.stopPropagation(); setCurrentLabel(''); resolvedForRef.current = null; userClearedRef.current = true; onSelect(null, null); }}
+            onClick={e => { e.stopPropagation(); setCurrentLabel(''); resolvedForRef.current = null; userClearedRef.current = true; onSelect?.(null, null); }}
             className="text-slate-300 hover:text-red-500 shrink-0"
           >
             <X size={12} />
@@ -344,7 +469,7 @@ export default function RelationPicker({
                   // the visible lag on every relation pick.
                   setCurrentLabel(opt.label);
                   resolvedForRef.current = opt.id;
-                  onSelect(opt.id, opt.label);
+                  onSelect?.(opt.id, opt.label);
                   setQuery('');
                   setOpen(false);
                 }}

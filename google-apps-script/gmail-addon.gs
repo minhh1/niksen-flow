@@ -626,8 +626,47 @@ function buildMainCard(messageId, accessToken, allTasksOffset, unallocatedOffset
         .addItem('Open', 'Open', false)
         .addItem('In Progress', 'In Progress', false)
         .addItem('Completed', 'Completed', false)
-        .addItem('Closed', 'Closed', false))
-      .addWidget(CardService.newButtonSet()
+        .addItem('Closed', 'Closed', false));
+
+    // Any other configured project fields (e.g. required-by-admin ones, see
+    // "⚙ Settings") — the matter-number field is skipped here since it's
+    // already collected above, tied to the Gmail label format.
+    var projFieldsRes = cachedApiGet('/project-field-settings?companyId=' + activeCompanyId, token, 60);
+    var projFields = projFieldsRes.ok ? (projFieldsRes.data.fields || []) : [];
+    var blockedProjectField = null;
+    for (var pfi = 0; pfi < projFields.length; pfi++) {
+      var pf = projFields[pfi];
+      var isMatterField = pf.label.toLowerCase().indexOf('matter') !== -1 && pf.label.toLowerCase().indexOf('number') !== -1;
+      if (isMatterField) continue;
+      if (pf.isRequired && pf.isRelationType) { blockedProjectField = pf; continue; }
+      if (pf.isRelationType) continue; // optional relation fields: no add-on input, safe to just omit
+
+      var pfName = 'projField_' + pf.id;
+      var pfLabel = pf.label + (pf.isRequired ? ' *' : '');
+      if (pf.fieldType === 'boolean') {
+        createSection.addWidget(CardService.newSelectionInput()
+          .setType(CardService.SelectionInputType.CHECK_BOX)
+          .setFieldName(pfName).setTitle('').addItem(pfLabel, 'true', false));
+      } else if (pf.fieldType === 'select' && pf.selectOptions && pf.selectOptions.length) {
+        var pfSelect = CardService.newSelectionInput()
+          .setType(CardService.SelectionInputType.DROPDOWN)
+          .setFieldName(pfName).setTitle(pfLabel).addItem('', '', true);
+        for (var soi = 0; soi < pf.selectOptions.length; soi++) {
+          pfSelect.addItem(pf.selectOptions[soi], pf.selectOptions[soi], false);
+        }
+        createSection.addWidget(pfSelect);
+      } else if (pf.fieldType === 'date') {
+        createSection.addWidget(CardService.newDatePicker().setFieldName(pfName).setTitle(pfLabel));
+      } else {
+        createSection.addWidget(CardService.newTextInput().setFieldName(pfName).setTitle(pfLabel));
+      }
+    }
+
+    if (blockedProjectField) {
+      createSection.addWidget(CardService.newTextParagraph()
+        .setText('⚠ "' + blockedProjectField.label + '" is required but its field type can only be set from the web app — create projects there instead until this is changed in Settings.'));
+    } else {
+      createSection.addWidget(CardService.newButtonSet()
         .addButton(CardService.newTextButton()
           .setText('Create project & label')
           .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
@@ -639,6 +678,7 @@ function buildMainCard(messageId, accessToken, allTasksOffset, unallocatedOffset
               accessToken: token,
               companyId: activeCompanyId,
             }))));
+    }
 
     card.addSection(createSection);
   }
@@ -733,8 +773,32 @@ function buildMainCard(messageId, accessToken, allTasksOffset, unallocatedOffset
               accessToken: token,
               companyId: activeCompanyId,
               query: '',
+            })))
+        .addButton(CardService.newTextButton()
+          .setText('⚙ Settings')
+          .setTextButtonStyle(CardService.TextButtonStyle.OUTLINED)
+          .setOnClickAction(CardService.newAction()
+            .setFunctionName('onShowAdminSettings')
+            .setParameters({
+              accessToken: token,
+              companyId: activeCompanyId,
             })))));
   }
+
+  // ── Custom tables: add a record ───────────────────────────────
+  card.addSection(CardService.newCardSection()
+    .setHeader('Custom tables')
+    .setCollapsible(true)
+    .addWidget(CardService.newButtonSet()
+      .addButton(CardService.newTextButton()
+        .setText('+ Add record')
+        .setTextButtonStyle(CardService.TextButtonStyle.OUTLINED)
+        .setOnClickAction(CardService.newAction()
+          .setFunctionName('onShowCustomTablesForRecord')
+          .setParameters({
+            accessToken: token,
+            companyId: activeCompanyId,
+          })))));
 
   // ── All My Tasks ─────────────────────────────────────────────────
   // The requesting user's own active tasks across every project — every
@@ -955,6 +1019,250 @@ function buildMainCard(messageId, accessToken, allTasksOffset, unallocatedOffset
           })))));
 
   return card.build();
+}
+
+// ── Admin settings: required fields for project creation ───────────
+
+function onShowAdminSettings(e) {
+  var token = e.parameters.accessToken || getToken();
+  var companyId = e.parameters.companyId;
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().pushCard(buildAdminSettingsCard(companyId, token)))
+    .build();
+}
+
+function buildAdminSettingsCard(companyId, token) {
+  var res = apiGet('/project-field-settings?companyId=' + companyId, token);
+  var fields = res.ok ? (res.data.fields || []) : [];
+  var isAdmin = res.ok ? !!res.data.isAdmin : false;
+
+  var card = CardService.newCardBuilder()
+    .setName('admin_settings_' + companyId)
+    .setHeader(CardService.newCardHeader().setTitle('Settings').setSubtitle('Project required fields'));
+
+  var section = CardService.newCardSection();
+
+  if (!isAdmin) {
+    section.addWidget(CardService.newTextParagraph().setText('Only a company admin can change these settings.'));
+    card.addSection(section);
+    return card.build();
+  }
+
+  section.addWidget(CardService.newTextParagraph()
+    .setText('Project name is always required. Choose which other fields must be filled in before a project can be created — enforced in both the web app and this add-on.'));
+
+  if (!fields.length) {
+    section.addWidget(CardService.newTextParagraph()
+      .setText('No custom fields configured for projects yet — add some from the web app\'s Settings page first.'));
+  }
+
+  for (var i = 0; i < fields.length; i++) {
+    var f = fields[i];
+    var label = f.isRelationType ? f.label + ' (linked record — marking this required blocks creating projects from Gmail)' : f.label;
+    section.addWidget(CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.CHECK_BOX)
+      .setFieldName('req_' + f.id)
+      .setTitle('')
+      .addItem(label, 'true', f.isRequired));
+  }
+
+  if (fields.length) {
+    section.addWidget(CardService.newButtonSet()
+      .addButton(CardService.newTextButton()
+        .setText('Save')
+        .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+        .setBackgroundColor('#4f46e5')
+        .setOnClickAction(CardService.newAction()
+          .setFunctionName('onSaveAdminSettings')
+          .setParameters({
+            accessToken: token,
+            companyId: companyId,
+            fieldIds: fields.map(function(f) { return f.id; }).join(','),
+          }))));
+  }
+
+  card.addSection(section);
+  return card.build();
+}
+
+function onSaveAdminSettings(e) {
+  var token = e.parameters.accessToken || getToken();
+  var companyId = e.parameters.companyId;
+  var fieldIds = (e.parameters.fieldIds || '').split(',').filter(function(id) { return id; });
+  var fi = e.formInputs || {};
+
+  var updates = fieldIds.map(function(id) {
+    return { id: id, isRequired: (fi['req_' + id] || []).indexOf('true') !== -1 };
+  });
+
+  var result = apiPost('/project-field-settings', { companyId: companyId, updates: updates }, token);
+  if (!result.ok) return errorNotification('Error: ' + (result.data.error || 'Unknown'));
+
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().updateCard(buildAdminSettingsCard(companyId, token)))
+    .setNotification(CardService.newNotification().setText('✓ Settings saved'))
+    .build();
+}
+
+// ── Custom tables: add a record ──────────────────────────────────────
+
+function onShowCustomTablesForRecord(e) {
+  var token = e.parameters.accessToken || getToken();
+  var companyId = e.parameters.companyId;
+  var res = apiGet('/custom-tables?companyId=' + companyId, token);
+  var tables = res.ok ? (res.data.tables || []) : [];
+
+  var card = CardService.newCardBuilder()
+    .setName('custom_tables_picker_' + companyId)
+    .setHeader(CardService.newCardHeader().setTitle('Add a record').setSubtitle('Choose a table'));
+
+  var section = CardService.newCardSection();
+  if (!tables.length) {
+    section.addWidget(CardService.newTextParagraph()
+      .setText('No custom tables yet — create one from the web app\'s Settings page first.'));
+  }
+  for (var i = 0; i < tables.length; i++) {
+    var t = tables[i];
+    section.addWidget(CardService.newButtonSet()
+      .addButton(CardService.newTextButton()
+        .setText(t.name)
+        .setOnClickAction(CardService.newAction()
+          .setFunctionName('onSelectCustomTableForRecord')
+          .setParameters({
+            accessToken: token,
+            companyId: companyId,
+            tableId: t.id,
+            tableName: t.name,
+          }))));
+  }
+  card.addSection(section);
+
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().pushCard(card.build()))
+    .build();
+}
+
+function onSelectCustomTableForRecord(e) {
+  var token = e.parameters.accessToken || getToken();
+  var companyId = e.parameters.companyId;
+  var tableId = e.parameters.tableId;
+  var tableName = e.parameters.tableName || '';
+
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().pushCard(buildCreateTableRecordCard(companyId, tableId, tableName, token)))
+    .build();
+}
+
+// Field types with no add-on input widget (relation pickers need a live
+// search UI against other records; formula fields are always computed, this
+// endpoint doesn't evaluate them; auto-number fields are assigned server-side).
+function tableFieldHasAddonInput(f) {
+  return !f.isRelationType && !f.isFormula && !f.isAutoNumber;
+}
+
+function buildCreateTableRecordCard(companyId, tableId, tableName, token) {
+  var res = apiGet('/custom-table-fields?tableId=' + tableId, token);
+  var data = res.ok ? res.data : { fields: [], canCreate: false, blockedReason: 'Could not load this table.' };
+
+  var card = CardService.newCardBuilder()
+    .setName('create_table_record_' + tableId)
+    .setHeader(CardService.newCardHeader().setTitle('Add record').setSubtitle(tableName));
+
+  var section = CardService.newCardSection();
+
+  if (!data.canCreate) {
+    section.addWidget(CardService.newTextParagraph().setText('⚠ ' + (data.blockedReason || 'This table can\'t be created from the add-on.')));
+    card.addSection(section);
+    return card.build();
+  }
+
+  var fields = data.fields || [];
+  var hasInputs = false;
+  for (var i = 0; i < fields.length; i++) {
+    var f = fields[i];
+    if (!tableFieldHasAddonInput(f)) continue;
+    hasInputs = true;
+    var fieldName = 'field_' + f.id;
+    var label = f.label + (f.isRequired ? ' *' : '');
+
+    if (f.fieldType === 'boolean') {
+      section.addWidget(CardService.newSelectionInput()
+        .setType(CardService.SelectionInputType.CHECK_BOX)
+        .setFieldName(fieldName)
+        .setTitle('')
+        .addItem(label, 'true', false));
+    } else if (f.fieldType === 'select' && f.selectOptions && f.selectOptions.length) {
+      var sel = CardService.newSelectionInput()
+        .setType(CardService.SelectionInputType.DROPDOWN)
+        .setFieldName(fieldName)
+        .setTitle(label)
+        .addItem('', '', true);
+      for (var oi = 0; oi < f.selectOptions.length; oi++) {
+        sel.addItem(f.selectOptions[oi], f.selectOptions[oi], false);
+      }
+      section.addWidget(sel);
+    } else if (f.fieldType === 'date') {
+      section.addWidget(CardService.newDatePicker().setFieldName(fieldName).setTitle(label));
+    } else {
+      section.addWidget(CardService.newTextInput()
+        .setFieldName(fieldName)
+        .setTitle(label));
+    }
+  }
+
+  if (!hasInputs) {
+    section.addWidget(CardService.newTextParagraph().setText('This table has no fields that can be filled in from the add-on.'));
+  } else {
+    section.addWidget(CardService.newButtonSet()
+      .addButton(CardService.newTextButton()
+        .setText('Add record')
+        .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+        .setBackgroundColor('#4f46e5')
+        .setOnClickAction(CardService.newAction()
+          .setFunctionName('onCreateTableRecordSubmit')
+          .setParameters({
+            accessToken: token,
+            companyId: companyId,
+            tableId: tableId,
+            tableName: tableName,
+          }))));
+  }
+
+  card.addSection(section);
+  return card.build();
+}
+
+function onCreateTableRecordSubmit(e) {
+  var token = e.parameters.accessToken || getToken();
+  var companyId = e.parameters.companyId;
+  var tableId = e.parameters.tableId;
+  var tableName = e.parameters.tableName || '';
+  var fi = e.formInputs || {};
+
+  var res = apiGet('/custom-table-fields?tableId=' + tableId, token);
+  var fields = res.ok ? (res.data.fields || []) : [];
+
+  var values = {};
+  for (var i = 0; i < fields.length; i++) {
+    var f = fields[i];
+    if (!tableFieldHasAddonInput(f)) continue;
+    var fieldName = 'field_' + f.id;
+    if (f.fieldType === 'boolean') {
+      values[f.id] = (fi[fieldName] || []).indexOf('true') !== -1 ? 'true' : 'false';
+    } else if (f.fieldType === 'date') {
+      values[f.id] = parseDatePickerValue(e, fieldName) || '';
+    } else {
+      values[f.id] = ((fi[fieldName] || [''])[0] || '').trim();
+    }
+  }
+
+  var result = apiPost('/create-table-record', { tableId: tableId, companyId: companyId, values: values }, token);
+  if (!result.ok) return errorNotification('Error: ' + (result.data.error || 'Unknown'));
+
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().popCard())
+    .setNotification(CardService.newNotification().setText('✓ Record added to ' + tableName))
+    .build();
 }
 
 // Fired by the Home card's "All My Tasks" Previous/Next buttons.
@@ -2797,12 +3105,33 @@ function onCreateProject(e) {
   var token = params.accessToken || getToken();
   var companyId = params.companyId || '';
   if (!projectName) return errorNotification('Project name is required');
+
+  // Any other project fields rendered dynamically alongside this form (see
+  // buildMainCard's "Create project & label" section) — keyed by field id
+  // so the server can map each to the right company_custom_field_values row.
+  var projFieldsRes = apiGet('/project-field-settings?companyId=' + companyId, token);
+  var projFields = projFieldsRes.ok ? (projFieldsRes.data.fields || []) : [];
+  var customFieldValues = {};
+  for (var pfi = 0; pfi < projFields.length; pfi++) {
+    var pf = projFields[pfi];
+    if (pf.isRelationType) continue;
+    var pfName = 'projField_' + pf.id;
+    if (pf.fieldType === 'boolean') {
+      customFieldValues[pf.id] = (formInputs[pfName] || []).indexOf('true') !== -1 ? 'true' : 'false';
+    } else if (pf.fieldType === 'date') {
+      customFieldValues[pf.id] = parseDatePickerValue(e, pfName) || '';
+    } else {
+      customFieldValues[pf.id] = ((formInputs[pfName] || [''])[0] || '').trim();
+    }
+  }
+
   var result = apiPost('/create-project', {
     projectName: projectName,
     matterNumber: matterNumber,
     status: status,
     messageId: messageId,
     companyId: companyId,
+    customFieldValues: customFieldValues,
   }, token);
 
   if (!result.ok || !result.data.ok) {

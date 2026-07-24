@@ -110,8 +110,13 @@ export interface SummaryTileWidget extends BaseWidget {
     label: string;
     fieldId: string | null;
     // 'net' = sum(fieldId) - sum(fieldBId), e.g. a trust ledger's live
-    // balance from Amount In / Amount Out columns.
-    aggregate: 'sum' | 'count' | 'net';
+    // balance from Amount In / Amount Out columns. 'count-distinct' = number
+    // of distinct non-empty values of fieldId across matched rows -- lets a
+    // tile target any field type, not just numeric ones (e.g. "4 distinct
+    // Statuses" on a select field). See lib/schema/fieldCapabilities.ts's
+    // aggregatesForType, which decides which of these a given field type
+    // offers.
+    aggregate: 'sum' | 'count' | 'net' | 'count-distinct';
     fieldBId?: string | null;
     // Every condition must match (AND) for a record to count. Preferred
     // going forward over filterFieldId/filterValue below, which are kept
@@ -142,7 +147,7 @@ export type ChartGranularity = 'day' | 'week' | 'month';
 export interface ChartSeriesConfig {
   label: string;
   valueFieldId: string | null;
-  aggregate: 'sum' | 'count';
+  aggregate: 'sum' | 'count' | 'count-distinct';
   conditions?: TileCondition[];
 }
 

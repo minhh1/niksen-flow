@@ -11,42 +11,13 @@ import FieldPickerList from "./FieldPickerList";
 import RelationPicker from "../RelationPicker";
 import type { CustomTableField } from "@/lib/hooks/useCustomTable";
 import type { DashboardWidget, SummaryTileWidget, TileCondition, ChartSeriesConfig } from "@/lib/dashboardWidgets/types";
+import { isRelationType, isNumericType, isDateType, operatorsForType, aggregatesForType } from "@/lib/schema/fieldCapabilities";
 
 interface Props {
   widget: DashboardWidget;
   fields: CustomTableField[];
   onSave: (widget: DashboardWidget) => void;
   onClose: () => void;
-}
-
-const RELATION_TYPES = new Set(['entity', 'project', 'property', 'table_relation']);
-
-// Which comparisons make sense for a given field type -- e.g. "contains"
-// only for free text, "is set"/"is empty" for relations (an empty relation
-// is a common, meaningful condition; a blank text/number is comparatively
-// rare so its eq/neq already covers that via an empty value).
-function operatorsForType(fieldType: string): { value: TileCondition['operator']; label: string }[] {
-  if (fieldType === 'boolean') return [{ value: 'eq', label: 'is' }];
-  if (fieldType === 'select') return [{ value: 'eq', label: 'is' }, { value: 'neq', label: 'is not' }];
-  if (fieldType === 'text') return [
-    { value: 'eq', label: 'is' }, { value: 'neq', label: 'is not' }, { value: 'contains', label: 'contains' },
-    { value: 'is_set', label: 'is set' }, { value: 'is_empty', label: 'is empty' },
-  ];
-  if (['number', 'currency'].includes(fieldType)) return [
-    { value: 'eq', label: '=' }, { value: 'neq', label: '≠' },
-    { value: 'gt', label: '>' }, { value: 'gte', label: '≥' }, { value: 'lt', label: '<' }, { value: 'lte', label: '≤' },
-    { value: 'is_set', label: 'is set' }, { value: 'is_empty', label: 'is empty' },
-  ];
-  if (fieldType === 'date') return [
-    { value: 'eq', label: 'on' }, { value: 'neq', label: 'not on' },
-    { value: 'gt', label: 'after' }, { value: 'gte', label: 'on or after' }, { value: 'lt', label: 'before' }, { value: 'lte', label: 'on or before' },
-    { value: 'is_set', label: 'is set' }, { value: 'is_empty', label: 'is empty' },
-  ];
-  if (RELATION_TYPES.has(fieldType)) return [
-    { value: 'eq', label: 'is' }, { value: 'neq', label: 'is not' },
-    { value: 'is_set', label: 'is set' }, { value: 'is_empty', label: 'is empty' },
-  ];
-  return [{ value: 'eq', label: 'is' }, { value: 'neq', label: 'is not' }];
 }
 
 function conditionNeedsValue(operator: TileCondition['operator']): boolean {
@@ -116,7 +87,7 @@ function ConditionRow({
               <option value="">Value...</option>
               {(field.select_options || []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
             </select>
-          ) : RELATION_TYPES.has(field.field_type) ? (
+          ) : isRelationType(field.field_type) ? (
             <RelationPicker
               linkedSystemTable={field.linked_system_table}
               linkedTableId={field.linked_system_table ? null : field.linked_table_id}
@@ -132,7 +103,7 @@ function ConditionRow({
               onChange={e => onChange({ value: e.target.value })}
               className="w-full bg-slate-50 border border-slate-200 rounded-full py-2 px-3 text-[12px] font-medium outline-none"
             />
-          ) : ['number', 'currency'].includes(field.field_type) ? (
+          ) : isNumericType(field.field_type) ? (
             <input
               type="number"
               value={condition.value ?? ''}
@@ -182,9 +153,8 @@ function normalizeWidget(widget: DashboardWidget): DashboardWidget {
 export default function WidgetConfigPanel({ widget, fields, onSave, onClose }: Props) {
   const [draft, setDraft] = useState<DashboardWidget>(() => normalizeWidget(widget));
 
-  const numericFields = fields.filter(f => ['number', 'currency'].includes(f.field_type));
-  const dateFields = fields.filter(f => f.field_type === 'date');
-  const relationOrDateFields = fields.filter(f => f.field_type === 'date' || f.linked_system_table || f.linked_table_id);
+  const numericFields = fields.filter(f => isNumericType(f.field_type));
+  const dateFields = fields.filter(f => isDateType(f.field_type));
 
   const updateConfig = (patch: Record<string, any>) => {
     setDraft(prev => ({ ...prev, config: { ...prev.config, ...patch } } as DashboardWidget));
@@ -296,7 +266,7 @@ export default function WidgetConfigPanel({ widget, fields, onSave, onClose }: P
         )}
 
         {draft.type === 'filter_bar' && (
-          <FieldPickerList title="Filter fields" fields={relationOrDateFields} selectedIds={draft.config.fieldIds} onChange={ids => updateConfig({ fieldIds: ids })} max={2} />
+          <FieldPickerList title="Filter fields" fields={fields} selectedIds={draft.config.fieldIds} onChange={ids => updateConfig({ fieldIds: ids })} max={2} />
         )}
 
         {draft.type === 'quick_add_form' && (
@@ -433,20 +403,28 @@ export default function WidgetConfigPanel({ widget, fields, onSave, onClose }: P
             <div className="grid grid-cols-2 gap-3">
               <select
                 value={draft.config.fieldId || ''}
-                onChange={e => updateConfig({ fieldId: e.target.value || null })}
+                onChange={e => {
+                  const nextField = fields.find(f => f.id === e.target.value);
+                  const nextAggregates = aggregatesForType(nextField?.field_type || 'text');
+                  const stillValid = nextAggregates.some(a => a.value === draft.config.aggregate);
+                  updateConfig({
+                    fieldId: e.target.value || null,
+                    aggregate: stillValid ? draft.config.aggregate : nextAggregates[0].value,
+                  });
+                }}
                 className="bg-slate-50 border border-slate-200 rounded-full py-2.5 px-4 text-sm font-medium outline-none appearance-none"
               >
                 <option value="">Field...</option>
-                {numericFields.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+                {fields.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
               </select>
               <select
                 value={draft.config.aggregate}
-                onChange={e => updateConfig({ aggregate: e.target.value as 'sum' | 'count' | 'net' })}
+                onChange={e => updateConfig({ aggregate: e.target.value as SummaryTileWidget['config']['aggregate'] })}
                 className="bg-slate-50 border border-slate-200 rounded-full py-2.5 px-4 text-sm font-medium outline-none appearance-none"
               >
-                <option value="sum">Sum</option>
-                <option value="count">Count</option>
-                <option value="net">Net (A − B)</option>
+                {aggregatesForType(fields.find(f => f.id === draft.config.fieldId)?.field_type || 'text').map(a => (
+                  <option key={a.value} value={a.value}>{a.label}</option>
+                ))}
               </select>
             </div>
             {draft.config.aggregate === 'net' && (
@@ -538,20 +516,21 @@ export default function WidgetConfigPanel({ widget, fields, onSave, onClose }: P
                   <div className="grid grid-cols-2 gap-1.5">
                     <select
                       value={s.aggregate}
-                      onChange={e => updateSeries(si, { aggregate: e.target.value as 'sum' | 'count' })}
+                      onChange={e => updateSeries(si, { aggregate: e.target.value as ChartSeriesConfig['aggregate'] })}
                       className="bg-white border border-slate-200 rounded-full py-2 px-3 text-[12px] font-medium outline-none appearance-none"
                     >
                       <option value="sum">Sum a field</option>
                       <option value="count">Count entries</option>
+                      <option value="count-distinct">Count distinct values</option>
                     </select>
-                    {s.aggregate === 'sum' && (
+                    {(s.aggregate === 'sum' || s.aggregate === 'count-distinct') && (
                       <select
                         value={s.valueFieldId || ''}
                         onChange={e => updateSeries(si, { valueFieldId: e.target.value || null })}
                         className="bg-white border border-slate-200 rounded-full py-2 px-3 text-[12px] font-medium outline-none appearance-none"
                       >
                         <option value="">Value field...</option>
-                        {numericFields.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
+                        {(s.aggregate === 'sum' ? numericFields : fields).map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
                       </select>
                     )}
                   </div>

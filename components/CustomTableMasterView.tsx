@@ -10,6 +10,7 @@ import { useCompany } from "@/components/CompanyContext";
 import { createArchiveRequest, usePendingArchiveRequests } from "@/lib/archiveRequests";
 import type { CustomTable, } from "@/lib/hooks/useCustomTables";
 import type { CustomTableField, CustomTableRecord } from "@/lib/hooks/useCustomTable";
+import NewRecordModal, { pickCreateFields } from "@/components/dashboard/NewRecordModal";
 
 export default function CustomTableMasterView({
   tableDef, fields, records, onRefresh,
@@ -29,6 +30,10 @@ export default function CustomTableMasterView({
   const IconComp = (LucideIcons as any)[tableDef.icon] || LucideIcons.Table2;
   const tableFields = fields.filter(f => f.show_in_table);
   const primaryField = fields.find(f => f.field_key === tableDef.primary_field_key) || fields[0];
+  // Fields the NewRecordModal prompts for -- the primary field plus every
+  // other required field, so creating a record here never starts from an
+  // empty row or leaves a required field unset.
+  const createFields = pickCreateFields(fields, tableDef.primary_field_key);
 
   const filtered = useMemo(() => {
     if (!search) return records;
@@ -38,24 +43,29 @@ export default function CustomTableMasterView({
     });
   }, [records, search, primaryField]);
 
-  const handleCreate = async () => {
+  const openCreate = () => {
+    if (!createFields.length) {
+      window.alert('Add a field to this table first — records can\'t be created empty.');
+      return;
+    }
     setIsCreating(true);
+  };
+
+  const handleCreate = async (newValues: Record<string, any>): Promise<string | null> => {
     const { data: { user } } = await supabase.auth.getUser();
     const { data: prof } = await supabase
       .from('profiles').select('active_company_id').eq('id', user?.id).single();
-    const companyId = prof?.active_company_id;
-    if (!companyId || !user) { setIsCreating(false); return; }
+    const cid = prof?.active_company_id;
+    if (!cid || !user) return 'Not signed in.';
 
-    const rec = await createRecord(tableDef.id, companyId, user.id, {}, fields);
-    setIsCreating(false);
-    if (rec && 'error' in rec) {
-      window.alert(rec.error);
-      return;
-    }
+    const rec = await createRecord(tableDef.id, cid, user.id, newValues, fields);
+    if (rec && 'error' in rec) return rec.error;
     if (rec) {
       onRefresh();
       router.push(`/dashboard/${tableDef.slug}?id=${rec.id}`);
+      return null;
     }
+    return 'Could not create the record.';
   };
 
   const handleDelete = async (record: CustomTableRecord, e: React.MouseEvent) => {
@@ -107,8 +117,7 @@ export default function CustomTableMasterView({
               </h1>
             </div>
             <button
-              onClick={handleCreate}
-              disabled={isCreating}
+              onClick={openCreate}
               className="bg-slate-900 text-white px-6 py-2 rounded-full text-[11px] font-bold shadow-sm flex items-center gap-2 disabled:opacity-50"
             >
               <Plus size={14} /> New record
@@ -140,7 +149,7 @@ export default function CustomTableMasterView({
               No records yet
             </p>
             <button
-              onClick={handleCreate}
+              onClick={openCreate}
               className="text-indigo-600 text-[11px] font-bold uppercase tracking-widest hover:underline"
             >
               Create first record
@@ -201,6 +210,15 @@ export default function CustomTableMasterView({
           </div>
         )}
       </main>
+
+      {isCreating && createFields.length > 0 && (
+        <NewRecordModal
+          tableName={tableDef.name}
+          fields={createFields}
+          onCreate={handleCreate}
+          onClose={() => setIsCreating(false)}
+        />
+      )}
     </div>
   );
 }

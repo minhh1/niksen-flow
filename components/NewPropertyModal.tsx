@@ -70,6 +70,11 @@ export default function NewPropertyModal({ isOpen, onClose, onRefresh, tableName
   const handleSubmit = async () => {
     if (isProperty && !street.trim()) return;
     if (isCustomTable && !recordName.trim()) return;
+    const missingRequired = customFields.filter(f => f.is_required && !customValues[f.id]?.trim());
+    if (missingRequired.length > 0) {
+      alert(`Please fill in required field${missingRequired.length > 1 ? 's' : ''}: ${missingRequired.map(f => f.label).join(', ')}`);
+      return;
+    }
     setLoading(true);
 
     try {

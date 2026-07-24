@@ -17,6 +17,7 @@ import ChecklistTab from "./tabs/ChecklistTab";
 import CalendarTab from "./tabs/CalendarTab";
 import EmailsTab from "./tabs/EmailsTab";
 import DocumentTemplatesTab from "./tabs/DocumentTemplatesTab";
+import RecordDashboardTab from "./tabs/RecordDashboardTab";
 import GridTabEditor from "./GridTabEditor";
 import TeamMemberLinkCard from "./TeamMemberLinkCard";
 import { useCustomTables } from "@/lib/hooks/useCustomTables";
@@ -790,6 +791,17 @@ export default function RecordDashboard({
           recordId={recordId}
           companyId={companyId}
           isEditing={isEditingLayout}
+          recordSystemTable={systemTable}
+        />
+      )}
+      {activeTab?.tab_type === 'custom_dashboard' && activeTab.linked_table_id && (
+        <RecordDashboardTab
+          tabId={activeTab.id}
+          linkedTableId={activeTab.linked_table_id}
+          recordId={recordId}
+          companyId={companyId}
+          isEditing={isEditingLayout}
+          recordSystemTable={systemTable}
         />
       )}
       {activeTabId === '__access__' && systemTable === 'projects' && (
@@ -918,7 +930,7 @@ export default function RecordDashboard({
               {primaryValue}
             </h2>
             <div className="flex items-center gap-2">
-              {(activeTab?.tab_type === 'fields' || activeTab?.tab_type === 'custom_table') && (
+              {(activeTab?.tab_type === 'fields' || activeTab?.tab_type === 'custom_table' || activeTab?.tab_type === 'custom_dashboard') && (
                 <button
                   onClick={() => setIsEditingLayout(p => !p)}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all ${
@@ -992,7 +1004,7 @@ export default function RecordDashboard({
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {(activeTab?.tab_type === 'fields' || activeTab?.tab_type === 'custom_table') && (
+            {(activeTab?.tab_type === 'fields' || activeTab?.tab_type === 'custom_table' || activeTab?.tab_type === 'custom_dashboard') && (
               <button
                 onClick={() => setIsEditingLayout(p => !p)}
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all ${

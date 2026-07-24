@@ -73,7 +73,7 @@ function FieldSlot({ field, value, onCommit, wide }: { field: CustomTableField; 
   return (
     <div className={wide ? 'w-full' : 'flex-1 min-w-[110px]'}>
       <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1 px-1">
-        {field.label}
+        {field.label}{field.is_required && <span className="text-red-400 ml-1">*</span>}
       </label>
       <FieldValueInput field={field} value={value} onCommit={onCommit} />
     </div>
@@ -100,6 +100,13 @@ export default function DashboardQuickAddForm({ tableId, companyId, userId, fiel
   const otherFields = quickAddFields.filter(f => f.field_type !== 'text' && !['number', 'currency'].includes(f.field_type));
 
   const handleAdd = async () => {
+    // An untouched form (values still exactly the prefilled defaults --
+    // today's date, false booleans) would create a record with no real
+    // content; refuse before hitting the service.
+    if (JSON.stringify(values) === JSON.stringify(getDefaultValues(quickAddFields))) {
+      setError('Fill in the form before adding a record.');
+      return;
+    }
     setSaving(true);
     setError(null);
     const record = await createRecord(tableId, companyId, userId, { ...values, ...fixedValues }, fields);

@@ -8,6 +8,8 @@ import { useProgressBarWhile } from "@/components/TopProgressBar";
 import FieldConfigPanel from "./schema/FieldConfigPanel";
 import FieldCard from "./schema/FieldCard";
 import { FIELD_TYPES, SYSTEM_TABLES, getFieldTypeConfig } from "./schema/types";
+import { describeCapabilities } from "@/lib/schema/fieldCapabilities";
+import { validateFieldCompatibility } from "@/lib/schema/fieldCompatibilityRules";
 import type { CustomField, FieldType } from "./schema/types";
 import { logSchemaChange } from "@/lib/services/schemaChangeLog";
 import { useCompany } from "@/components/CompanyContext";
@@ -27,9 +29,37 @@ export default function SchemaVisualisation() {
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
   const [adding, setAdding] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
+  // label (lowercased) -> every table it appears on, company-wide -- only
+  // entries on 2+ distinct tables are kept. Surfaced on FieldCard so e.g. two
+  // unrelated "Status" fields on different tables don't get silently
+  // confused with each other when picking fields for a widget.
+  const [duplicateLabels, setDuplicateLabels] = useState<Map<string, string[]>>(new Map());
 
   useEffect(() => { loadFields(); }, [activeTable, isCustomTable, customTableId]);
+  useEffect(() => { if (companyId) loadDuplicateLabels(companyId); }, [companyId, customTables]);
   useProgressBarWhile(loading);
+
+  const loadDuplicateLabels = async (cid: string) => {
+    const [{ data: sysFields }, { data: tblFields }] = await Promise.all([
+      supabase.from('company_custom_fields').select('label, table_name').eq('company_id', cid).is('deleted_at', null),
+      supabase.from('company_table_fields').select('label, table_id').eq('company_id', cid).is('deleted_at', null),
+    ]);
+    const tableNameById = new Map(customTables.map(t => [t.id, t.name]));
+    const byLabel = new Map<string, Set<string>>();
+    const add = (label: string, tableName: string) => {
+      const key = label.trim().toLowerCase();
+      if (!key) return;
+      if (!byLabel.has(key)) byLabel.set(key, new Set());
+      byLabel.get(key)!.add(tableName);
+    };
+    for (const f of sysFields || []) add(f.label, f.table_name.charAt(0).toUpperCase() + f.table_name.slice(1));
+    for (const f of tblFields || []) add(f.label, tableNameById.get(f.table_id) || 'another table');
+    const result = new Map<string, string[]>();
+    for (const [key, tables] of byLabel) {
+      if (tables.size > 1) result.set(key, Array.from(tables));
+    }
+    setDuplicateLabels(result);
+  };
 
   const handleTableSelect = (slug: string, tableId?: string) => {
     setActiveTable(slug);
@@ -94,6 +124,7 @@ export default function SchemaVisualisation() {
         formula_field_a_id: f.formula_field_a_id,
         formula_field_b_id: f.formula_field_b_id,
         formula_percent: f.formula_percent,
+        allow_multiple: f.allow_multiple ?? false,
       })));
     } else {
       const { data } = await supabase
@@ -110,6 +141,8 @@ export default function SchemaVisualisation() {
 
   const handleAddField = async (fieldType: FieldType) => {
     if (!companyId) return;
+    const errors = validateFieldCompatibility(fields, { id: 'new', field_type: fieldType, is_unique: false });
+    if (errors.length) { window.alert(errors[0]); return; }
     setAdding(true);
     setShowPalette(false);
 
@@ -242,6 +275,7 @@ const handleSaveField = async (updates: Partial<CustomField>) => {
         auto_number_prefix: updates.auto_number_prefix ?? null,
         auto_number_start: updates.auto_number_start ?? null,
         auto_number_pad: updates.auto_number_pad ?? null,
+        allow_multiple: updates.allow_multiple ?? false,
       })
       .eq('id', selectedFieldId);
   } else {
@@ -486,6 +520,7 @@ const handleSaveField = async (updates: Partial<CustomField>) => {
                           key={ft.type}
                           onClick={() => handleAddField(ft.type)}
                           disabled={adding}
+                          title={describeCapabilities(ft.type)}
                           className="flex items-center gap-2 px-3 py-2.5 rounded-2xl hover:bg-slate-50 transition-all text-left disabled:opacity-50"
                         >
                           <div className={`p-1.5 rounded-lg ${ft.color} shrink-0`}>
@@ -525,11 +560,18 @@ const handleSaveField = async (updates: Partial<CustomField>) => {
                     <div className="grid grid-cols-2 gap-3">
                       {sectionFields.map(field => {
                         const globalIdx = fields.findIndex(f => f.id === field.id);
+                        const currentTableName = isCustomTable
+                          ? customTables.find(t => t.id === customTableId)?.name || ''
+                          : activeTable.charAt(0).toUpperCase() + activeTable.slice(1);
+                        const otherTables = (duplicateLabels.get(field.label.trim().toLowerCase()) || [])
+                          .filter(t => t !== currentTableName);
                         return (
                           <FieldCard
                             key={field.id}
                             field={field}
                             isSelected={selectedFieldId === field.id}
+                            otherTablesWithLabel={otherTables}
+                            customTables={customTables}
                             onSelect={() => setSelectedFieldId(
                               selectedFieldId === field.id ? null : field.id
                             )}

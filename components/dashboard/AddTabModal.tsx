@@ -3,7 +3,7 @@
 import { useState } from "react";
 import {
   X, FileText, ListChecks, Calendar, Mail,
-  FolderKanban, Table2, Loader2, Plus, FileSignature
+  FolderKanban, Table2, Loader2, Plus, FileSignature, LayoutDashboard
 } from "lucide-react";
 import type { CustomTable } from "@/lib/hooks/useCustomTables";
 
@@ -73,13 +73,23 @@ interface Props {
   onClose: () => void;
 }
 
+const LINKED_TABLE_TAB_TYPES = ['custom_table', 'custom_dashboard'] as const;
+type LinkedTableTabType = typeof LINKED_TABLE_TAB_TYPES[number];
+
+const LINKED_TABLE_MODES: { type: LinkedTableTabType; label: string; description: string }[] = [
+  { type: 'custom_table', label: 'Grid layout', description: 'Free-form static grid, one record per row' },
+  { type: 'custom_dashboard', label: 'Dashboard widgets', description: 'Charts, summary tiles, grids — same builder as company dashboards' },
+];
+
 export default function AddTabModal({ customTables, onAdd, onClose }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   const [customTitle, setCustomTitle] = useState('');
   const [linkedTableId, setLinkedTableId] = useState('');
+  const [linkedTableMode, setLinkedTableMode] = useState<LinkedTableTabType>('custom_table');
   const [saving, setSaving] = useState(false);
 
   const selectedTemplate = TEMPLATES.find(t => t.type === selected);
+  const isLinkedTableType = (LINKED_TABLE_TAB_TYPES as readonly string[]).includes(selected || '');
 
   const handleAdd = async () => {
     if (!selected) return;
@@ -90,13 +100,13 @@ export default function AddTabModal({ customTables, onAdd, onClose }: Props) {
       customTables.find(t => t.id === linkedTableId)?.name ||
       'New tab';
 
-    const icon = selectedTemplate?.icon || 'Table2';
+    const icon = selectedTemplate?.icon || (selected === 'custom_dashboard' ? 'LayoutDashboard' : 'Table2');
 
     await onAdd(
       selected,
       title,
       icon,
-      selected === 'custom_table' ? linkedTableId || undefined : undefined
+      isLinkedTableType ? linkedTableId || undefined : undefined
     );
     setSaving(false);
     onClose();
@@ -155,14 +165,37 @@ export default function AddTabModal({ customTables, onAdd, onClose }: Props) {
             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-3">
               Custom tables
             </p>
+            <div className="flex gap-2 mb-3">
+              {LINKED_TABLE_MODES.map(mode => {
+                const isActive = linkedTableMode === mode.type;
+                return (
+                  <button
+                    key={mode.type}
+                    title={mode.description}
+                    onClick={() => {
+                      setLinkedTableMode(mode.type);
+                      if (isLinkedTableType && linkedTableId) setSelected(mode.type);
+                    }}
+                    className={`px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest transition-all ${
+                      isActive
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-slate-50 text-slate-400 hover:text-slate-600'
+                    }`}
+                  >
+                    {mode.label}
+                  </button>
+                );
+              })}
+            </div>
             <div className="grid grid-cols-2 gap-3 mb-4">
               {customTables.map(table => {
-                const isSelected = selected === 'custom_table' && linkedTableId === table.id;
+                const isSelected = selected === linkedTableMode && linkedTableId === table.id;
+                const Icon = linkedTableMode === 'custom_dashboard' ? LayoutDashboard : Table2;
                 return (
                   <button
                     key={table.id}
                     onClick={() => {
-                      setSelected('custom_table');
+                      setSelected(linkedTableMode);
                       setLinkedTableId(table.id);
                       setCustomTitle(table.name);
                     }}
@@ -173,7 +206,7 @@ export default function AddTabModal({ customTables, onAdd, onClose }: Props) {
                     }`}
                   >
                     <div className="p-2 rounded-xl bg-slate-50 text-slate-600 shrink-0">
-                      <Table2 size={16} />
+                      <Icon size={16} />
                     </div>
                     <p className="text-[13px] font-bold text-slate-800 truncate">
                       {table.name}

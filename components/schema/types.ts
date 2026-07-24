@@ -54,6 +54,10 @@ export interface CustomField {
   formula_field_a_id?: string | null;
   formula_field_b_id?: string | null;
   formula_percent?: number | null;
+  // Multi-record relations — relation-type, custom-table fields only (see
+  // supabase/company_table_field_allow_multiple.sql). Undefined/false means
+  // the normal single-linked-record behavior.
+  allow_multiple?: boolean;
 }
 
 export const FIELD_TYPES: {

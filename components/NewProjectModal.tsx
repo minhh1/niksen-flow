@@ -61,6 +61,11 @@ export default function NewProjectModal({ isOpen, onClose, onRefresh }: Props) {
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
+    const missingRequired = customFields.filter(f => f.is_required && !customValues[f.id]?.trim());
+    if (missingRequired.length > 0) {
+      alert(`Please fill in required field${missingRequired.length > 1 ? 's' : ''}: ${missingRequired.map(f => f.label).join(', ')}`);
+      return;
+    }
     setLoading(true);
     const { data: { user } } = await supabase.auth.getUser();
     try {

@@ -7,6 +7,7 @@ import type { CustomTableField, CustomTableRecord } from "@/lib/hooks/useCustomT
 import type { SummaryTileWidget, ChartWidget, ChartSeriesConfig, ChartGranularity, TileCondition } from "./types";
 
 function isEmptyValue(v: any): boolean {
+  if (Array.isArray(v)) return v.length === 0; // allow_multiple relation fields
   return v === undefined || v === null || v === '';
 }
 
@@ -16,7 +17,24 @@ function isEmptyValue(v: any): boolean {
 // NaN (always false) rather than throwing. Exported -- used directly by
 // DashboardGrid for per-column highlight rules (a single row's match/no-match,
 // not a whole-set filter, so it doesn't go through filterByConditions below).
+//
+// An allow_multiple relation field's rawValue is a string[] instead of a
+// scalar -- eq/neq/contains become membership checks against the array
+// ("is linked to X" / "is not linked to X"), is_set/is_empty check length,
+// and gt/gte/lt/lte (meaningless on a set of ids) fall through to the
+// default `true` like any other operator/type mismatch in this function.
 export function evaluateCondition(cond: TileCondition, rawValue: any): boolean {
+  if (Array.isArray(rawValue)) {
+    const asStrings = rawValue.map(v => String(v));
+    switch (cond.operator) {
+      case 'is_set': return asStrings.length > 0;
+      case 'is_empty': return asStrings.length === 0;
+      case 'eq': return asStrings.includes(String(cond.value ?? ''));
+      case 'neq': return !asStrings.includes(String(cond.value ?? ''));
+      case 'contains': return asStrings.some(v => v.toLowerCase().includes(String(cond.value ?? '').toLowerCase()));
+      default: return true;
+    }
+  }
   switch (cond.operator) {
     case 'is_set': return !isEmptyValue(rawValue);
     case 'is_empty': return isEmptyValue(rawValue);
@@ -59,6 +77,24 @@ function resolveConditions(config: SummaryTileWidget['config']): TileCondition[]
   return [];
 }
 
+// Number of distinct non-empty values of `f` across `rows` -- lets a tile
+// target any field type, not just numeric ones (e.g. "4 distinct Statuses"
+// on a select field). For an allow_multiple relation field, `v` is a
+// string[] of linked ids per row -- flattened into the same set, so this
+// naturally becomes "N distinct linked records across every matched row"
+// (e.g. "3 linked Matters" summed across every row's own links) rather than
+// treating each row's whole array as one opaque value.
+function countDistinctOf(rows: CustomTableRecord[], f: CustomTableField | undefined): number {
+  if (!f) return 0;
+  const seen = new Set<string>();
+  for (const r of rows) {
+    const v = r.values[f.field_key];
+    if (Array.isArray(v)) { v.forEach(x => { if (!isEmptyValue(x)) seen.add(String(x)); }); continue; }
+    if (!isEmptyValue(v)) seen.add(String(v));
+  }
+  return seen.size;
+}
+
 export function computeSummaryTileValue(
   config: SummaryTileWidget['config'],
   records: CustomTableRecord[],
@@ -70,9 +106,11 @@ export function computeSummaryTileValue(
     rows.reduce((sum, r) => sum + (f ? Number(r.values[f.field_key]) || 0 : 0), 0);
   const value = config.aggregate === 'count'
     ? rows.length
-    : config.aggregate === 'net'
-      ? sumOf(field) - sumOf(config.fieldBId ? fieldById.get(config.fieldBId) : undefined)
-      : sumOf(field);
+    : config.aggregate === 'count-distinct'
+      ? countDistinctOf(rows, field)
+      : config.aggregate === 'net'
+        ? sumOf(field) - sumOf(config.fieldBId ? fieldById.get(config.fieldBId) : undefined)
+        : sumOf(field);
   return { value, fieldType: field?.field_type || 'number' };
 }
 
@@ -131,6 +169,9 @@ export function computeChartSeries(
   return resolveChartSeries(config).map(series => {
     const valueField = series.valueFieldId ? fieldById.get(series.valueFieldId) : undefined;
     const byBucket = new Map<string, number>();
+    // Only populated for 'count-distinct' -- tracks each bucket's distinct
+    // values so the final count is per-bucket-unique, not a running total.
+    const distinctByBucket = new Map<string, Set<string>>();
     for (const r of records) {
       const dateVal = r.values[dateField.field_key];
       if (!dateVal) continue;
@@ -141,8 +182,24 @@ export function computeChartSeries(
       });
       if (!matches) continue;
       const bucket = bucketKey(dateVal, granularity);
+      if (series.aggregate === 'count-distinct') {
+        const v = valueField ? r.values[valueField.field_key] : undefined;
+        if (!isEmptyValue(v)) {
+          if (!distinctByBucket.has(bucket)) distinctByBucket.set(bucket, new Set());
+          const set = distinctByBucket.get(bucket)!;
+          // allow_multiple relation field -- flatten this row's links into
+          // the bucket's set instead of treating the whole array as one
+          // opaque value (mirrors countDistinctOf's summary-tile version).
+          if (Array.isArray(v)) v.forEach(x => { if (!isEmptyValue(x)) set.add(String(x)); });
+          else set.add(String(v));
+        }
+        continue;
+      }
       const amount = series.aggregate === 'count' ? 1 : (valueField ? Number(r.values[valueField.field_key]) || 0 : 0);
       byBucket.set(bucket, (byBucket.get(bucket) || 0) + amount);
+    }
+    if (series.aggregate === 'count-distinct') {
+      for (const [bucket, values] of distinctByBucket) byBucket.set(bucket, values.size);
     }
     const points = Array.from(byBucket.entries())
       .map(([bucket, value]) => ({ bucket, value }))

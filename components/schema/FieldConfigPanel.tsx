@@ -6,8 +6,10 @@ import { supabase } from "@/lib/supabase";
 import { useCustomTables } from "@/lib/hooks/useCustomTables";
 import type { CustomField, FieldType } from "./types";
 import { getFieldTypeConfig } from "./types"
+import { RELATION_FIELD_TYPES, NUMERIC_FIELD_TYPES } from "@/lib/schema/fieldCapabilities";
+import { validateFieldCompatibility } from "@/lib/schema/fieldCompatibilityRules";
 
-const RELATION_TYPES: FieldType[] = ['table_relation', 'property', 'entity', 'project', 'link'];
+const RELATION_TYPES: FieldType[] = RELATION_FIELD_TYPES;
 
 // Native, text-ish columns worth offering as extra search fields or a
 // restrict-to filter for a relation linked to a system table (see
@@ -106,6 +108,7 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
   const [draft, setDraft] = useState<CustomField>({ ...field });
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [saveErrors, setSaveErrors] = useState<string[]>([]);
   const [selectOptionsText, setSelectOptionsText] = useState(
     field.select_options?.join('\n') || ''
   );
@@ -147,6 +150,9 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
   };
 
   const handleSave = async () => {
+    const errors = validateFieldCompatibility(siblingFields, draft);
+    if (errors.length) { setSaveErrors(errors); return; }
+    setSaveErrors([]);
     setSaving(true);
     const updates = { ...draft };
     if (updates.field_type === 'select') {
@@ -321,6 +327,26 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
                 Which field from the linked record to display
               </p>
             </div>
+
+            {/* Multi-record relations -- custom-table fields only (see
+                supabase/company_table_field_allow_multiple.sql). Off by
+                default so every existing relation field keeps its current
+                single-value behavior unchanged. */}
+            {draft.isCustomTable && (
+              <label className="flex items-center gap-3 cursor-pointer group">
+                <div
+                  onClick={() => update('allow_multiple', !draft.allow_multiple)}
+                  className={`w-5 h-5 rounded-md border-2 flex items-center justify-center transition-all cursor-pointer ${
+                    draft.allow_multiple
+                      ? 'bg-indigo-600 border-indigo-600'
+                      : 'border-slate-200 group-hover:border-indigo-300'
+                  }`}
+                >
+                  {draft.allow_multiple && <Check size={12} className="text-white" />}
+                </div>
+                <span className="text-[12px] font-medium text-slate-600">Allow linking to multiple records</span>
+              </label>
+            )}
 
             {/* Search fields + restrict-to filter -- system-table relations
                 on custom-table fields only (see
@@ -534,7 +560,7 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
         )}
 
         {/* Number / currency min/max */}
-        {(['number', 'currency'] as FieldType[]).includes(draft.field_type) && (
+        {(NUMERIC_FIELD_TYPES as FieldType[]).includes(draft.field_type) && (
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
@@ -562,14 +588,14 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
         )}
 
         {/* Computed value — custom-table number/currency fields only */}
-        {draft.isCustomTable && (['number', 'currency'] as FieldType[]).includes(draft.field_type) && (() => {
+        {draft.isCustomTable && (NUMERIC_FIELD_TYPES as FieldType[]).includes(draft.field_type) && (() => {
           // Excludes the field itself (direct self-reference) and anything
           // that already transitively depends on it (would close a cycle --
           // e.g. this field can't pick B as a dependency if B already
           // computes off this field, directly or through a longer chain).
           const numericSiblings = siblingFields.filter(
             f => f.id !== draft.id
-              && (['number', 'currency'] as FieldType[]).includes(f.field_type)
+              && (NUMERIC_FIELD_TYPES as FieldType[]).includes(f.field_type)
               && !dependsOnField(f.id, draft.id, siblingFields)
           );
           return (
@@ -657,9 +683,8 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
           );
         })()}
 
-        {/* Text regex validation -- system-table fields only, see the
-            min/max comment above; same non-functional-on-custom-tables issue. */}
-        {!draft.isCustomTable && draft.field_type === 'text' && (
+        {/* Text regex validation */}
+        {draft.field_type === 'text' && (
           <div>
             <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
               Validation pattern (regex)
@@ -673,9 +698,8 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
           </div>
         )}
 
-        {/* Default value -- system-table fields only, see the min/max
-            comment above; same non-functional-on-custom-tables issue. */}
-        {!draft.isCustomTable && !(['auto_id', 'link', 'boolean', 'property', 'entity', 'table_relation'] as FieldType[]).includes(draft.field_type) && (
+        {/* Default value */}
+        {!([...RELATION_FIELD_TYPES, 'auto_id', 'boolean'] as FieldType[]).includes(draft.field_type) && (
           <div>
             <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
               Default value
@@ -721,7 +745,15 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
       </div>
 
       {/* Footer */}
-      <div className="p-5 border-t border-slate-100 flex gap-3">
+      <div className="p-5 border-t border-slate-100 space-y-2">
+      {saveErrors.length > 0 && (
+        <div className="bg-red-50 border border-red-100 rounded-2xl py-2.5 px-3.5 space-y-1">
+          {saveErrors.map((err, i) => (
+            <p key={i} className="text-[11px] font-medium text-red-600">{err}</p>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-3">
         <button
           onClick={handleSave}
           disabled={saving}
@@ -748,6 +780,7 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
         >
           {deleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
         </button>
+      </div>
       </div>
     </div>
   );
