@@ -50,13 +50,20 @@ function computeAllPreviews(fields: CustomTableField[], values: Record<string, a
 
 // Date fields default to today rather than blank -- almost every quick-add
 // use case (e.g. a time entry) is logged same-day, and re-picking the date
-// for every row is friction. Recomputed after each successful add so the
-// next entry starts from today again instead of resetting to blank.
+// for every row is friction. Boolean fields default to false, matching the
+// checkbox's unchecked appearance -- otherwise an intentionally-unchecked
+// (not billable) box leaves the key absent from `values`, and the required-
+// field check in customTableService can't tell "left blank" from "the user
+// picked No", blocking a legitimate submission. Recomputed after each
+// successful add so the next entry starts from these same defaults again
+// instead of resetting to blank/undefined.
 function getDefaultValues(quickAddFields: CustomTableField[]): Record<string, any> {
   const defaults: Record<string, any> = {};
   for (const field of quickAddFields) {
     if (field.field_type === 'date' && !field.formula_type) {
       defaults[field.field_key] = new Date().toISOString().slice(0, 10);
+    } else if (field.field_type === 'boolean' && !field.formula_type) {
+      defaults[field.field_key] = false;
     }
   }
   return defaults;

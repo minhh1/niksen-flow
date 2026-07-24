@@ -79,6 +79,11 @@ export interface GridWidget extends BaseWidget {
     // grammar, dropped like any other visual-only setting on a code-mode
     // round-trip.
     columnHighlights?: Record<string, { condition: TileCondition; color: 'red' | 'amber' | 'emerald' }>;
+    // Appends a footer row summing every visible number/currency column
+    // across the grid's current (filtered) records -- draft/empty rows
+    // never contribute, since they're not real records yet. Undefined/false
+    // means no footer (today's behavior).
+    showTotalsRow?: boolean;
   };
 }
 

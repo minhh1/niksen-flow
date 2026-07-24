@@ -12,7 +12,7 @@
 //   text "<text>"
 //   filter_bar fields=<key>[,<key>...]
 //   quick_add_form fields=<key>[,<key>...]
-//   grid fields=<key>[,<key>...] [empty_rows=<n>] [when=<cond>[,<cond>...]]
+//   grid fields=<key>[,<key>...] [empty_rows=<n>] [when=<cond>[,<cond>...]] [totals=true]
 //   tile "<label>" field=<key> agg=sum|count|net [field_b=<key>] [when=<cond>[,<cond>...]]
 //   chart date=<key> [value=<key> agg=sum|count] [group=day|week|month]
 //   series ["<label>"] field=<key> agg=sum|count [when=<cond>[,<cond>...]]
@@ -265,7 +265,8 @@ export function parseDSL(source: string, fields: CustomTableField[]): DslParseRe
       case 'grid': {
         const emptyRowCount = kv.empty_rows ? Math.max(0, Math.min(20, parseInt(kv.empty_rows, 10) || 0)) : undefined;
         const conditions = parseConditions(kv.when, lineNo);
-        widgets.push({ id, type, layout, config: { fieldIds: resolveFieldsList(kv.fields), emptyRowCount, conditions } });
+        const showTotalsRow = kv.totals === 'true' ? true : undefined;
+        widgets.push({ id, type, layout, config: { fieldIds: resolveFieldsList(kv.fields), emptyRowCount, conditions, showTotalsRow } });
         break;
       }
       case 'summary_tile': {
@@ -361,7 +362,8 @@ export function serializeToDSL(widgets: DashboardWidget[], fields: CustomTableFi
                 return (c.operator === 'is_set' || c.operator === 'is_empty') ? `${key}:${c.operator}` : `${key}:${c.operator}:${c.value}`;
               }).join(',')}`
             : '';
-          return `grid fields=${fieldKeys(w.config.fieldIds)}${emptyRows}${when}${widthSuffix(w.layout.w)}`;
+          const totals = w.config.showTotalsRow ? ` totals=true` : '';
+          return `grid fields=${fieldKeys(w.config.fieldIds)}${emptyRows}${when}${totals}${widthSuffix(w.layout.w)}`;
         }
         case 'summary_tile': {
           // Falls back to the deprecated single filterFieldId/filterValue

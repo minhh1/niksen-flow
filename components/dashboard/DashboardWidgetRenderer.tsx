@@ -29,6 +29,14 @@ interface Props {
   // narrow a statutory reconciliation or an invoice export list).
   allRecords: CustomTableRecord[];
   tableId: string;
+  // The source custom table's slug -- lets the grid widget's fullscreen
+  // expand button link to that table's own full master-table page
+  // (/dashboard/<slug>, see CustomTableMasterPage) instead of duplicating
+  // that page's UI here. Undefined in builder-preview contexts (no real
+  // saved table to link to) and in a few older callers that haven't been
+  // threaded through yet -- the button simply doesn't render then, same
+  // convention as isAdmin/onWidgetChange below.
+  sourceTableSlug?: string | null;
   companyId: string;
   userId: string;
   filters: Record<string, any>;
@@ -60,7 +68,7 @@ interface Props {
 }
 
 export default function DashboardWidgetRenderer({
-  widget, fields, fieldById, records, allRecords, tableId, companyId, userId, filters, setFilter, onChanged, mode = 'view', isLedger,
+  widget, fields, fieldById, records, allRecords, tableId, sourceTableSlug, companyId, userId, filters, setFilter, onChanged, mode = 'view', isLedger,
   isAdmin, onWidgetChange, fixedValues,
 }: Props) {
   switch (widget.type) {
@@ -104,7 +112,6 @@ export default function DashboardWidgetRenderer({
         <DashboardGrid
           tableId={tableId}
           companyId={companyId}
-          userId={userId}
           fields={fields}
           gridFieldIds={widget.config.fieldIds}
           records={filterByConditions(records, widget.config.conditions, fieldById)}
@@ -113,8 +120,9 @@ export default function DashboardWidgetRenderer({
           emptyRowCount={mode === 'preview' ? 0 : (widget.config.emptyRowCount || 0)}
           columnWidths={widget.config.columnWidths}
           columnHighlights={widget.config.columnHighlights}
+          showTotalsRow={widget.config.showTotalsRow}
           fieldById={fieldById}
-          fixedValues={fixedValues}
+          fullscreenHref={mode === 'view' && sourceTableSlug ? `/dashboard/${sourceTableSlug}` : undefined}
           isAdmin={mode === 'view' ? isAdmin : undefined}
           onReorder={onWidgetChange ? (fieldIds) => onWidgetChange({ ...widget, config: { ...widget.config, fieldIds } }) : undefined}
           onResize={onWidgetChange ? (fieldId, width) => onWidgetChange({

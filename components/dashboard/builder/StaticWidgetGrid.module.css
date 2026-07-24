@@ -1,0 +1,31 @@
+/* Desktop: the widget's designed x/y/w/h (in 12-col/40px-row units) drives
+   placement via the --col-start/--col-span/--row-start/--row-span custom
+   properties set inline per-widget (dynamic values can't live in a static
+   CSS module class, only in the rule that reads them).
+   Mobile (<=768px): collapse to one full-width column in y-order, with
+   auto row height -- a widget's original `h` was tuned for its *wide*
+   layout, so keeping a fixed row-span here would clip content once every
+   widget shrinks to a single narrow column. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  grid-auto-rows: 40px;
+  gap: 12px;
+}
+
+.item {
+  grid-column: var(--col-start) / span var(--col-span);
+  grid-row: var(--row-start) / span var(--row-span);
+  min-width: 0;
+}
+
+@media (max-width: 768px) {
+  .grid {
+    grid-template-columns: 1fr;
+    grid-auto-rows: auto;
+  }
+  .item {
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
+}

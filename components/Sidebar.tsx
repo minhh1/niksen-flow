@@ -4,7 +4,7 @@
 import { useState, useEffect, useMemo } from "react";
 import {
   MapPin, Building2, Plus, LogOut, LayoutGrid,
-  Settings, Shield, ChevronsUpDown, Loader2, Mail,
+  Settings, Shield, ChevronsUpDown, Loader2, Mail, Menu,
   Table2, Eye, EyeOff, X, Check, SlidersHorizontal, Network, PenSquare, Monitor, CreditCard,
   ChevronRight, Sparkles, Wrench, Store, Trash2, LayoutDashboard,
   Users, Activity, MessageCircle, Users2, Gauge, Clock, Database, Copy, Share2,
@@ -599,6 +599,15 @@ export default function Sidebar() {
   const currentId = searchParams.get("id");
   const activeViewId = searchParams.get("view");
 
+  // Below md (768px, matches StaticWidgetGrid's own breakpoint) the rail +
+  // second-level panel become an off-canvas drawer instead of always-visible
+  // columns -- at 352px combined (w-16 rail + w-72 panel) they'd otherwise
+  // swallow the entire width of a phone screen, leaving no room for any
+  // dashboard content. Closed by default; opened via the hamburger button
+  // below, closed on navigation (see the pathname effect further down) or by
+  // tapping the backdrop.
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
   // Use shared company context — avoids duplicate auth call with GenericMasterTable
   const { companyId: ctxCompanyId, companyName: ctxCompanyName, userId: ctxUserId, isAdmin: ctxIsAdmin, isSiteAdmin: ctxIsSiteAdmin, loading: ctxLoading, tableLabelOverrides } = useCompany();
 
@@ -685,6 +694,10 @@ export default function Sidebar() {
 
   // Record list is opt-in — collapse it again whenever the tree's table changes
   useEffect(() => { setTreeOpen(false); }, [treeTableSlug]);
+
+  // Mobile drawer closes itself on navigation -- otherwise it'd stay open
+  // over the newly-loaded page until the user manually dismissed it.
+  useEffect(() => { setMobileMenuOpen(false); }, [pathname]);
 
   // ── Load tree config from DB when the tree's table changes ──────
   useEffect(() => {
@@ -985,7 +998,27 @@ export default function Sidebar() {
 
   // ── Render ─────────────────────────────────────────────────────
   return (
-    <div className="flex h-screen shrink-0 font-sans select-none antialiased text-slate-600">
+    <>
+      {/* ── Mobile-only hamburger + backdrop (below md) ── */}
+      <button
+        onClick={() => setMobileMenuOpen(true)}
+        title="Open menu" aria-label="Open menu"
+        className="md:hidden fixed top-3 left-3 z-30 w-9 h-9 rounded-xl bg-white border border-slate-200 shadow-sm flex items-center justify-center text-slate-600"
+      >
+        <Menu size={17} />
+      </button>
+      {mobileMenuOpen && (
+        <div
+          onClick={() => setMobileMenuOpen(false)}
+          className="md:hidden fixed inset-0 z-40 bg-black/40"
+        />
+      )}
+
+      <div
+        className={`flex h-screen shrink-0 font-sans select-none antialiased text-slate-600 fixed inset-y-0 left-0 z-50 transform transition-transform duration-200 md:static md:translate-x-0 ${
+          mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
 
       {/* ── Rail (always visible, icon-only) ── */}
       <div className="w-16 shrink-0 flex flex-col h-screen bg-white border-r border-slate-100 items-center py-4">
@@ -1561,6 +1594,7 @@ export default function Sidebar() {
         onClose={() => setIsEntOpen(false)}
         onRefresh={fetchTreeData}
       />
-    </div>
+      </div>
+    </>
   );
 }

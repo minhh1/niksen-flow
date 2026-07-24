@@ -323,6 +323,16 @@ export default function WidgetConfigPanel({ widget, fields, onSave, onClose }: P
               </p>
             </div>
 
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={!!draft.config.showTotalsRow}
+                onChange={e => updateConfig({ showTotalsRow: e.target.checked })}
+                className="rounded"
+              />
+              <span className="text-[11px] font-medium text-slate-600">Show a totals row (sums every number/currency column)</span>
+            </label>
+
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
