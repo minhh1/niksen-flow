@@ -177,10 +177,6 @@ export function useDashboardData(dashboardSlug: string) {
   return {
     dashboard,
     tableDef,
-    // The source custom table's slug -- lets a widget (e.g. the grid's
-    // fullscreen expand button) link to that table's own full master-table
-    // page at /dashboard/<slug> instead of duplicating that page's UI here.
-    sourceTableSlug,
     fields,
     fieldById,
     records: filteredRecords,

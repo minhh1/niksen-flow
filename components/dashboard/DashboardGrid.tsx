@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import Link from "next/link";
-import { X, GripVertical, Maximize2 } from "lucide-react";
+import { X, GripVertical } from "lucide-react";
 import FieldValueInput from "./FieldValueInput";
 import { updateRecord, deleteRecord } from "@/lib/services/customTableService";
 import { evaluateCondition } from "@/lib/dashboardWidgets/compute";
@@ -31,9 +30,9 @@ interface Props {
   readOnly?: boolean;
   // Blank rows always kept at the bottom -- purely visual padding (a table
   // with only 1-2 real rows otherwise looks sparse/broken next to its
-  // sibling widgets), NOT an editable fast-entry surface -- see the
-  // fullscreenHref doc comment below for how a spreadsheet-style multi-row
-  // entry flow is offered instead.
+  // sibling widgets), NOT an editable fast-entry surface. Real spreadsheet-
+  // style multi-row entry belongs to the dashboard's own fullscreen mode
+  // (see DashboardViewPage) or the source table's full master-table page.
   emptyRowCount?: number;
   // Per-column pixel width, keyed by field id -- see GridWidget.config in
   // lib/dashboardWidgets/types.ts. Missing entries fall back to DEFAULT_COLUMN_WIDTH.
@@ -57,13 +56,6 @@ interface Props {
   // (filtered) `records` prop -- see GridWidget.config in
   // lib/dashboardWidgets/types.ts.
   showTotalsRow?: boolean;
-  // Link target for the fullscreen-expand button (top-right of the grid) --
-  // the source table's own full master-table page (/dashboard/<slug>, see
-  // CustomTableMasterPage), which shows every field (not just this widget's
-  // configured subset) and has real spreadsheet-style multi-row entry.
-  // Undefined hides the button entirely -- see DashboardWidgetRenderer's
-  // sourceTableSlug doc comment for which contexts have it.
-  fullscreenHref?: string;
 }
 
 // Same formatting as DashboardSummaryTiles' formatTileValue -- duplicated
@@ -83,7 +75,7 @@ function formatTotal(value: number, fieldType: string): string {
 // section of a composed dashboard, not a standalone page.
 export default function DashboardGrid({
   tableId, companyId, fields, gridFieldIds, records, onChanged, readOnly, emptyRowCount = 0,
-  columnWidths, isAdmin, onReorder, onResize, columnHighlights, fieldById, showTotalsRow, fullscreenHref,
+  columnWidths, isAdmin, onReorder, onResize, columnHighlights, fieldById, showTotalsRow,
 }: Props) {
   const gridFields = gridFieldIds
     .map(id => fields.find(f => f.id === id))
@@ -194,19 +186,7 @@ export default function DashboardGrid({
   }
 
   return (
-    <div className="border border-slate-200 rounded-2xl bg-white overflow-hidden">
-      {fullscreenHref && (
-        <div className="flex justify-end px-3 py-1.5 border-b border-slate-100">
-          <Link
-            href={fullscreenHref}
-            title="Open full view (all fields)"
-            className="flex items-center gap-1.5 text-[10px] font-bold text-slate-400 hover:text-indigo-600 transition-colors"
-          >
-            <Maximize2 size={12} /> Full screen
-          </Link>
-        </div>
-      )}
-      <div className="overflow-x-auto">
+    <div className="overflow-x-auto border border-slate-200 rounded-2xl bg-white">
       <table className="w-full text-[12px]">
         <thead>
           <tr className="border-b border-slate-100 bg-slate-50">
@@ -299,7 +279,6 @@ export default function DashboardGrid({
           </tfoot>
         )}
       </table>
-      </div>
     </div>
   );
 }
