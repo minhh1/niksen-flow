@@ -20,6 +20,8 @@ import {
   DescribeImagesCommand,
   DeregisterImageCommand,
   DeleteSnapshotCommand,
+  StopInstancesCommand,
+  StartInstancesCommand,
   type _InstanceType as InstanceType,
 } from "@aws-sdk/client-ec2";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
@@ -32,7 +34,7 @@ import type {
   StartSnapshotResult,
   VmProvider,
 } from "./types";
-import { CHROME_DPI_FIX_SNIPPET, INSTALL_OFFICE_SNIPPET, REDUCE_BACKGROUND_LOAD_SNIPPET } from "./windowsProvisioning";
+import { CHROME_DPI_FIX_SNIPPET, ENABLE_AUDIO_SNIPPET, INSTALL_OFFICE_SNIPPET, REDUCE_BACKGROUND_LOAD_SNIPPET } from "./windowsProvisioning";
 
 // The standard, Microsoft-documented way to avoid hardcoding a Windows AMI
 // ID (which differs per region and changes with every patch Tuesday) --
@@ -42,6 +44,24 @@ const WINDOWS_AMI_SSM_PARAMETER = "/aws/service/ami-windows-latest/Windows_Serve
 
 const RDP_SECURITY_GROUP_NAME = "niksen-vm-rdp";
 
+// EC2 hibernation caps a Windows instance's RAM at 16 GiB (see
+// https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/hibernating-prerequisites.html)
+// -- t3.medium/large/xlarge (4/8/16 GB) all fit; m5.2xlarge (32 GB) doesn't
+// and falls back to the older CreateImage-snapshot-and-terminate approach
+// (still fully supported, just slower to wake from). Windows Server 2022
+// AMIs released 2023.09.13 or later support hibernation, which the
+// SSM "latest" parameter above always resolves to.
+const HIBERNATION_ELIGIBLE_SIZES = new Set(["t3.medium", "t3.large", "t3.xlarge"]);
+
+// AWS requires the root volume to be encrypted for hibernation (so the RAM
+// contents written to it at hibernate time are protected) and reserves
+// space on it at launch for the RAM dump -- 50 GB comfortably covers a
+// Windows Server 2022 + Office install (well above the base AMI's own
+// ~30 GB root snapshot, so RunInstances' volume-size floor is never hit)
+// plus the largest eligible RAM size (16 GB, t3.xlarge) it might need to
+// reserve.
+const HIBERNATION_ROOT_VOLUME_GB = 50;
+
 function ec2Client(credentials: ProviderCredentials, region: string): EC2Client {
   return new EC2Client({
     region,
@@ -49,7 +69,7 @@ function ec2Client(credentials: ProviderCredentials, region: string): EC2Client 
   });
 }
 
-async function resolveWindowsAmiId(credentials: ProviderCredentials, region: string): Promise<string> {
+async function resolveWindowsAmi(credentials: ProviderCredentials, region: string): Promise<{ amiId: string; rootDeviceName: string }> {
   const ssm = new SSMClient({
     region,
     credentials: { accessKeyId: credentials.access_key_id, secretAccessKey: credentials.secret_access_key },
@@ -57,7 +77,16 @@ async function resolveWindowsAmiId(credentials: ProviderCredentials, region: str
   const res = await ssm.send(new GetParameterCommand({ Name: WINDOWS_AMI_SSM_PARAMETER }));
   const amiId = res.Parameter?.Value;
   if (!amiId) throw new Error(`Could not resolve a Windows AMI in region "${region}".`);
-  return amiId;
+
+  // Needed to correctly target the *root* volume's BlockDeviceMappings entry
+  // when enabling hibernation below -- Windows AMIs conventionally use
+  // /dev/sda1, but reading the AMI's own declared root device rather than
+  // assuming it avoids silently attaching an extra, unencrypted volume
+  // instead of actually encrypting the root one.
+  const ec2 = ec2Client(credentials, region);
+  const described = await ec2.send(new DescribeImagesCommand({ ImageIds: [amiId] }));
+  const rootDeviceName = described.Images?.[0]?.RootDeviceName || "/dev/sda1";
+  return { amiId, rootDeviceName };
 }
 
 // EC2's default security group doesn't allow inbound RDP from the internet,
@@ -110,6 +139,8 @@ ${CHROME_DPI_FIX_SNIPPET}
 
 ${REDUCE_BACKGROUND_LOAD_SNIPPET}
 
+${ENABLE_AUDIO_SNIPPET}
+
 ${INSTALL_OFFICE_SNIPPET}
 </powershell>`;
   return Buffer.from(script, "utf-8").toString("base64");
@@ -135,6 +166,8 @@ Set-ItemProperty -Path "HKLM:\\System\\CurrentControlSet\\Control\\Terminal Serv
 
 ${REDUCE_BACKGROUND_LOAD_SNIPPET}
 
+${ENABLE_AUDIO_SNIPPET}
+
 ${INSTALL_OFFICE_SNIPPET}
 </powershell>
 <persist>true</persist>`;
@@ -146,14 +179,35 @@ export const awsProvider: VmProvider = {
 
   async createInstance(params: CreateInstanceParams): Promise<CreateInstanceResult> {
     const client = ec2Client(params.credentials, params.region);
-    const [amiId, securityGroupId] = await Promise.all([
-      params.fromSnapshotId ? Promise.resolve(params.fromSnapshotId) : resolveWindowsAmiId(params.credentials, params.region),
+
+    // A native-hibernate wake (see startSnapshot/getSnapshotStatus below):
+    // fromSnapshotId is the *same instance* that was stopped, not a
+    // separate AMI -- resuming it means starting it back up, not relaunching
+    // a fresh one, which is what actually preserves its exact running state
+    // (open apps, in-progress work) instead of a fresh boot. Distinguished
+    // from the older AMI-based restore path (fromSnapshotId is an "ami-..."
+    // id) purely by AWS's own resource-id prefix, so no extra state needs to
+    // be threaded through the shared VmProvider interface for this.
+    if (params.fromSnapshotId?.startsWith("i-")) {
+      await client.send(new StartInstancesCommand({ InstanceIds: [params.fromSnapshotId] }));
+      const described = await client.send(new DescribeInstancesCommand({ InstanceIds: [params.fromSnapshotId] }));
+      const instance = described.Reservations?.[0]?.Instances?.[0];
+      return { providerInstanceId: params.fromSnapshotId, ipAddress: instance?.PublicIpAddress ?? null };
+    }
+
+    const isFreshCreate = !params.fromSnapshotId;
+    const hibernationEligible = isFreshCreate && HIBERNATION_ELIGIBLE_SIZES.has(params.sizeSlug);
+
+    const [amiInfo, securityGroupId] = await Promise.all([
+      params.fromSnapshotId
+        ? Promise.resolve({ amiId: params.fromSnapshotId, rootDeviceName: null })
+        : resolveWindowsAmi(params.credentials, params.region),
       ensureRdpSecurityGroup(client),
     ]);
 
     const res = await client.send(
       new RunInstancesCommand({
-        ImageId: amiId,
+        ImageId: amiInfo.amiId,
         InstanceType: params.sizeSlug as InstanceType,
         MinCount: 1,
         MaxCount: 1,
@@ -172,6 +226,23 @@ export const awsProvider: VmProvider = {
         // Only valid for T-family instances -- AWS rejects this parameter
         // outright for non-burstable types like m5.2xlarge.
         ...(/^t\d/i.test(params.sizeSlug) ? { CreditSpecification: { CpuCredits: "unlimited" as const } } : {}),
+        // Enables real EC2 hibernation (RAM suspended to the encrypted root
+        // volume, same instance resumed on wake) instead of the slower
+        // snapshot-AMI-and-terminate fallback -- see startSnapshot below and
+        // HIBERNATION_ELIGIBLE_SIZES's comment for why this is only offered
+        // for sizes under Windows's 16 GiB hibernation RAM cap. Can only be
+        // set at launch, never added to an already-running instance.
+        ...(hibernationEligible
+          ? {
+              HibernationOptions: { Configured: true },
+              BlockDeviceMappings: [
+                {
+                  DeviceName: amiInfo.rootDeviceName!,
+                  Ebs: { Encrypted: true, VolumeSize: HIBERNATION_ROOT_VOLUME_GB, VolumeType: "gp3", DeleteOnTermination: true },
+                },
+              ],
+            }
+          : {}),
       })
     );
     const instance = res.Instances?.[0];
@@ -208,6 +279,25 @@ export const awsProvider: VmProvider = {
 
   async startSnapshot(credentials: ProviderCredentials, providerInstanceId: string, region: string): Promise<StartSnapshotResult> {
     const client = ec2Client(credentials, region);
+
+    // Whether *this specific instance* was actually launched with
+    // hibernation enabled (see HIBERNATION_ELIGIBLE_SIZES/createInstance
+    // above) -- read back from AWS itself rather than re-deriving from
+    // sizeSlug, since that isn't passed into this function and the
+    // instance's own HibernationOptions is the authoritative answer anyway.
+    const described = await client.send(new DescribeInstancesCommand({ InstanceIds: [providerInstanceId] }));
+    const instance = described.Reservations?.[0]?.Instances?.[0];
+    if (instance?.HibernationOptions?.Configured) {
+      // Real EC2 hibernation: suspend RAM to the (encrypted) root volume and
+      // keep this exact instance rather than producing a separate AMI --
+      // reusing the instance ID itself as both the poll handle and the
+      // eventual "snapshot" pointer lets getSnapshotStatus/createInstance
+      // (on wake) distinguish this from the older AMI-based path purely by
+      // AWS's own "i-" vs "ami-" id prefixes, with no other state needed.
+      await client.send(new StopInstancesCommand({ InstanceIds: [providerInstanceId], Hibernate: true }));
+      return { snapshotTaskId: providerInstanceId };
+    }
+
     // NoReboot defaults to false deliberately -- AWS reboots the instance
     // first to flush buffers before snapshotting, which is what guarantees
     // a filesystem-consistent image. NoReboot:true is explicitly not
@@ -224,11 +314,23 @@ export const awsProvider: VmProvider = {
 
   async getSnapshotStatus(
     credentials: ProviderCredentials,
-    _providerInstanceId: string,
+    providerInstanceId: string,
     region: string,
     snapshotTaskId: string
   ): Promise<SnapshotStatus> {
     const client = ec2Client(credentials, region);
+
+    // Native-hibernate path (see startSnapshot above): snapshotTaskId is the
+    // instance's own id, so poll its instance state instead of an AMI.
+    if (snapshotTaskId === providerInstanceId) {
+      const res = await client.send(new DescribeInstancesCommand({ InstanceIds: [providerInstanceId] }));
+      const instance = res.Reservations?.[0]?.Instances?.[0];
+      const state = instance?.State?.Name;
+      if (state === "stopped") return { status: "completed", snapshotId: providerInstanceId };
+      if (state === "stopping" || state === "pending") return { status: "pending", snapshotId: null };
+      return { status: "error", snapshotId: null };
+    }
+
     const res = await client.send(new DescribeImagesCommand({ ImageIds: [snapshotTaskId] }));
     const image = res.Images?.[0];
     if (!image) return { status: "pending", snapshotId: null };
@@ -240,8 +342,12 @@ export const awsProvider: VmProvider = {
   // An AMI has its own backing EBS snapshot(s), which keep costing storage
   // even after the AMI itself is deregistered -- both have to be deleted.
   // Tolerates the AMI already being gone (DescribeImages just returns no
-  // match rather than throwing).
+  // match rather than throwing). No-ops for a native-hibernate "snapshot"
+  // (an "i-..." id, not an "ami-..." one) -- that's just the stopped
+  // instance itself, still needed on the next wake, not something to clean
+  // up (see getSnapshotStatus/createInstance above).
   async deleteSnapshot(credentials: ProviderCredentials, snapshotId: string, region: string): Promise<void> {
+    if (snapshotId.startsWith("i-")) return;
     const client = ec2Client(credentials, region);
     const described = await client.send(new DescribeImagesCommand({ ImageIds: [snapshotId] })).catch(() => null);
     const image = described?.Images?.[0];

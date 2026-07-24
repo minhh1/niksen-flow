@@ -39,7 +39,7 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     includedVmSlots: 10,
     allowedSizes: {
       digitalocean: ["s-2vcpu-4gb", "s-4vcpu-8gb", "s-4vcpu-8gb-intel", "s-4vcpu-8gb-240gb-intel", "s-8vcpu-16gb"],
-      aws: ["t3.medium", "t3.xlarge", "m5.2xlarge"],
+      aws: ["t3.medium", "t3.large", "t3.xlarge", "m5.2xlarge"],
     },
     meteredServiceFeeUsdPerHour: 0.02,
   },
@@ -68,7 +68,7 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     // plan that already has the most headroom.
     allowedSizes: {
       digitalocean: ["s-2vcpu-4gb", "s-4vcpu-8gb", "s-4vcpu-8gb-intel", "s-4vcpu-8gb-240gb-intel", "s-8vcpu-16gb"],
-      aws: ["t3.medium", "t3.xlarge", "m5.2xlarge"],
+      aws: ["t3.medium", "t3.large", "t3.xlarge", "m5.2xlarge"],
     },
   },
 };

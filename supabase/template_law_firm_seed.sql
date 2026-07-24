@@ -195,6 +195,18 @@ BEGIN
       formula_type = 'multiply', formula_field_a_key = 'rate', formula_field_b_key = 'duration_hours'
     WHERE template_table_id = v_timefees_table_id AND field_key = 'amount' AND formula_type IS NULL;
 
+  -- A time entry with no date/matter/staff/rate/duration/billable isn't
+  -- billable to anyone -- added after the fact, so (like the formula UPDATE
+  -- above) this is a guarded UPDATE rather than part of the INSERT tuple,
+  -- to upgrade a previously-seeded catalog too.
+  UPDATE template_definition_table_fields SET is_required = true
+    WHERE template_table_id = v_timefees_table_id
+      AND field_key IN ('matter', 'staff', 'date', 'rate', 'duration_hours', 'billable')
+      AND is_required = false;
+
+  UPDATE template_definition_table_fields SET label = 'Duration (Hours)'
+    WHERE template_table_id = v_timefees_table_id AND field_key = 'duration_hours' AND label = 'Duration Hours';
+
   -- ── Disbursements ────────────────────────────────────────────────────
   INSERT INTO template_definition_tables (template_id, slug, name, icon, color, primary_field_key, display_order)
   SELECT v_template_id, 'disbursements', 'Disbursements', 'Receipt', '#b45309', 'description', 2
@@ -320,8 +332,14 @@ BEGIN
   ]'::jsonb
   WHERE template_id = v_template_id AND slug = 'trust-account';
 
+  -- Named "client-billing", not "billing" -- app/dashboard/billing/ is a
+  -- static route (subscription/platform billing settings), which Next.js
+  -- always resolves ahead of the dynamic dashboard/table route for an exact
+  -- path match, so a dashboard literally named "billing" is silently
+  -- unreachable (confirmed: /dashboard/billing always renders the settings
+  -- page, never this dashboard, no matter what's installed).
   INSERT INTO template_definition_dashboards (template_id, source_template_table_id, name, slug, icon, color, display_order, widgets_template)
-  SELECT v_template_id, v_invoices_table_id, 'Billing', 'billing', 'Receipt', '#0891b2', 2, '[
+  SELECT v_template_id, v_invoices_table_id, 'Client Billing', 'client-billing', 'Receipt', '#0891b2', 2, '[
     {"id":"bi1","type":"filter_bar","layout":{"x":0,"y":0,"w":12,"h":2},"config":{"fieldIds":["matter","debtor"]}},
     {"id":"bi2","type":"quick_add_form","layout":{"x":0,"y":2,"w":12,"h":2},"config":{"fieldIds":["matter","debtor","issue_date","due_date","period_start","period_end","status"]}},
     {"id":"bi3","type":"summary_tile","layout":{"x":0,"y":4,"w":3,"h":2},"config":{"label":"Outstanding (sent)","fieldId":"amount_due","aggregate":"sum","filterFieldId":"status","filterValue":"Sent"}},
@@ -332,5 +350,5 @@ BEGIN
     {"id":"bi8","type":"grid","layout":{"x":0,"y":10,"w":12,"h":6},"config":{"fieldIds":["invoice_number","matter","debtor","issue_date","status","fees_total","disbursements_total","subtotal","gst","total_inc_gst","trust_applied","payments","amount_due"]}},
     {"id":"bi9","type":"ledes_export","layout":{"x":0,"y":16,"w":12,"h":6},"config":{}}
   ]'::jsonb
-  WHERE NOT EXISTS (SELECT 1 FROM template_definition_dashboards WHERE template_id = v_template_id AND slug = 'billing');
+  WHERE NOT EXISTS (SELECT 1 FROM template_definition_dashboards WHERE template_id = v_template_id AND slug = 'client-billing');
 END $$;

@@ -13,7 +13,7 @@ import type {
   VmProtocol,
   VmProvider,
 } from "./types";
-import { CHROME_DPI_FIX_SNIPPET, INSTALL_OFFICE_SNIPPET, REDUCE_BACKGROUND_LOAD_SNIPPET } from "./windowsProvisioning";
+import { CHROME_DPI_FIX_SNIPPET, ENABLE_AUDIO_SNIPPET, INSTALL_OFFICE_SNIPPET, REDUCE_BACKGROUND_LOAD_SNIPPET } from "./windowsProvisioning";
 import { PRICING } from "./pricing";
 
 const DO_API_URL = "https://api.digitalocean.com/v2";
@@ -90,6 +90,14 @@ async function resolveLatestUbuntuLts(credentials: ProviderCredentials): Promise
 //       locks or suspends itself just looks like a dead VM. dconf-cli is
 //       installed explicitly: it's what `dconf update` comes from and
 //       --no-install-recommends would otherwise skip it.
+//   A 4GB swapfile is created because DO's Ubuntu images ship with ZERO
+//   swap, and a desktop workload (GNOME + Chrome + Teams + optionally a
+//   4GB Windows guest) on a swapless box doesn't degrade gracefully -- it
+//   thrash-freezes: the kernel evicts executable pages and re-reads them
+//   from disk in a loop. Observed live on a real droplet (memory PSI 72%,
+//   session frozen, no OOM kill); adding the swapfile dropped PSI to ~11%
+//   within seconds and unfroze the session.
+//
 //   ubuntu-desktop-minimal is installed with --no-install-recommends
 //   because its recommends are exactly the seeded snaps (Firefox etc.),
 //   and snap installs from cloud-init are slow and flaky (same reasoning
@@ -218,6 +226,18 @@ function cloudInitScript(
   // gsettings calls because gsettings needs a running session bus at a
   // point in provisioning where none exists yet.
   //
+  // The wallpaper is pre-scaled to a 1080p JPEG (make-vc-wallpaper.py) and
+  // the background default pointed at it, because the stock Ubuntu default
+  // is a multi-MB 4K PNG that gnome-shell decodes through its sandboxed
+  // glycin loader on every monitor-layout change -- and every RDP
+  // reconnect/resize IS a monitor change here. On a real droplet that
+  // decode pegged a full core for minutes (stuck, not just slow) while the
+  // user stared at the solid dark-blue fallback color instead of a
+  // wallpaper. A 128KB 1080p JPEG decodes instantly and looks identical
+  // over RDP. If the scaler fails it falls back to trying every PNG in
+  // /usr/share/backgrounds, and if all fail the only cost is the same blue
+  // fallback background.
+  //
   // gnome-headless-shell.service exists because gnome-remote-desktop's
   // headless daemon does NOT start a session itself -- it sits silently on
   // the user bus waiting for mutter's remote-desktop API to appear, and
@@ -268,8 +288,29 @@ function cloudInitScript(
     content: |
       user-db:user
       system-db:local
+  - path: /usr/local/bin/make-vc-wallpaper.py
+    permissions: '0755'
+    content: |
+      #!/usr/bin/python3
+      import gi
+      gi.require_version('GdkPixbuf', '2.0')
+      from gi.repository import GdkPixbuf
+      import glob, sys
+      candidates = ['/usr/share/backgrounds/warty-final-ubuntu.png'] + sorted(glob.glob('/usr/share/backgrounds/*.png'))
+      for src in candidates:
+          try:
+              pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(src, 1920, -1, True)
+              pb.savev('/usr/share/backgrounds/vc-wallpaper.jpg', 'jpeg', ['quality'], ['90'])
+              sys.exit(0)
+          except Exception:
+              continue
+      sys.exit(1)
   - path: /etc/dconf/db/local.d/00-virtual-computer
     content: |
+      [org/gnome/desktop/background]
+      picture-uri='file:///usr/share/backgrounds/vc-wallpaper.jpg'
+      picture-uri-dark='file:///usr/share/backgrounds/vc-wallpaper.jpg'
+      picture-options='zoom'
       [org/gnome/desktop/interface]
       enable-animations=false
       [org/gnome/desktop/session]
@@ -313,9 +354,12 @@ ${writeFiles}runcmd:
 
   const grdDir = `/home/${escapedUsername}/.local/share/gnome-remote-desktop`;
   return `${userSetup}
-  - DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ubuntu-desktop-minimal gnome-remote-desktop pipewire pipewire-pulse wireplumber dbus-user-session dconf-cli xdg-desktop-portal-gnome nautilus gnome-console gnome-text-editor gnome-control-center yaru-theme-gnome-shell yaru-theme-gtk yaru-theme-icon fonts-ubuntu ubuntu-settings gnome-backgrounds ibus
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ubuntu-desktop-minimal gnome-remote-desktop pipewire pipewire-pulse wireplumber dbus-user-session dconf-cli xdg-desktop-portal-gnome nautilus gnome-console gnome-text-editor gnome-control-center yaru-theme-gnome-shell yaru-theme-gtk yaru-theme-icon fonts-ubuntu ubuntu-settings gnome-backgrounds ibus python3-gi gir1.2-gdkpixbuf-2.0
   - systemctl disable --now gdm3 || true
   - systemctl set-default multi-user.target
+  - fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  - /usr/local/bin/make-vc-wallpaper.py || true
   - dconf update
   - su - ${escapedUsername} -c "mkdir -p ~/.config && echo yes > ~/.config/gnome-initial-setup-done"
   - install -d -m 700 -o ${escapedUsername} -g ${escapedUsername} /home/${escapedUsername}/.local /home/${escapedUsername}/.local/share ${grdDir}
@@ -351,18 +395,25 @@ ${office?.runcmd ?? ""}`;
 //     s-4vcpu-8gb tiers: 2 vCPU / 4GB each side). Guest disk is a fixed
 //     64GB (dockur's own default, ample for Windows + Office) rather than
 //     guestDiskGb() -- the *host* is the user's actual computer here and
-//     keeps the rest of the disk.
+//     keeps the rest of the disk. On 8GB droplets (the biggest this
+//     platform account can currently create -- larger sizes need a DO
+//     limit increase), the guest additionally shrinks from its 4GB install
+//     allocation to 3GB once WinApps setup succeeds: Windows needs the
+//     4GB to install cleanly, but runs Office fine in 3GB, and the freed
+//     GB matters a lot to the desktop side (measured: the guest's RSS is
+//     by far the largest single memory holder on the box).
 //   - The guest's Windows account reuses the row's remoteUsername/
 //     remotePassword (Linux creds) so WinApps' stored config matches what's
 //     in the DB. Local Windows accounts don't enforce complexity at
 //     unattended-install time, so the short Linux-style password is fine.
-//   - The guest is CPU-deprioritized (cpu_shares 256 vs the 1024 default,
-//     plus user.slice CPUWeight=400) so under contention the interactive
-//     desktop always wins -- without capping the guest when the desktop is
-//     idle. cgroup weights only bite under contention, so Office in the
-//     guest still gets full CPU when it's the thing the user is actually
-//     doing. Added after real-droplet testing: the guest's initial Windows
-//     install pegged 2 of 4 cores and made the GNOME session visibly lag.
+//   - The guest is CPU-contained two ways, both learned from real-droplet
+//     testing (its initial Windows install visibly lagged the GNOME
+//     session): cpuset pins it to the LAST guestVcpus cores, so the first
+//     two cores are always uncontended for the desktop -- weights alone
+//     (cpu_shares 256 + user.slice CPUWeight=400, kept as a second line
+//     of defense) reduced but did not eliminate desktop stalls while QEMU
+//     was bursting across all cores. The guest only ever gets CPU_CORES=
+//     guestVcpus anyway, so pinning costs it nothing it was entitled to.
 //   - provision.ps1 additionally sets TSAppAllowList\\fDisabledAllowList=1,
 //     which lets any installed program be launched as a RemoteApp -- this
 //     is the core of WinApps' own RDPApps.reg, which its docker flavor
@@ -375,11 +426,33 @@ ${office?.runcmd ?? ""}`;
 // never fight over the dpkg lock (belt-and-suspenders: DPkg::Lock::Timeout
 // too, since get.docker.com's own apt calls are outside our control).
 // Type=oneshot has no start timeout by default, which matters: the script
-// legitimately runs for an hour+ (Windows unattended install + Office
-// download inside the guest) before winapps-setup can succeed. WinApps
+// legitimately runs for hours (Windows unattended install + Office
+// download inside the guest) before winapps-setup can succeed. There is
+// deliberately no port-probe "wait for Windows" phase: docker-proxy
+// accepts TCP on the mapped port from the moment the container starts, so
+// a nc/port check passes long before Windows inside is actually up
+// (learned on a real droplet, where exactly that gate burned the retry
+// budget during the install). winapps-setup's own connection test is the
+// only reliable readiness probe, so the retry loop (120 x ~2.5min, ~4-5h
+// worst case) IS the wait. The ~2min spacing between attempts is load-
+// bearing, not just politeness: WinApps' test ends by killing its FreeRDP
+// client, which leaves the guest's session in a busy/disconnecting state
+// that makes an immediately-following attempt fail with
+// LOGON_MSG_SESSION_BUSY (observed live -- rapid manual retries kept
+// failing where spaced ones succeeded). RDP_TIMEOUT=120 and
+// APP_SCAN_TIMEOUT=300 in winapps.conf exist for the same slow-nested-VM
+// reason: their defaults (30s/60s) are too short for the first RemoteApp
+// session spin-up and for the installed-app registry scan that has to
+// reconnect through the connection test's own fresh tsdiscon -- the full
+// end-to-end setup was only ever observed succeeding with both raised. WinApps
 // setup runs under xvfb-run because its FreeRDP invocations expect an X
 // display and the unit has none; the launchers it creates run later inside
-// the user's real GNOME session (Xwayland) instead. WAFLAVOR=manual tells
+// the user's real GNOME session (Xwayland) instead. RDP_FLAGS uses
+// /cert:ignore, not WinApps' usual /cert:tofu -- tofu means "ask the user
+// to accept the self-signed cert on first connect", and there is no user
+// in a headless unit, so every unattended connection died at certificate
+// verification (observed live). The connection never leaves 127.0.0.1, so
+// ignoring the guest's self-signed cert costs nothing. WAFLAVOR=manual tells
 // WinApps the VM lifecycle is not its problem (our compose + Docker's
 // restart policy own that, surviving reboots and snapshot restores).
 function officeGuestCloudInit(
@@ -391,11 +464,19 @@ function officeGuestCloudInit(
   const guestVcpus = Math.max(2, vcpus - 2);
   const guestRamGb = Math.max(4, memoryGb - 4);
 
+  // The RemoteApp allowlist tweak runs BEFORE the Office install: WinApps'
+  // setup probe launches a RemoteApp over RDP, and Windows rejects that
+  // until this key is set -- with the Office install (30-90 min) first,
+  // every WinApps retry during that window failed for no good reason
+  // (observed live). Launchers appearing minutes before Office's binaries
+  // finish installing is the acceptable side of that trade.
   const provisionPs1 = `${REDUCE_BACKGROUND_LOAD_SNIPPET}
 
-${INSTALL_OFFICE_SNIPPET}
+reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Terminal Server\\TSAppAllowList" /v fDisabledAllowList /t REG_DWORD /d 1 /f
 
-reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Terminal Server\\TSAppAllowList" /v fDisabledAllowList /t REG_DWORD /d 1 /f`;
+${ENABLE_AUDIO_SNIPPET}
+
+${INSTALL_OFFICE_SNIPPET}`;
   const provisionPs1B64 = Buffer.from(provisionPs1, "utf-8").toString("base64");
 
   const writeFiles = `  - path: /root/office-vm/docker-compose.yml
@@ -405,6 +486,7 @@ reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Terminal Server\
           image: ghcr.io/dockur/windows:5.14
           container_name: office-windows
           cpu_shares: 256
+          cpuset: "${vcpus - guestVcpus}-${vcpus - 1}"
           environment:
             VERSION: "11"
             RAM_SIZE: "${guestRamGb}G"
@@ -455,12 +537,15 @@ reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Terminal Server\
       RDP_PORT="3390"
       WAFLAVOR="manual"
       RDP_SCALE="100"
-      RDP_FLAGS="/cert:tofu"
+      RDP_FLAGS="/cert:ignore"
+      RDP_TIMEOUT="120"
+      APP_SCAN_TIMEOUT="300"
       WACONF
-      for i in $(seq 1 240); do nc -z 127.0.0.1 3390 && break; sleep 30; done
-      for i in $(seq 1 30); do
+      for i in $(seq 1 120); do
         if su - ${escapedUsername} -c "xvfb-run -a bash /usr/local/share/winapps-setup.sh --user --setupAllOfficiallySupportedApps"; then
-          exit 0
+${guestRamGb <= 4 ? `          sed -i 's/RAM_SIZE: "${guestRamGb}G"/RAM_SIZE: "3G"/' /root/office-vm/docker-compose.yml
+          docker compose -f /root/office-vm/docker-compose.yml up -d
+` : ""}          exit 0
         fi
         sleep 120
       done
@@ -548,6 +633,8 @@ function windowsCloudInitScript(username: string, password: string, sizeSlug: st
   const provisionPs1 = `${CHROME_DPI_FIX_SNIPPET}
 
 ${REDUCE_BACKGROUND_LOAD_SNIPPET}
+
+${ENABLE_AUDIO_SNIPPET}
 
 ${INSTALL_OFFICE_SNIPPET}`;
   const provisionPs1B64 = Buffer.from(provisionPs1, "utf-8").toString("base64");

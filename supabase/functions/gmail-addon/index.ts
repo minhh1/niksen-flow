@@ -1424,7 +1424,6 @@ Deno.serve(async (req) => {
 
       const update: Record<string, unknown> = {
         name: name.trim(),
-        due_date: dueDate || null,
         due_time: dueTime || null,
         status_id: statusId || null,
         assignee_id: assigneeId || null,
@@ -1432,6 +1431,7 @@ Deno.serve(async (req) => {
         is_monetary: isMonetary || false,
         estimated_cost: estimatedCost || null,
       };
+      if (dueDate !== undefined) update.due_date = dueDate || null;
       if (calendarTarget !== undefined) update.calendar_target = calendarTarget === 'main_calendar' ? 'main_calendar' : 'tasks_calendar';
       if (syncToCompanyCalendar !== undefined) update.sync_to_company_calendar = !!syncToCompanyCalendar;
       if (awaitingFollowUp !== undefined) {

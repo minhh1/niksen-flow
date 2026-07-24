@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
 
   const { data: settings } = await admin
     .from("ai_chat_settings")
-    .select("source_crm, source_gmail, source_whatsapp, source_teams, self_hosted_ollama_url, monthly_token_cap")
+    .select("source_crm, source_gmail, source_whatsapp, source_teams, source_onedrive, self_hosted_ollama_url, monthly_token_cap")
     .eq("company_id", companyId)
     .maybeSingle();
 

@@ -28,6 +28,7 @@ export const PRICING: Record<CloudProviderId, VmSizeOption[]> = {
   // surcharge baked into the instance price.
   aws: [
     { slug: "t3.medium", label: "2 vCPU / 4 GB", vcpus: 2, memoryMb: 4096, hourlyUsd: 0.0832 },
+    { slug: "t3.large", label: "2 vCPU / 8 GB", vcpus: 2, memoryMb: 8192, hourlyUsd: 0.1664 },
     { slug: "t3.xlarge", label: "4 vCPU / 16 GB", vcpus: 4, memoryMb: 16384, hourlyUsd: 0.3328 },
     { slug: "m5.2xlarge", label: "8 vCPU / 32 GB", vcpus: 8, memoryMb: 32768, hourlyUsd: 0.952 },
   ],

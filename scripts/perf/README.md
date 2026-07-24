@@ -1,6 +1,6 @@
 # Virtual computer performance test suite
 
-Three scripts, matching the three things that make a VM session feel slow:
+Four scripts, matching the things that make a VM session feel slow:
 
 1. **`network-latency.mjs`** -- raw TCP connect time to the Guacamole gateway
    and (optionally) a VM's own remote-desktop port. No browser, no login,
@@ -9,8 +9,16 @@ Three scripts, matching the three things that make a VM session feel slow:
    computer" until the remote desktop visibly renders (Tier 2), plus a
    right-click-to-context-menu response time repeated a few times for a
    median (Tier 3). Needs a real running VM and a logged-in session.
-3. **`save-auth-state.mjs`** -- one-time setup for #2: logs in for real in a
-   headed browser once, saves the session so the other script doesn't need
+3. **`click_latency.mjs`** -- right-click-to-redraw latency measured over
+   Guacamole's raw WebSocket tunnel protocol directly (bypassing the
+   browser/Guacamole webapp entirely), used for provider/config comparisons
+   (e.g. DigitalOcean nested-KVM vs. AWS EC2). More precise than
+   `session-latency.mjs`'s screenshot-byte heuristic since it reads the
+   actual `png`/`sync` instructions off the wire, at the cost of needing
+   `ws` and mints its own session via `/api/virtual-computers/{id}/session`.
+   Usage: `node scripts/perf/click_latency.mjs <vm-id> "<label>"`.
+4. **`save-auth-state.mjs`** -- one-time setup for #2/#3: logs in for real in
+   a headed browser once, saves the session so the other scripts don't need
    to log in every run.
 
 Every run's JSON output is also saved under `scripts/perf/results/` so

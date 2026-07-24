@@ -50,6 +50,22 @@ export const REDUCE_BACKGROUND_LOAD_SNIPPET = `if (!(Test-Path "C:\\ProvisionMar
   New-Item -ItemType File -Path "C:\\ProvisionMarkers\\reduce-background-load.done" -Force | Out-Null
 }`;
 
+// Windows Server AMIs ship with the Windows Audio service (Audiosrv) set to
+// Disabled -- there's no physical audio hardware on a server SKU, so it's
+// off by default. RDP's audio-playback redirection (the rdpsnd virtual
+// channel Guacamole/FreeRDP negotiates automatically) doesn't need real
+// hardware, but it does need this service actually running to expose an
+// endpoint for the redirected stream -- with it disabled, RDP audio has
+// nothing to attach to and silently produces no sound at all, independent
+// of anything Guacamole itself is configured to do. AudioEndpointBuilder is
+// Audiosrv's own dependency and needs the same treatment. Idempotent (safe
+// to call every boot); dockur/windows's desktop Windows 11 guest normally
+// ships with this already enabled, but setting it here too is harmless.
+export const ENABLE_AUDIO_SNIPPET = `Set-Service -Name AudioEndpointBuilder -StartupType Automatic
+Start-Service -Name AudioEndpointBuilder
+Set-Service -Name Audiosrv -StartupType Automatic
+Start-Service -Name Audiosrv`;
+
 // Silently installs Microsoft Office via the Office Deployment Tool. Product
 // ID O365ProPlusRetail is "Microsoft 365 Apps for enterprise" -- standard
 // (non-shared) licensing, since each VM here is assigned to exactly one

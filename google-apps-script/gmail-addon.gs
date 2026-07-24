@@ -187,6 +187,10 @@ function parseDatePickerValue(e, fieldName) {
   try { ms = parseInt(raw['msSinceEpoch']); } catch (_e) {}
   if (!ms || isNaN(ms)) { try { ms = parseInt(raw.msSinceEpoch); } catch (_e) {} }
   if (!ms || isNaN(ms)) { try { ms = parseInt(raw[0]); } catch (_e) {} }
+  // formInputs (plural) sometimes wraps the value object in an array, e.g.
+  // [{msSinceEpoch: "..."}] instead of {msSinceEpoch: "..."} — none of the
+  // fallbacks above unwrap that shape, so try it explicitly.
+  if (!ms || isNaN(ms)) { try { ms = parseInt(raw[0]['msSinceEpoch']); } catch (_e) {} }
   if (!ms || isNaN(ms) || ms <= 86400000) return null;
   var d = new Date(ms);
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -1088,7 +1092,8 @@ function buildTaskCardById(projectId, projectName, labelCode, companyId, token, 
         }))));
   card.addSection(archiveSection);
 
-  var taskSection = CardService.newCardSection().setHeader('Tasks');
+  var taskSection = CardService.newCardSection().setHeader('Tasks')
+    .setCollapsible(true).setNumUncollapsibleWidgets(1);
   taskSection.addWidget(CardService.newButtonSet()
     .addButton(CardService.newTextButton()
       .setText(tasksSimplified ? '☰ Full view' : '☰ Simplify view')
@@ -1331,65 +1336,50 @@ function buildTaskCardById(projectId, projectName, labelCode, companyId, token, 
         .setOpenLink(CardService.newOpenLink().setUrl(gmailMessageUrl(messageId)))));
   }
 
-  // Due date — "Specific date" or "Days from" a date (calendar/business, AU state-aware)
-  var dueMode = newTaskDraft.dueMode || 'specific';
-  var dueModeParams = {
-    projectId: projectId, projectName: projectName, labelCode: labelCode,
-    companyId: companyId, messageId: messageId || '', accessToken: token,
-  };
+  // Due date — "Specific date" or "Days from" a date (calendar/business, AU state-aware).
+  // All fields are always shown and editable — the dropdown only decides which
+  // ones get used at submit time — so nothing here ever needs a refresh.
   addSection.addWidget(CardService.newSelectionInput()
     .setType(CardService.SelectionInputType.DROPDOWN)
     .setFieldName('newTaskDueMode')
     .setTitle('Due date type')
-    .addItem('Specific date', 'specific', dueMode === 'specific')
-    .addItem('Days from a date', 'days_from', dueMode === 'days_from')
-    .setOnChangeAction(CardService.newAction()
-      .setFunctionName('onChangeNewTaskDueMode')
-      .setParameters(dueModeParams)));
+    .addItem('Specific date', 'specific', (newTaskDraft.dueMode || 'specific') === 'specific')
+    .addItem('Days from a date', 'days_from', newTaskDraft.dueMode === 'days_from'));
 
-  if (dueMode === 'days_from') {
-    var dfDatePicker = CardService.newDatePicker()
-      .setFieldName('newTaskDaysFromDate')
-      .setTitle('From date');
-    var dfDateMs = newTaskDraft.daysFromDate ? new Date(newTaskDraft.daysFromDate + 'T00:00:00').getTime() : dateStrToUtcMidnight(todayDateStr()).getTime();
-    dfDatePicker.setValueInMsSinceEpoch(dfDateMs);
-    addSection.addWidget(dfDatePicker);
-
-    addSection.addWidget(CardService.newTextInput()
-      .setFieldName('newTaskDaysFromDays')
-      .setTitle('Days')
-      .setValue(newTaskDraft.days != null ? String(newTaskDraft.days) : '7'));
-
-    var dfType = newTaskDraft.dayType || 'calendar';
-    addSection.addWidget(CardService.newSelectionInput()
-      .setType(CardService.SelectionInputType.DROPDOWN)
-      .setFieldName('newTaskDaysFromType')
-      .setTitle('Type')
-      .addItem('Calendar days', 'calendar', dfType === 'calendar')
-      .addItem('Business days', 'business', dfType === 'business')
-      .setOnChangeAction(CardService.newAction()
-        .setFunctionName('onChangeNewTaskDueMode')
-        .setParameters(dueModeParams)));
-
-    if (dfType === 'business') {
-      var dfStateSelect = CardService.newSelectionInput()
-        .setType(CardService.SelectionInputType.DROPDOWN)
-        .setFieldName('newTaskDaysFromState')
-        .setTitle('State (public holidays)');
-      for (var dsi = 0; dsi < AU_STATES.length; dsi++) {
-        dfStateSelect.addItem(AU_STATES[dsi], AU_STATES[dsi], (newTaskDraft.state || 'NSW') === AU_STATES[dsi]);
-      }
-      addSection.addWidget(dfStateSelect);
-    }
-  } else {
-    var dueDatePicker = CardService.newDatePicker()
-      .setFieldName('newTaskDue')
-      .setTitle('Due date');
-    if (newTaskDraft.dueDate) {
-      dueDatePicker.setValueInMsSinceEpoch(new Date(newTaskDraft.dueDate + 'T00:00:00').getTime());
-    }
-    addSection.addWidget(dueDatePicker);
+  // Shared date picker — the due date itself in "specific" mode, or the
+  // "from" date to add days to in "days from" mode. Left blank by default
+  // (matching the old "specific date" picker) so a task can still be
+  // created with no due date at all; "days from" falls back to today at
+  // submit time (see onCreateTask) if left untouched.
+  var dueDatePicker = CardService.newDatePicker()
+    .setFieldName('newTaskDue')
+    .setTitle('Due date / from date');
+  if (newTaskDraft.dueDate) {
+    dueDatePicker.setValueInMsSinceEpoch(new Date(newTaskDraft.dueDate + 'T00:00:00').getTime());
   }
+  addSection.addWidget(dueDatePicker);
+
+  addSection.addWidget(CardService.newTextInput()
+    .setFieldName('newTaskDaysFromDays')
+    .setTitle('Days (only used for "Days from a date")')
+    .setValue(newTaskDraft.days != null ? String(newTaskDraft.days) : '7'));
+
+  var dfType = newTaskDraft.dayType || 'calendar';
+  addSection.addWidget(CardService.newSelectionInput()
+    .setType(CardService.SelectionInputType.DROPDOWN)
+    .setFieldName('newTaskDaysFromType')
+    .setTitle('Type')
+    .addItem('Calendar days', 'calendar', dfType === 'calendar')
+    .addItem('Business days', 'business', dfType === 'business'));
+
+  var dfStateSelect = CardService.newSelectionInput()
+    .setType(CardService.SelectionInputType.DROPDOWN)
+    .setFieldName('newTaskDaysFromState')
+    .setTitle('State (used for business days public holidays)');
+  for (var dsi = 0; dsi < AU_STATES.length; dsi++) {
+    dfStateSelect.addItem(AU_STATES[dsi], AU_STATES[dsi], (newTaskDraft.state || 'NSW') === AU_STATES[dsi]);
+  }
+  addSection.addWidget(dfStateSelect);
 
   var dueTimePicker = CardService.newTimePicker()
     .setFieldName('newTaskTime')
@@ -1506,42 +1496,6 @@ function buildTaskCardById(projectId, projectName, labelCode, companyId, token, 
           .setParameters({})))));
   Logger.log('[buildTaskCardById] card.build() complete, returning');
   return card.build();
-}
-
-// Fired when the "Add task" form's due-date-type dropdown (or the
-// calendar/business type dropdown within it) changes — rebuilds the task
-// card in place, preserving whatever the user has entered so far.
-function onChangeNewTaskDueMode(e) {
-  var token = e.parameters.accessToken || getToken();
-  var fi = e.formInputs || {};
-
-  var dueTimeRaw = e.formInput ? e.formInput['newTaskTime'] : (e.formInputs ? e.formInputs['newTaskTime'] : null);
-  var dueTime = '';
-  if (dueTimeRaw) {
-    var th = null, tm = null;
-    try { th = parseInt(dueTimeRaw.hours); tm = parseInt(dueTimeRaw.minutes || 0); } catch (_e) {}
-    if (th !== null && !isNaN(th)) dueTime = String(th).padStart(2, '0') + ':' + String(tm || 0).padStart(2, '0');
-  }
-
-  var draft = {
-    name: (fi.newTaskName || [''])[0] || '',
-    dueMode: (fi.newTaskDueMode || ['specific'])[0] || 'specific',
-    dueDate: parseDatePickerValue(e, 'newTaskDue'),
-    dueTime: dueTime,
-    daysFromDate: parseDatePickerValue(e, 'newTaskDaysFromDate'),
-    days: parseInt((fi.newTaskDaysFromDays || ['7'])[0]) || 7,
-    dayType: (fi.newTaskDaysFromType || ['calendar'])[0] || 'calendar',
-    state: (fi.newTaskDaysFromState || ['NSW'])[0] || 'NSW',
-    linkEmail: (fi.newTaskLinkEmail || []).indexOf('true') !== -1,
-  };
-
-  var card = buildTaskCardById(
-    e.parameters.projectId, e.parameters.projectName, e.parameters.labelCode,
-    e.parameters.companyId, token, e.parameters.messageId || null, draft
-  );
-  return CardService.newActionResponseBuilder()
-    .setNavigation(CardService.newNavigation().updateCard(card))
-    .build();
 }
 
 function onApplyTemplate(e) {
@@ -1995,62 +1949,49 @@ function buildEditTaskCard(params, statuses, profiles, teams) {
           .setParameters(params))));
   }
 
-  // Due date — "Specific date" or "Days from" a date (calendar/business, AU state-aware)
+  // Due date — "Specific date" or "Days from" a date (calendar/business, AU state-aware).
+  // All fields are always shown and editable — the dropdown only decides which
+  // ones get used at submit time — so nothing here ever needs a refresh.
   var editDueMode = params.taskDueMode || 'specific';
   section.addWidget(CardService.newSelectionInput()
     .setType(CardService.SelectionInputType.DROPDOWN)
     .setFieldName('editTaskDueMode')
     .setTitle('Due date type')
     .addItem('Specific date', 'specific', editDueMode === 'specific')
-    .addItem('Days from a date', 'days_from', editDueMode === 'days_from')
-    .setOnChangeAction(CardService.newAction()
-      .setFunctionName('onChangeEditTaskDueMode')
-      .setParameters(params)));
+    .addItem('Days from a date', 'days_from', editDueMode === 'days_from'));
 
-  if (editDueMode === 'days_from') {
-    var editDfDatePicker = CardService.newDatePicker()
-      .setFieldName('editTaskDaysFromDate')
-      .setTitle('From date');
-    var editDfDateMs = params.taskDaysFromDate ? new Date(params.taskDaysFromDate + 'T00:00:00').getTime() : dateStrToUtcMidnight(todayDateStr()).getTime();
-    editDfDatePicker.setValueInMsSinceEpoch(editDfDateMs);
-    section.addWidget(editDfDatePicker);
+  // Shared date picker — the due date itself in "specific" mode, or the
+  // "from" date to add days to in "days from" mode. Pre-filled with the
+  // task's current due date either way.
+  var datePicker = CardService.newDatePicker()
+    .setFieldName('editTaskDue')
+    .setTitle('Due date / from date');
+  var editDueDateStr = params.taskDue || params.taskDaysFromDate;
+  var editDueDateMs = editDueDateStr ? new Date(editDueDateStr + 'T00:00:00').getTime() : dateStrToUtcMidnight(todayDateStr()).getTime();
+  datePicker.setValueInMsSinceEpoch(editDueDateMs);
+  section.addWidget(datePicker);
 
-    section.addWidget(CardService.newTextInput()
-      .setFieldName('editTaskDaysFromDays')
-      .setTitle('Days')
-      .setValue(params.taskDaysFromDays || '7'));
+  section.addWidget(CardService.newTextInput()
+    .setFieldName('editTaskDaysFromDays')
+    .setTitle('Days (only used for "Days from a date")')
+    .setValue(params.taskDaysFromDays || '7'));
 
-    var editDfType = params.taskDayType || 'calendar';
-    section.addWidget(CardService.newSelectionInput()
-      .setType(CardService.SelectionInputType.DROPDOWN)
-      .setFieldName('editTaskDaysFromType')
-      .setTitle('Type')
-      .addItem('Calendar days', 'calendar', editDfType === 'calendar')
-      .addItem('Business days', 'business', editDfType === 'business')
-      .setOnChangeAction(CardService.newAction()
-        .setFunctionName('onChangeEditTaskDueMode')
-        .setParameters(params)));
+  var editDfType = params.taskDayType || 'calendar';
+  section.addWidget(CardService.newSelectionInput()
+    .setType(CardService.SelectionInputType.DROPDOWN)
+    .setFieldName('editTaskDaysFromType')
+    .setTitle('Type')
+    .addItem('Calendar days', 'calendar', editDfType === 'calendar')
+    .addItem('Business days', 'business', editDfType === 'business'));
 
-    if (editDfType === 'business') {
-      var editDfStateSelect = CardService.newSelectionInput()
-        .setType(CardService.SelectionInputType.DROPDOWN)
-        .setFieldName('editTaskDaysFromState')
-        .setTitle('State (public holidays)');
-      for (var edsi = 0; edsi < AU_STATES.length; edsi++) {
-        editDfStateSelect.addItem(AU_STATES[edsi], AU_STATES[edsi], (params.taskDaysFromState || 'NSW') === AU_STATES[edsi]);
-      }
-      section.addWidget(editDfStateSelect);
-    }
-  } else {
-    var datePicker = CardService.newDatePicker()
-      .setFieldName('editTaskDue')
-      .setTitle('Due date');
-    if (params.taskDue) {
-      var dp = new Date(params.taskDue + 'T00:00:00');
-      if (!isNaN(dp.getTime())) datePicker.setValueInMsSinceEpoch(dp.getTime());
-    }
-    section.addWidget(datePicker);
+  var editDfStateSelect = CardService.newSelectionInput()
+    .setType(CardService.SelectionInputType.DROPDOWN)
+    .setFieldName('editTaskDaysFromState')
+    .setTitle('State (used for business days public holidays)');
+  for (var edsi = 0; edsi < AU_STATES.length; edsi++) {
+    editDfStateSelect.addItem(AU_STATES[edsi], AU_STATES[edsi], (params.taskDaysFromState || 'NSW') === AU_STATES[edsi]);
   }
+  section.addWidget(editDfStateSelect);
 
   // Due time picker
   var timePicker = CardService.newTimePicker()
@@ -2252,49 +2193,6 @@ function buildTaskHistoryCard(params, token) {
   return card.build();
 }
 
-// Fired when the edit-task form's due-date-type dropdown (or the calendar/
-// business type dropdown within it) changes — rebuilds the card in place,
-// preserving whatever the user has entered so far.
-function onChangeEditTaskDueMode(e) {
-  var fi = e.formInputs || {};
-
-  var dueTimeRaw = e.formInput ? e.formInput['editTaskTime'] : (e.formInputs ? e.formInputs['editTaskTime'] : null);
-  var dueTime = '';
-  if (dueTimeRaw) {
-    var th = null, tm = null;
-    try { th = parseInt(dueTimeRaw.hours); tm = parseInt(dueTimeRaw.minutes || 0); } catch (_e) {}
-    if (th !== null && !isNaN(th)) dueTime = String(th).padStart(2, '0') + ':' + String(tm || 0).padStart(2, '0');
-  }
-
-  var params = Object.assign({}, e.parameters, {
-    taskName: (fi.editTaskName || [e.parameters.taskName || ''])[0] || '',
-    taskDueMode: (fi.editTaskDueMode || ['specific'])[0] || 'specific',
-    taskDue: parseDatePickerValue(e, 'editTaskDue') || '',
-    taskTime: dueTime,
-    taskDaysFromDate: parseDatePickerValue(e, 'editTaskDaysFromDate') || '',
-    taskDaysFromDays: (fi.editTaskDaysFromDays || ['7'])[0] || '7',
-    taskDayType: (fi.editTaskDaysFromType || ['calendar'])[0] || 'calendar',
-    taskDaysFromState: (fi.editTaskDaysFromState || ['NSW'])[0] || 'NSW',
-    taskStatus: (fi.editTaskStatus || [e.parameters.taskStatus || ''])[0] || '',
-    taskAssignee: (fi.editTaskAssignee || [e.parameters.taskAssignee || ''])[0] || '',
-    taskWatcherIds: (fi.editTaskWatchers || (e.parameters.taskWatcherIds ? e.parameters.taskWatcherIds.split(',') : [])).join(','),
-    taskTeam: (fi.editTaskTeam || [e.parameters.taskTeam || ''])[0] || '',
-    taskMonetary: (fi.editTaskMonetary || []).indexOf('true') !== -1 ? 'true' : 'false',
-    taskCost: (fi.editTaskCost || [e.parameters.taskCost || ''])[0] || '',
-    taskNotes: (fi.editTaskNotes || [e.parameters.taskNotes || ''])[0] || '',
-    taskSyncToCompanyCalendar: (fi.editTaskSyncToCompanyCalendar || (e.parameters.taskSyncToCompanyCalendar === 'true' ? ['true'] : [])).indexOf('true') !== -1 ? 'true' : 'false',
-  });
-
-  var ctxRes = apiGet('/task-context?companyId=' + params.companyId, params.accessToken || getToken());
-  var statuses = ctxRes.ok ? (ctxRes.data.statuses || []) : [];
-  var profiles = ctxRes.ok ? (ctxRes.data.profiles || []) : [];
-  var teams = ctxRes.ok ? (ctxRes.data.teams || []) : [];
-
-  return CardService.newActionResponseBuilder()
-    .setNavigation(CardService.newNavigation().updateCard(buildEditTaskCard(params, statuses, profiles, teams)))
-    .build();
-}
-
 function onUpdateTask(e) {
   var token = e.parameters.accessToken || getToken();
   var name = ((e.formInputs.editTaskName || [''])[0] || '').trim();
@@ -2310,18 +2208,23 @@ function onUpdateTask(e) {
 
   if (!name) return errorNotification('Task name is required');
 
-  // Due date — either a specific date picker, or "days from" a date (calendar/business)
+  // Due date — either the shared date picker used directly, or as the "from"
+  // date for a calendar/business day offset. The picker is always shown
+  // pre-filled with the task's current due date, so a null parse here always
+  // means we failed to read it out of the event payload, never that the user
+  // cleared it — bail rather than silently wiping the existing due date.
   var editDueMode = ((e.formInputs.editTaskDueMode || ['specific'])[0] || 'specific');
+  var editParsedDate = parseDatePickerValue(e, 'editTaskDue');
+  if (!editParsedDate) return errorNotification('Could not read due date — try again');
   var dueDate = null;
   if (editDueMode === 'days_from') {
-    var edfDate = parseDatePickerValue(e, 'editTaskDaysFromDate') || todayDateStr();
     var edfDays = parseInt((e.formInputs.editTaskDaysFromDays || ['0'])[0]) || 0;
     var edfType = (e.formInputs.editTaskDaysFromType || ['calendar'])[0] || 'calendar';
     var edfState = (e.formInputs.editTaskDaysFromState || ['NSW'])[0] || 'NSW';
-    dueDate = calculateDueDate(edfDate, edfDays, edfType, edfState);
+    dueDate = calculateDueDate(editParsedDate, edfDays, edfType, edfState);
     if (!dueDate) return errorNotification('Could not calculate due date — try again');
   } else {
-    dueDate = parseDatePickerValue(e, 'editTaskDue');
+    dueDate = editParsedDate;
   }
   Logger.log('[onUpdateTask] parsed dueDate=' + dueDate);
 
@@ -2390,11 +2293,13 @@ function onCreateTask(e) {
   var token = e.parameters.accessToken || getToken();
   var name = ((e.formInputs.newTaskName || [''])[0] || '').trim();
 
-  // Due date — either a specific date picker, or "days from" a date (calendar/business)
+  // Due date — either the shared date picker used directly, or as the "from"
+  // date for a calendar/business day offset. All fields are always shown;
+  // this dropdown just decides which combination applies.
   var dueMode = ((e.formInputs.newTaskDueMode || ['specific'])[0] || 'specific');
   var dueDate = null;
   if (dueMode === 'days_from') {
-    var dfDate = parseDatePickerValue(e, 'newTaskDaysFromDate') || todayDateStr();
+    var dfDate = parseDatePickerValue(e, 'newTaskDue') || todayDateStr();
     var dfDays = parseInt((e.formInputs.newTaskDaysFromDays || ['0'])[0]) || 0;
     var dfType = (e.formInputs.newTaskDaysFromType || ['calendar'])[0] || 'calendar';
     var dfState = (e.formInputs.newTaskDaysFromState || ['NSW'])[0] || 'NSW';

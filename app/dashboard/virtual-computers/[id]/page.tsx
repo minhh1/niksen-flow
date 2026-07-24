@@ -101,6 +101,11 @@ export default function VirtualComputerSessionPage() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [loadingConnectionInfo, setLoadingConnectionInfo] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [changingPassword, setChangingPassword] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
+  const [savingPassword, setSavingPassword] = useState(false);
 
   const poll = useCallback(async () => {
     const res = await fetch(`/api/virtual-computers/${id}/status`);
@@ -200,6 +205,29 @@ export default function VirtualComputerSessionPage() {
     navigator.clipboard.writeText(value);
     setCopiedField(field);
     setTimeout(() => setCopiedField((cur) => (cur === field ? null : cur)), 1500);
+  };
+
+  const submitNewPassword = async () => {
+    setSavingPassword(true);
+    setPasswordError(null);
+    setPasswordMessage(null);
+    const res = await fetch(`/api/virtual-computers/${id}/reset-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: newPassword }),
+    });
+    const json = await res.json();
+    setSavingPassword(false);
+    if (!res.ok) {
+      setPasswordError(json.error || "Could not save this password");
+      return;
+    }
+    setPasswordMessage(json.message);
+    setNewPassword("");
+    setChangingPassword(false);
+    // The connection details panel (if already revealed) would otherwise
+    // keep showing the now-stale password until the next full page load.
+    setConnectionInfo(null);
   };
 
   return (
@@ -324,6 +352,60 @@ export default function VirtualComputerSessionPage() {
                 </div>
               )}
               {connectionError && <p className="text-[11px] text-red-500 mt-2">{connectionError}</p>}
+
+              <div className="pt-3 mt-3 border-t border-slate-100">
+                {status.provider === "digitalocean" && status.os === "windows" ? (
+                  <p className="text-[11px] text-slate-400">
+                    This computer&rsquo;s password can&rsquo;t be changed after Windows 11 finishes installing --
+                    ask an admin to reinstall Windows if you need it reset.
+                  </p>
+                ) : !changingPassword ? (
+                  <button
+                    onClick={() => {
+                      setChangingPassword(true);
+                      setPasswordMessage(null);
+                    }}
+                    className="text-[11px] font-bold text-slate-400 hover:text-indigo-600 transition-colors"
+                  >
+                    Change password
+                  </button>
+                ) : (
+                  <div className="space-y-2">
+                    <p className="text-[11px] text-slate-400">
+                      Takes effect the next time this computer sleeps and wakes back up -- not immediately, and not
+                      for your current session.
+                    </p>
+                    <input
+                      type="text"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      placeholder="New password"
+                      className="w-full px-3 py-2 border border-slate-200 rounded-full text-[12px] font-mono outline-none focus:border-indigo-400"
+                    />
+                    {passwordError && <p className="text-[11px] text-red-500">{passwordError}</p>}
+                    <div className="flex gap-2">
+                      <button
+                        onClick={submitNewPassword}
+                        disabled={savingPassword || !newPassword}
+                        className="flex-1 px-4 py-2 bg-indigo-600 text-white text-[12px] font-bold rounded-full hover:bg-indigo-700 disabled:opacity-40 transition-colors"
+                      >
+                        {savingPassword ? "Saving..." : "Save"}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setChangingPassword(false);
+                          setNewPassword("");
+                          setPasswordError(null);
+                        }}
+                        className="px-4 py-2 text-[12px] font-bold text-slate-400 hover:text-slate-700 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {passwordMessage && <p className="text-[11px] text-emerald-600 mt-2">{passwordMessage}</p>}
+              </div>
             </div>
           }
         />

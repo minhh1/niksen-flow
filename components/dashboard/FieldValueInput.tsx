@@ -20,12 +20,16 @@ interface Props {
   value: any;
   onCommit: (value: any) => void;
   disabled?: boolean;
+  // Pre-resolved label for a relation-type value (e.g. CustomTableRecord.
+  // displayValues) -- see RelationPicker's initialLabel for why this
+  // matters at any real scale of rows.
+  displayValue?: string;
 }
 
 // Renders the appropriate input widget for a custom-table field, bound to a
 // value, committing on blur/change. Reuses the field_type conventions shared
 // across the schema system (see components/schema/types.ts).
-export default function FieldValueInput({ field, value, onCommit, disabled }: Props) {
+export default function FieldValueInput({ field, value, onCommit, disabled, displayValue }: Props) {
   const type = field.field_type;
 
   // Computed fields are never hand-edited — see supabase/company_table_fields_formula.sql.
@@ -106,6 +110,7 @@ export default function FieldValueInput({ field, value, onCommit, disabled }: Pr
         onSelect={id => onCommit(id)}
         disabled={disabled}
         placeholder={field.label}
+        initialLabel={displayValue}
       />
     );
   }

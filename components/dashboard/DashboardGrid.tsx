@@ -238,6 +238,7 @@ export default function DashboardGrid({
                     value={valueFor(r, f)}
                     onCommit={v => handleCellCommit(r.id, f, v)}
                     disabled={readOnly}
+                    displayValue={r.displayValues[f.field_key]}
                   />
                 </td>
               ))}

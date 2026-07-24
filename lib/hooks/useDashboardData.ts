@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { useCustomTable } from "./useCustomTable";
 import { ensureDashboardWidgetsMigrated } from "@/lib/dashboardWidgets/ensureMigrated";
@@ -78,6 +78,30 @@ export function useDashboardData(dashboardSlug: string) {
   const setFilter = useCallback((fieldId: string, value: any) => {
     setFilters(prev => ({ ...prev, [fieldId]: value }));
   }, []);
+
+  // Any date-type field in the filter bar defaults to today the first time
+  // the dashboard's config + fields are both available -- e.g. a Time Entry
+  // dashboard should open already scoped to today's entries (grid, summary
+  // tiles) rather than showing everything, and since "today" is computed
+  // fresh on each load, it changes every day without any stored state.
+  // Seeded once (defaultsSeededRef), not on every fields/dashboard change,
+  // so it never overwrites a filter the user has since cleared or changed.
+  const defaultsSeededRef = useRef(false);
+  useEffect(() => {
+    if (defaultsSeededRef.current || !dashboard || fields.length === 0) return;
+    defaultsSeededRef.current = true;
+    const filterBarWidget = dashboard.widgets.find(w => w.type === 'filter_bar');
+    if (!filterBarWidget || filterBarWidget.type !== 'filter_bar') return;
+    const today = new Date().toISOString().slice(0, 10);
+    const dateFieldIds = filterBarWidget.config.fieldIds.filter(id => fields.find(f => f.id === id)?.field_type === 'date');
+    if (dateFieldIds.length) {
+      setFilters(prev => {
+        const next = { ...prev };
+        for (const id of dateFieldIds) if (next[id] === undefined) next[id] = today;
+        return next;
+      });
+    }
+  }, [dashboard, fields]);
 
   // Persists a single widget's config change (column reorder/resize from
   // DashboardGrid today) back into company_dashboards.widgets. Updates

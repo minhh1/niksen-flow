@@ -75,7 +75,14 @@ export async function GET(req: Request) {
       }
       // Only destroy the source instance once the snapshot is confirmed
       // durable -- destroying earlier risks losing data still being copied.
-      await adapter.destroyInstance(credentials, vm.provider_instance_id, vm.region);
+      // Skipped when the "snapshot" IS the source instance itself (AWS
+      // native EC2 hibernation -- see aws.ts's startSnapshot/
+      // getSnapshotStatus): there, the instance is already stopped, which
+      // is the whole point, and terminating it would destroy the exact
+      // suspended state hibernation exists to preserve.
+      if (result.snapshotId !== vm.provider_instance_id) {
+        await adapter.destroyInstance(credentials, vm.provider_instance_id, vm.region);
+      }
       await closeUsageEvent(admin, vm.id);
       // Only one snapshot is ever kept per VM -- delete the previous one
       // now that the new one is confirmed durable (safe: the fresh

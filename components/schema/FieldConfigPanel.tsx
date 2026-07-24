@@ -20,9 +20,17 @@ const SEARCH_COLUMNS: Record<string, string[]> = {
 };
 const FILTER_COLUMNS: Record<string, string[]> = {
   properties: ['is_sold'],
-  entities: ['entity_type'],
+  entities: ['entity_type', 'linked_profile_id'],
   projects: [],
 };
+// Sentinel linked_filter_value for linked_profile_id -- resolved to the
+// actual signed-in user's id at query time in RelationPicker (there's no
+// meaningful static value an admin could type in for "whoever is signed
+// in"). Also drives RelationPicker's auto-select: since this filter can
+// only ever match zero or one row (an entity's linked_profile_id is the
+// current user's own), it's picked automatically instead of making the
+// user search for themselves.
+const CURRENT_USER_SENTINEL = '$current_user';
 // Mirrors components/NewEntityModal.tsx's ENTITY_TYPES -- offered as a
 // convenience dropdown when filtering entities by entity_type (e.g. a
 // "Staff" field restricted to entity_type = 'Staff').
@@ -329,12 +337,16 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
                     </label>
                     <select
                       value={draft.linked_filter_column || ''}
-                      onChange={e => { update('linked_filter_column', e.target.value || null); update('linked_filter_value', null); }}
+                      onChange={e => {
+                        const col = e.target.value || null;
+                        update('linked_filter_column', col);
+                        update('linked_filter_value', col === 'linked_profile_id' ? CURRENT_USER_SENTINEL : null);
+                      }}
                       className="w-full bg-slate-50 border border-slate-200 rounded-full py-2.5 px-4 text-sm font-medium outline-none appearance-none"
                     >
                       <option value="">No restriction — show all</option>
                       {FILTER_COLUMNS[draft.linked_table].map(col => (
-                        <option key={col} value={col}>{prettifyColumn(col)}</option>
+                        <option key={col} value={col}>{col === 'linked_profile_id' ? 'Signed-in user only' : prettifyColumn(col)}</option>
                       ))}
                     </select>
                     {draft.linked_filter_column === 'entity_type' ? (
@@ -346,6 +358,10 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
                         <option value="">Select a value...</option>
                         {ENTITY_TYPE_VALUES.map(v => <option key={v} value={v}>{v}</option>)}
                       </select>
+                    ) : draft.linked_filter_column === 'linked_profile_id' ? (
+                      <p className="mt-2 bg-indigo-50 border border-indigo-100 rounded-2xl py-2 px-3 text-[11px] font-medium text-indigo-700">
+                        Only shows (and auto-fills) the entity linked to whoever is signed in — each person only sees their own, via the entity&rsquo;s &ldquo;Link to a team member&rdquo; on its detail page.
+                      </p>
                     ) : draft.linked_filter_column ? (
                       <input
                         value={draft.linked_filter_value || ''}
@@ -354,9 +370,11 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
                         className="w-full mt-2 bg-slate-50 border border-slate-200 rounded-full py-2.5 px-4 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-100"
                       />
                     ) : null}
-                    <p className="text-[10px] text-slate-400 mt-1.5 px-1">
-                      Only show records where {prettifyColumn(draft.linked_filter_column || '...')} matches this
-                    </p>
+                    {draft.linked_filter_column && draft.linked_filter_column !== 'linked_profile_id' && (
+                      <p className="text-[10px] text-slate-400 mt-1.5 px-1">
+                        Only show records where {prettifyColumn(draft.linked_filter_column)} matches this
+                      </p>
+                    )}
                   </div>
                 )}
               </>
@@ -398,8 +416,15 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
           </div>
         )}
 
-        {/* Number / currency min/max */}
-        {(['number', 'currency'] as FieldType[]).includes(draft.field_type) && (
+        {/* Number / currency min/max -- system-table fields only; these
+            columns don't exist on company_table_fields (see
+            supabase/company_table_fields_relation_config.sql and friends),
+            so setting them on a custom-table field silently did nothing --
+            confirmed in testing (a negative/huge/zero value saved with no
+            complaint). Hidden here rather than wired up, to keep this a
+            single targeted fix; a real min/max engine for custom tables is
+            a bigger feature. */}
+        {!draft.isCustomTable && (['number', 'currency'] as FieldType[]).includes(draft.field_type) && (
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
@@ -522,8 +547,9 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
           );
         })()}
 
-        {/* Text regex validation */}
-        {draft.field_type === 'text' && (
+        {/* Text regex validation -- system-table fields only, see the
+            min/max comment above; same non-functional-on-custom-tables issue. */}
+        {!draft.isCustomTable && draft.field_type === 'text' && (
           <div>
             <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
               Validation pattern (regex)
@@ -537,8 +563,9 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
           </div>
         )}
 
-        {/* Default value */}
-        {!(['auto_id', 'link', 'boolean', 'property', 'entity', 'table_relation'] as FieldType[]).includes(draft.field_type) && (
+        {/* Default value -- system-table fields only, see the min/max
+            comment above; same non-functional-on-custom-tables issue. */}
+        {!draft.isCustomTable && !(['auto_id', 'link', 'boolean', 'property', 'entity', 'table_relation'] as FieldType[]).includes(draft.field_type) && (
           <div>
             <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
               Default value
