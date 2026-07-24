@@ -75,7 +75,7 @@ async function validateFieldConstraints(
   excludeRecordId: string | null, touchedKeys: Set<string> | null
 ): Promise<string | null> {
   for (const field of fields) {
-    if (!field.is_required || field.auto_number_prefix || field.formula_type === 'sum_related') continue;
+    if (!field.is_required || field.auto_number_prefix != null || field.formula_type === 'sum_related') continue;
     if (touchedKeys && !touchedKeys.has(field.field_key)) continue;
     if (isEmptyValue(finalValues[field.field_key])) return `"${field.label}" is required.`;
   }
@@ -132,7 +132,8 @@ export async function createRecord(
   // supabase/company_table_field_sequences.sql.
   const withNumbers = { ...values };
   for (const field of fields) {
-    if (field.auto_number_prefix && !withNumbers[field.field_key]) {
+    // != null, not truthiness: '' is a valid prefix (bare numbers, e.g. lead numbers)
+    if (field.auto_number_prefix != null && !withNumbers[field.field_key]) {
       const { data: num } = await supabase.rpc('next_field_sequence', { p_field_id: field.id });
       if (num) withNumbers[field.field_key] = num;
     }
@@ -147,7 +148,32 @@ export async function createRecord(
   if (error || !record) { console.error('createRecord:', error); return null; }
 
   const toSave = fields.some(f => f.formula_type) ? computeFormulaFields(fields, withNumbers) : withNumbers;
-  await saveValues(record.id, tableId, companyId, toSave, fields);
+
+  // Authoritative uniqueness check: validateFieldConstraints's pre-check
+  // above is optimistic (read, then decide) and races under concurrent
+  // writers -- confirmed in testing, 8 parallel creates for the same
+  // is_unique value all passed it. claimAllUniqueValues is atomic at the
+  // DB level (see supabase/company_table_unique_locks.sql) and is the real
+  // guarantee; the pre-check just avoids paying for this insert+rollback in
+  // the common case where a value is obviously already taken.
+  const uniqueError = await claimAllUniqueValues(fields, record.id, toSave, null);
+  if (uniqueError) {
+    await supabase.from('company_table_records').delete().eq('id', record.id);
+    return { error: uniqueError };
+  }
+
+  const { error: valueError } = await saveValues(record.id, tableId, companyId, toSave, fields);
+  if (valueError) {
+    console.error('createRecord values:', valueError);
+    // The record row exists but its field values failed to save -- a
+    // caller (and the UI) treats a non-error return as "fully saved", so a
+    // silent partial write would be worse than rolling the whole thing
+    // back. Confirmed in testing: this was previously discarded entirely,
+    // producing a record with no data and no indication anything went wrong.
+    await supabase.from('company_table_records').delete().eq('id', record.id);
+    return { error: ledgerErrorMessage(valueError.message) || 'Could not save this entry — please try again.' };
+  }
+
   await recomputeRelatedRollups(companyId, fields, relationTouches(fields, toSave));
   return record;
 }
@@ -191,14 +217,21 @@ export async function updateRecord(
     }
   }
 
+  let finalValues: Record<string, any> = {};
   if (hasConstraints) {
     // Validate before touching the record row at all -- only re-checks
     // fields this edit actually changes (see validateFieldConstraints),
     // so resaving a record that already has unrelated legacy-incomplete
     // data doesn't retroactively get blocked.
-    const finalValues = { ...current, ...toSave };
+    finalValues = { ...current, ...toSave };
     const validationError = await validateFieldConstraints(fields, finalValues, recordId, touchedKeys);
     if (validationError) return { error: validationError };
+
+    // Authoritative uniqueness check -- see createRecord's identical
+    // comment; validateFieldConstraints's check above is optimistic and
+    // races under concurrent writers, this is the real guarantee.
+    const uniqueError = await claimAllUniqueValues(fields, recordId, finalValues, touchedKeys);
+    if (uniqueError) return { error: uniqueError };
   }
 
   const { error } = await supabase
@@ -218,6 +251,19 @@ export async function updateRecord(
     console.error('updateRecord values:', valueError);
   }
 
+  // A unique field whose value actually changed leaves its OLD value's lock
+  // row still pointing at this record -- release it so that old value can
+  // be claimed by someone else. Best-effort: a failure here doesn't fail
+  // the edit, it just means the old value stays squatted (harmless, if rare).
+  for (const field of fields) {
+    if (!field.is_unique || !touchedKeys.has(field.field_key)) continue;
+    const oldValue = current[field.field_key];
+    const newValue = finalValues[field.field_key];
+    if (!isEmptyValue(oldValue) && String(oldValue) !== String(newValue)) {
+      await releaseUniqueValue(field.id, recordId, oldValue);
+    }
+  }
+
   await recomputeRelatedRollups(companyId, fields, [
     ...relationTouches(fields, current),
     ...relationTouches(fields, { ...current, ...toSave }),
@@ -226,16 +272,23 @@ export async function updateRecord(
 
 // Evaluates every formula-marked field in `fields` against `values` (a
 // field_key -> value map), returning values with computed fields added/
-// overwritten. Fields whose dependencies aren't present or aren't valid
-// numbers are left untouched -- see the supported formula_types in
+// overwritten. sum_related is skipped here: it aggregates OTHER rows, so
+// it's recomputed by recomputeRelatedRollups() whenever a related row
+// changes -- see the supported formula_types in
 // supabase/company_table_fields_formula.sql and _formula_extend.sql.
-// sum_related is skipped here: it aggregates OTHER rows, so it's recomputed
-// by recomputeRelatedRollups() whenever a related row changes.
 function computeFormulaFields(fields: CustomTableField[], values: Record<string, any>): Record<string, any> {
   const byId = new Map(fields.map(f => [f.id, f]));
   const result = { ...values };
   for (const field of fields) {
     if (!field.formula_type || field.formula_type === 'sum_related') continue;
+    // Formula fields are always derived, never hand-entered (the UI renders
+    // them read-only) -- clear whatever was passed in `values` up front so
+    // an incomplete/invalid dependency resolves to null. Previously this
+    // `continue`'d straight past a field with a missing dependency, leaving
+    // it holding its raw input value untouched -- confirmed exploitable in
+    // testing: a caller could set an arbitrary Amount when Duration was
+    // blank, and it would save as-is instead of being blanked or rejected.
+    result[field.field_key] = null;
     const fieldA = field.formula_field_a_id ? byId.get(field.formula_field_a_id) : null;
     const a = fieldA ? Number(result[fieldA.field_key]) : NaN;
     if (Number.isNaN(a)) continue;
@@ -249,6 +302,44 @@ function computeFormulaFields(fields: CustomTableField[], values: Record<string,
     }
   }
   return result;
+}
+
+// Atomically claims `value` for `field` on `record` -- see
+// supabase/company_table_unique_locks.sql. Returns true if claimed (either
+// freshly, or it already belonged to this record), false if a different,
+// still-live record holds it.
+async function claimUniqueValue(fieldId: string, recordId: string, value: any): Promise<boolean> {
+  const { data, error } = await supabase.rpc('claim_unique_value', { p_field_id: fieldId, p_record_id: recordId, p_value: String(value) });
+  if (error) { console.error('claimUniqueValue:', error); return false; }
+  return !!data;
+}
+
+async function releaseUniqueValue(fieldId: string, recordId: string, value: any): Promise<void> {
+  const { error } = await supabase.rpc('release_unique_value', { p_field_id: fieldId, p_record_id: recordId, p_value: String(value) });
+  if (error) console.error('releaseUniqueValue:', error);
+}
+
+// Atomically claims every is_unique field's value in `finalValues` for
+// `recordId`. On the first failure, releases every lock already claimed by
+// this same call (so a record that fails on its 2nd unique field doesn't
+// end up squatting on its 1st) and returns the offending field's label.
+async function claimAllUniqueValues(
+  fields: CustomTableField[], recordId: string, finalValues: Record<string, any>, touchedKeys: Set<string> | null
+): Promise<string | null> {
+  const claimed: { fieldId: string; value: any }[] = [];
+  for (const field of fields) {
+    if (!field.is_unique) continue;
+    if (touchedKeys && !touchedKeys.has(field.field_key)) continue;
+    const value = finalValues[field.field_key];
+    if (isEmptyValue(value)) continue;
+    const ok = await claimUniqueValue(field.id, recordId, value);
+    if (!ok) {
+      await Promise.all(claimed.map(c => releaseUniqueValue(c.fieldId, recordId, c.value)));
+      return `"${field.label}" must be unique — this value is already used on another record.`;
+    }
+    claimed.push({ fieldId: field.id, value });
+  }
+  return null;
 }
 
 // (relationFieldId, parentRecordId) pairs present in a value map -- the

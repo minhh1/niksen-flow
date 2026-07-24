@@ -190,19 +190,32 @@ export default function WidgetConfigPanel({ widget, fields, onSave, onClose }: P
     setDraft(prev => ({ ...prev, config: { ...prev.config, ...patch } } as DashboardWidget));
   };
 
+  // Shared by summary_tile's "only count/sum when..." and grid's "only show
+  // rows when..." -- same TileCondition[] shape, same semantics (every
+  // condition ANDed), just filtering summed rows vs. displayed rows.
   const addCondition = () => {
-    if (draft.type !== 'summary_tile') return;
+    if (draft.type !== 'summary_tile' && draft.type !== 'grid') return;
     const conditions = [...(draft.config.conditions || []), { fieldId: '', operator: 'eq' as const, value: undefined }];
     updateConfig({ conditions });
   };
   const updateCondition = (index: number, patch: Partial<TileCondition>) => {
-    if (draft.type !== 'summary_tile') return;
+    if (draft.type !== 'summary_tile' && draft.type !== 'grid') return;
     const conditions = (draft.config.conditions || []).map((c, i) => i === index ? { ...c, ...patch } : c);
     updateConfig({ conditions });
   };
   const removeCondition = (index: number) => {
-    if (draft.type !== 'summary_tile') return;
+    if (draft.type !== 'summary_tile' && draft.type !== 'grid') return;
     updateConfig({ conditions: (draft.config.conditions || []).filter((_, i) => i !== index) });
+  };
+
+  // Per-column highlight (grid only) -- one optional condition+color per
+  // field id. Toggling "off" clears the entry entirely rather than leaving
+  // a disabled rule around.
+  const setColumnHighlight = (fieldId: string, rule: { condition: TileCondition; color: 'red' | 'amber' | 'emerald' } | null) => {
+    if (draft.type !== 'grid') return;
+    const next = { ...(draft.config.columnHighlights || {}) };
+    if (rule) next[fieldId] = rule; else delete next[fieldId];
+    updateConfig({ columnHighlights: next });
   };
 
   // Chart's series live one level deeper than a tile's conditions
@@ -309,6 +322,90 @@ export default function WidgetConfigPanel({ widget, fields, onSave, onClose }: P
                 Blank rows kept at the bottom for fast entry -- typing into one creates a new record
               </p>
             </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                  Only show rows when... (all must match)
+                </label>
+                <button
+                  onClick={addCondition}
+                  className="flex items-center gap-1 text-[10px] font-bold text-indigo-600 hover:text-indigo-700"
+                >
+                  <Plus size={11} /> Add condition
+                </button>
+              </div>
+              {(draft.config.conditions || []).map((cond, i) => (
+                <ConditionRow
+                  key={i}
+                  condition={cond}
+                  fields={fields}
+                  onChange={patch => updateCondition(i, patch)}
+                  onRemove={() => removeCondition(i)}
+                />
+              ))}
+              {(!draft.config.conditions || draft.config.conditions.length === 0) && (
+                <p className="text-[11px] text-slate-300 italic py-1">No conditions — shows every record (still narrowed by the filter bar, if any)</p>
+              )}
+            </div>
+
+            {draft.config.fieldIds.length > 0 && (
+              <div className="space-y-2">
+                <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block">
+                  Column highlights
+                </label>
+                <div className="space-y-2">
+                  {draft.config.fieldIds.map(fieldId => {
+                    const field = fields.find(f => f.id === fieldId);
+                    if (!field) return null;
+                    const rule = draft.config.columnHighlights?.[fieldId];
+                    return (
+                      <div key={fieldId} className="bg-slate-50 border border-slate-200 rounded-2xl p-2.5 space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-bold text-slate-600 px-1">{field.label}</span>
+                          {!rule ? (
+                            <button
+                              onClick={() => setColumnHighlight(fieldId, { condition: { fieldId: '', operator: 'eq', value: undefined }, color: 'red' })}
+                              className="flex items-center gap-1 text-[10px] font-bold text-indigo-600 hover:text-indigo-700 shrink-0"
+                            >
+                              <Plus size={11} /> Add highlight
+                            </button>
+                          ) : (
+                            <button onClick={() => setColumnHighlight(fieldId, null)} className="p-1 text-slate-300 hover:text-red-500 shrink-0">
+                              <X size={13} />
+                            </button>
+                          )}
+                        </div>
+                        {rule && (
+                          <div className="flex items-center gap-1.5">
+                            <div className="flex-1 min-w-0">
+                              <ConditionRow
+                                condition={rule.condition}
+                                fields={fields}
+                                onChange={patch => setColumnHighlight(fieldId, { ...rule, condition: { ...rule.condition, ...patch } })}
+                                onRemove={() => setColumnHighlight(fieldId, null)}
+                              />
+                            </div>
+                            <select
+                              value={rule.color}
+                              onChange={e => setColumnHighlight(fieldId, { ...rule, color: e.target.value as 'red' | 'amber' | 'emerald' })}
+                              className="shrink-0 bg-white border border-slate-200 rounded-full py-2 px-2.5 text-[12px] font-medium outline-none appearance-none"
+                            >
+                              <option value="red">Red</option>
+                              <option value="amber">Amber</option>
+                              <option value="emerald">Green</option>
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-slate-400 px-1">
+                  Highlights a cell's background when its row matches the condition -- the condition can reference any field, not just this column (e.g. highlight Amount when Status is Overdue)
+                </p>
+              </div>
+            )}
           </div>
         )}
 

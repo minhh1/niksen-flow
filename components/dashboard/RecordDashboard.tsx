@@ -18,6 +18,7 @@ import CalendarTab from "./tabs/CalendarTab";
 import EmailsTab from "./tabs/EmailsTab";
 import DocumentTemplatesTab from "./tabs/DocumentTemplatesTab";
 import GridTabEditor from "./GridTabEditor";
+import TeamMemberLinkCard from "./TeamMemberLinkCard";
 import { useCustomTables } from "@/lib/hooks/useCustomTables";
 import { getCompanyId } from "@/lib/services/schemaService";
 import { createArchiveRequest, type ArchiveEntityTable } from "@/lib/archiveRequests";
@@ -1030,6 +1031,17 @@ export default function RecordDashboard({
             </span>
           )}
         </p>
+
+        {/* Team member link — entities only */}
+        {systemTable === 'entities' && companyId && (
+          <TeamMemberLinkCard
+            companyId={companyId}
+            entityId={recordId}
+            entityName={record.name || ''}
+            linkedProfileId={record.linked_profile_id || null}
+            onLinked={profileId => setRecord(prev => prev ? { ...prev, linked_profile_id: profileId } : prev)}
+          />
+        )}
 
         {/* Sub-projects row — projects only */}
         {systemTable === 'projects' && (

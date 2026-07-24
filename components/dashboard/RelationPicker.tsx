@@ -6,6 +6,63 @@ import { supabase } from "@/lib/supabase";
 
 interface RelationOption { id: string; label: string }
 
+// Sentinel filterValue set by FieldConfigPanel when an admin restricts a
+// relation to "Signed-in user only" -- there's no static value to type in
+// for "whoever is signed in", so it's resolved to the real auth uid here at
+// query time instead.
+const CURRENT_USER_SENTINEL = '$current_user';
+
+// Module-level (not per-component) dedup + short-lived cache for the two
+// mount-time fetches below (label resolution, "signed-in user" auto-select).
+// A dashboard commonly renders the SAME field (e.g. Staff) in more than one
+// widget at once -- the filter bar and the quick-add form both mount their
+// own RelationPicker for it -- and with no sharing between instances, each
+// independently fires the identical request the moment it mounts (confirmed
+// live: two concurrent, byte-for-byte identical queries for one page load).
+// `inFlight` collapses concurrent callers onto one real request; `cache`
+// then serves the same key again for a short window after -- e.g.
+// navigating back to a dashboard right after leaving it, or two widgets
+// that don't happen to mount in the exact same tick. 30s: long enough to
+// cover realistic mount timing and quick re-navigation, short enough that
+// something like a newly-linked team member doesn't stay stale for long.
+// Deliberately NOT used for the search-on-open query below -- that's a
+// direct user action that should always hit fresh data, not a mount-time
+// stampede.
+const CACHE_TTL_MS = 30_000;
+const cache = new Map<string, { value: unknown; expiresAt: number }>();
+const inFlight = new Map<string, Promise<unknown>>();
+
+function dedupedFetch<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
+  const cached = cache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.value as T);
+  const existing = inFlight.get(key);
+  if (existing) return existing as Promise<T>;
+  const promise = fetcher()
+    .then(value => {
+      inFlight.delete(key);
+      // Prune expired entries here rather than on a timer -- cache stays
+      // small in practice (a handful of relation fields per dashboard) so
+      // this is cheap, and it means no cleanup interval to leak/forget.
+      const now = Date.now();
+      for (const [k, v] of cache) if (v.expiresAt <= now) cache.delete(k);
+      cache.set(key, { value, expiresAt: now + CACHE_TTL_MS });
+      return value;
+    })
+    .catch(err => { inFlight.delete(key); throw err; });
+  inFlight.set(key, promise);
+  return promise;
+}
+
+async function resolveFilterValue(filterValue: string | null | undefined): Promise<string | null> {
+  if (filterValue !== CURRENT_USER_SENTINEL) return filterValue ?? null;
+  // Keyed on nothing but "current user" -- every field needing this shares
+  // one cached/in-flight lookup regardless of which table/filter it's for.
+  return dedupedFetch('current-user-id', async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    return user?.id ?? null;
+  });
+}
+
 interface Props {
   // Exactly one of these identifies the target — a system table (entities/
   // projects/properties) or a sibling custom table.
@@ -27,6 +84,18 @@ interface Props {
   onSelect: (id: string | null, label: string | null) => void;
   disabled?: boolean;
   placeholder?: string;
+  // Already-resolved label for `value`, when the caller has one (e.g. a
+  // grid row's CustomTableRecord.displayValues, batched once per relation
+  // field for the whole record set -- see resolveRelationLabels in
+  // lib/hooks/useCustomTable.ts). When given, skips this component's own
+  // per-instance label fetch entirely -- without it, a grid of N rows each
+  // mounting their own RelationPicker independently re-fetches the same
+  // label N times over, which at real volume (hundreds/thousands of rows)
+  // floods the browser with concurrent requests until it starts failing
+  // with ERR_INSUFFICIENT_RESOURCES (confirmed on a 1000-row trust ledger
+  // grid). Only ever used to seed the initial label -- if `value` changes
+  // later without a matching prop update, the normal fetch path resolves it.
+  initialLabel?: string;
 }
 
 // Resolves the primary display field's value for one record of a custom
@@ -56,26 +125,34 @@ async function fetchCustomTableRecordLabels(tableId: string, recordIds?: string[
 
 export default function RelationPicker({
   linkedSystemTable, linkedTableId, displayField, searchFieldKeys, filterColumn, filterValue,
-  value, onSelect, disabled, placeholder,
+  value, onSelect, disabled, placeholder, initialLabel,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [options, setOptions] = useState<RelationOption[]>([]);
   const [loading, setLoading] = useState(false);
-  const [currentLabel, setCurrentLabel] = useState('');
+  const [currentLabel, setCurrentLabel] = useState(initialLabel ?? '');
   const containerRef = useRef<HTMLDivElement>(null);
   // Which value id `currentLabel` is already known-correct for -- set
   // synchronously by the picker's own click handler (it already knows the
   // label of whatever it just clicked) so the resolution effect below can
   // skip a redundant round-trip for a selection that was just made here.
-  const resolvedForRef = useRef<string | null>(null);
+  // Seeded from `initialLabel` too, for the same reason -- a caller-supplied
+  // label is just as "already known-correct" as a just-made selection.
+  const resolvedForRef = useRef<string | null>(initialLabel !== undefined && value ? value : null);
+  // Set only by the picker's own clear (X) button, never by the auto-select
+  // effect below -- lets a "Signed-in user only" field actually stay empty
+  // after a deliberate clear, instead of the effect immediately refilling
+  // it the moment `value` goes back to null.
+  const userClearedRef = useRef(false);
 
   // Resolve the current value's display label whenever it changes.
   useEffect(() => {
     if (!value) { setCurrentLabel(''); resolvedForRef.current = null; return; }
     if (resolvedForRef.current === value) return;
     let active = true;
-    (async () => {
+    const cacheKey = `label:${linkedSystemTable ?? ''}:${linkedTableId ?? ''}:${displayField ?? ''}:${value}`;
+    dedupedFetch(cacheKey, async () => {
       let label = '';
       if (linkedSystemTable) {
         const col = displayField || 'name';
@@ -85,15 +162,58 @@ export default function RelationPicker({
         // would keep showing its stale label forever, inconsistently with
         // how a deleted custom-table record's relation goes blank instead.
         const { data } = await supabase.from(linkedSystemTable).select(`id, ${col}`).eq('id', value).is('deleted_at', null).maybeSingle();
-        label = data ? String((data as any)[col] ?? '') : '';
+        return data ? String((data as any)[col] ?? '') : '';
       } else if (linkedTableId) {
         const [opt] = await fetchCustomTableRecordLabels(linkedTableId, [value]);
-        label = opt?.label || '';
+        return opt?.label || '';
       }
+      return label;
+    }).then(label => {
       if (active) { setCurrentLabel(label); resolvedForRef.current = value; }
-    })();
+    });
     return () => { active = false; };
   }, [value, linkedSystemTable, linkedTableId, displayField]);
+
+  // Auto-fills a "Signed-in user only" field the moment it mounts empty --
+  // that filter can only ever match zero or one row (the entity linked to
+  // the current auth user), so there's nothing to pick from a list; picking
+  // it automatically is the point ("map the time entry to the team member"
+  // without an extra click every time). No separate "only once" ref guard --
+  // the `if (value || ...) return` below already stops it from re-running
+  // once a value is set, and a plain boolean ref turned out to be actively
+  // harmful: React's dev-mode StrictMode double-invokes this effect
+  // (mount -> cleanup -> mount again) on the SAME ref instance, so a
+  // "have I already tried" flag set by the first (deliberately-cancelled)
+  // invocation was still `true` on the second, real one -- permanently
+  // skipping the fetch that would have actually landed. Confirmed live: the
+  // request always resolved with the right row, just always into an
+  // `active === false` closure.
+  useEffect(() => {
+    if (value || userClearedRef.current || !linkedSystemTable || filterColumn !== 'linked_profile_id' || filterValue !== CURRENT_USER_SENTINEL) return;
+    let active = true;
+    const col = displayField || 'name';
+    const cacheKey = `autoSelect:${linkedSystemTable}:${filterColumn}:${filterValue}:${col}`;
+    dedupedFetch(cacheKey, async () => {
+      const userId = await resolveFilterValue(filterValue);
+      if (!userId) return null;
+      const { data } = await supabase.from(linkedSystemTable).select(`id, ${col}`).eq('linked_profile_id', userId).is('deleted_at', null).maybeSingle();
+      return data as { id: string; [key: string]: unknown } | null;
+    }).then(row => {
+      if (active && row) {
+        const label = String(row[col] ?? '');
+        setCurrentLabel(label);
+        resolvedForRef.current = row.id;
+        onSelect(row.id, label);
+      }
+    });
+    return () => { active = false; };
+    // onSelect deliberately excluded -- callers pass a fresh inline function
+    // every render (e.g. FieldValueInput's `id => onCommit(id)`), so
+    // including it here re-ran this effect (and cancelled the in-flight
+    // fetch via the cleanup's `active = false`) on every unrelated parent
+    // re-render, before the request had a chance to resolve. Matches the
+    // same omission already made in the label-resolution effect above.
+  }, [value, linkedSystemTable, filterColumn, filterValue, displayField]);
 
   // Search as the dropdown is open / query changes.
   useEffect(() => {
@@ -119,7 +239,10 @@ export default function RelationPicker({
           // assumption RelationPicker already makes for custom tables.
           const nativeCols = Array.from(new Set([col, ...nativeExtra]));
           let rowsQuery = supabase.from(linkedSystemTable).select(`id, ${nativeCols.join(', ')}`).is('deleted_at', null).order(col).limit(200);
-          if (filterColumn && filterValue) rowsQuery = rowsQuery.eq(filterColumn, filterValue);
+          if (filterColumn) {
+            const resolvedValue = await resolveFilterValue(filterValue);
+            rowsQuery = resolvedValue ? rowsQuery.eq(filterColumn, resolvedValue) : rowsQuery.eq(filterColumn, '__none__');
+          }
           const { data: rows } = await rowsQuery;
 
           const cfTextByRecord = new Map<string, string[]>();
@@ -195,7 +318,7 @@ export default function RelationPicker({
         {currentLabel && !open && (
           <button
             type="button"
-            onClick={e => { e.stopPropagation(); setCurrentLabel(''); resolvedForRef.current = null; onSelect(null, null); }}
+            onClick={e => { e.stopPropagation(); setCurrentLabel(''); resolvedForRef.current = null; userClearedRef.current = true; onSelect(null, null); }}
             className="text-slate-300 hover:text-red-500 shrink-0"
           >
             <X size={12} />

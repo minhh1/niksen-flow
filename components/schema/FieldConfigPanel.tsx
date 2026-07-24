@@ -20,9 +20,17 @@ const SEARCH_COLUMNS: Record<string, string[]> = {
 };
 const FILTER_COLUMNS: Record<string, string[]> = {
   properties: ['is_sold'],
-  entities: ['entity_type'],
+  entities: ['entity_type', 'linked_profile_id'],
   projects: [],
 };
+// Sentinel linked_filter_value for linked_profile_id -- resolved to the
+// actual signed-in user's id at query time in RelationPicker (there's no
+// meaningful static value an admin could type in for "whoever is signed
+// in"). Also drives RelationPicker's auto-select: since this filter can
+// only ever match zero or one row (an entity's linked_profile_id is the
+// current user's own), it's picked automatically instead of making the
+// user search for themselves.
+const CURRENT_USER_SENTINEL = '$current_user';
 // Mirrors components/NewEntityModal.tsx's ENTITY_TYPES -- offered as a
 // convenience dropdown when filtering entities by entity_type (e.g. a
 // "Staff" field restricted to entity_type = 'Staff').
@@ -53,6 +61,36 @@ function dependsOnField(fromFieldId: string, targetFieldId: string, fields: Cust
   const deps = [field.formula_field_a_id, field.formula_field_b_id].filter((id): id is string => !!id);
   if (deps.includes(targetFieldId)) return true;
   return deps.some(depId => dependsOnField(depId, targetFieldId, fields, visited));
+}
+
+// ── Auto numbering (custom tables) ──────────────────────────────────
+// Server-side sequences on company_table_fields (see
+// supabase/company_table_field_sequences.sql) -- distinct from the
+// auto_generate/auto_id system used by the system tables above. A preset is
+// just a (prefix, pad) pair; the counter start is set separately.
+const AUTO_NUMBER_PRESETS = [
+  { v: 'plain',    label: 'Sequential — 1, 2, 3…',              prefix: '',        pad: 1 },
+  { v: 'padded',   label: 'Padded number — 000001',             prefix: '',        pad: 6 },
+  { v: 'year',     label: 'Year code — 260001 (yy + counter)',  prefix: '{YY}',    pad: 4 },
+  { v: 'fullyear', label: 'Full year — 2026-0001',              prefix: '{YYYY}-', pad: 4 },
+  { v: 'prefixed', label: 'Prefix — LD-0001',                   prefix: 'LD-',     pad: 4 },
+];
+
+function detectAutoNumberPreset(f: CustomField): string {
+  if (f.auto_number_prefix == null) return 'off';
+  const pad = f.auto_number_pad ?? 6;
+  const match = AUTO_NUMBER_PRESETS.find(p => p.prefix === f.auto_number_prefix && p.pad === pad);
+  return match ? match.v : 'custom';
+}
+
+function autoNumberExample(f: CustomField): string {
+  const now = new Date();
+  const prefix = (f.auto_number_prefix || '')
+    .replace('{YYYY}', String(now.getFullYear()))
+    .replace('{YY}', String(now.getFullYear()).slice(-2))
+    .replace('{MM}', String(now.getMonth() + 1).padStart(2, '0'));
+  const n = String(f.auto_number_start ?? 1);
+  return prefix + n.padStart(Math.max(f.auto_number_pad ?? 6, n.length), '0');
 }
 
 interface Props {
@@ -95,6 +133,17 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
   const toggleSearchField = (key: string) => {
     const current = draft.linked_search_field_keys || [];
     update('linked_search_field_keys', current.includes(key) ? current.filter(k => k !== key) : [...current, key]);
+  };
+
+  const applyAutoNumberPreset = (v: string) => {
+    if (v === 'off') { update('auto_number_prefix', null); return; }
+    const preset = AUTO_NUMBER_PRESETS.find(p => p.v === v);
+    if (!preset) {
+      // 'custom' -- keep whatever's there, just make sure numbering is on
+      if (draft.auto_number_prefix == null) update('auto_number_prefix', '');
+      return;
+    }
+    setDraft(prev => ({ ...prev, auto_number_prefix: preset.prefix, auto_number_pad: preset.pad }));
   };
 
   const handleSave = async () => {
@@ -329,12 +378,16 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
                     </label>
                     <select
                       value={draft.linked_filter_column || ''}
-                      onChange={e => { update('linked_filter_column', e.target.value || null); update('linked_filter_value', null); }}
+                      onChange={e => {
+                        const col = e.target.value || null;
+                        update('linked_filter_column', col);
+                        update('linked_filter_value', col === 'linked_profile_id' ? CURRENT_USER_SENTINEL : null);
+                      }}
                       className="w-full bg-slate-50 border border-slate-200 rounded-full py-2.5 px-4 text-sm font-medium outline-none appearance-none"
                     >
                       <option value="">No restriction — show all</option>
                       {FILTER_COLUMNS[draft.linked_table].map(col => (
-                        <option key={col} value={col}>{prettifyColumn(col)}</option>
+                        <option key={col} value={col}>{col === 'linked_profile_id' ? 'Signed-in user only' : prettifyColumn(col)}</option>
                       ))}
                     </select>
                     {draft.linked_filter_column === 'entity_type' ? (
@@ -346,6 +399,10 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
                         <option value="">Select a value...</option>
                         {ENTITY_TYPE_VALUES.map(v => <option key={v} value={v}>{v}</option>)}
                       </select>
+                    ) : draft.linked_filter_column === 'linked_profile_id' ? (
+                      <p className="mt-2 bg-indigo-50 border border-indigo-100 rounded-2xl py-2 px-3 text-[11px] font-medium text-indigo-700">
+                        Only shows (and auto-fills) the entity linked to whoever is signed in — each person only sees their own, via the entity&rsquo;s &ldquo;Link to a team member&rdquo; on its detail page.
+                      </p>
                     ) : draft.linked_filter_column ? (
                       <input
                         value={draft.linked_filter_value || ''}
@@ -354,9 +411,11 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
                         className="w-full mt-2 bg-slate-50 border border-slate-200 rounded-full py-2.5 px-4 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-100"
                       />
                     ) : null}
-                    <p className="text-[10px] text-slate-400 mt-1.5 px-1">
-                      Only show records where {prettifyColumn(draft.linked_filter_column || '...')} matches this
-                    </p>
+                    {draft.linked_filter_column && draft.linked_filter_column !== 'linked_profile_id' && (
+                      <p className="text-[10px] text-slate-400 mt-1.5 px-1">
+                        Only show records where {prettifyColumn(draft.linked_filter_column)} matches this
+                      </p>
+                    )}
                   </div>
                 )}
               </>
@@ -394,6 +453,82 @@ export default function FieldConfigPanel({ field, siblingFields = [], onSave, on
                   className="w-full bg-slate-50 border border-slate-200 rounded-full py-2.5 px-4 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-100"
                 />
               </div>
+            )}
+          </div>
+        )}
+
+        {/* Auto numbering — custom-table text fields (server-side sequence,
+            see supabase/company_table_field_sequences.sql) */}
+        {field.isCustomTable && draft.field_type === 'text' && !draft.formula_type && (
+          <div className="space-y-3">
+            <div>
+              <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
+                Auto numbering
+              </label>
+              <select
+                value={detectAutoNumberPreset(draft)}
+                onChange={e => applyAutoNumberPreset(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 rounded-full py-2.5 px-4 text-sm font-medium outline-none appearance-none"
+              >
+                <option value="off">Off — typed by hand</option>
+                {AUTO_NUMBER_PRESETS.map(p => (
+                  <option key={p.v} value={p.v}>{p.label}</option>
+                ))}
+                <option value="custom">Custom format</option>
+              </select>
+            </div>
+            {draft.auto_number_prefix != null && (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
+                      Prefix
+                    </label>
+                    <input
+                      value={draft.auto_number_prefix}
+                      onChange={e => update('auto_number_prefix', e.target.value)}
+                      placeholder={'e.g. LD- or {YY}'}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-full py-2.5 px-4 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-100"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
+                      Counter digits
+                    </label>
+                    <select
+                      value={draft.auto_number_pad ?? 6}
+                      onChange={e => update('auto_number_pad', Number(e.target.value))}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-full py-2.5 px-4 text-sm font-medium outline-none appearance-none"
+                    >
+                      {[1, 2, 3, 4, 5, 6, 7, 8].map(n => (
+                        <option key={n} value={n}>{n === 1 ? 'No padding' : `${n} digits`}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1.5">
+                    Starting number
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={draft.auto_number_start ?? ''}
+                    onChange={e => update('auto_number_start', e.target.value ? Number(e.target.value) : null)}
+                    placeholder="1"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-full py-2.5 px-4 text-sm font-medium outline-none focus:ring-2 focus:ring-indigo-100"
+                  />
+                </div>
+                <p className="text-[10px] text-slate-400 px-1">
+                  Next number will look like{' '}
+                  <span className="font-bold text-slate-600">{autoNumberExample(draft)}</span>.
+                  Assigned when a record is created with this field left blank — an
+                  assigned number can still be edited (tick Unique below to block
+                  duplicates). The prefix understands {'{YY}'}, {'{YYYY}'} and {'{MM}'}{' '}
+                  date tokens; raising the starting number jumps future numbers
+                  forward, never backward.
+                </p>
+              </>
             )}
           </div>
         )}
