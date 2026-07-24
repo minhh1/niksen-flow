@@ -61,9 +61,11 @@ const DEFAULT_HOSTED_MODEL_ID = HOSTED_MODELS[0].id;
 // in every tool-calling/extraction call so due_date can be given in natural
 // language, not just literal YYYY-MM-DD.
 function todayContextMessage() {
+  const today = new Date();
+  const weekday = today.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
   return {
     role: "system",
-    content: `Today's date is ${new Date().toISOString().slice(0, 10)} (YYYY-MM-DD). If the user gives a relative date (e.g. "today", "tomorrow", "next Wednesday", "in 3 days"), convert it to an absolute YYYY-MM-DD date yourself before returning it.`,
+    content: `Today is ${weekday}, ${today.toISOString().slice(0, 10)} (YYYY-MM-DD). If the user gives a relative date (e.g. "today", "tomorrow", "next Wednesday", "in 3 days"), convert it to an absolute YYYY-MM-DD date yourself before returning it. A bare weekday name with no qualifier (e.g. just "Monday", not "next Monday" or "this Monday") means the closest upcoming occurrence of that weekday -- today itself if today already is that weekday, otherwise the next one ahead, never one in the past.`,
   };
 }
 
@@ -122,22 +124,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ com
     return NextResponse.json({ error: `Unauthorized: ${verification.reason}` }, { status: 403 });
   }
 
-  // Only real user messages need a reply -- conversationUpdate (bot
-  // added/removed), typing indicators, reactions, etc. are just acked.
-  if (activity.type !== "message" || !activity.text) {
+  // A "like" reaction on any message counts as a lightweight "yes" -- lets
+  // someone confirm a pending create/update without typing a word. Doesn't
+  // check *which* message was reacted to (Bot Framework's reaction activity
+  // doesn't make that cheap to verify); if there's no active pending
+  // confirmation for that person, handleMessage just treats the synthetic
+  // "yes" as an ordinary one-word question, which is harmless.
+  const isLikeReaction = activity.type === "messageReaction" && (activity.reactionsAdded ?? []).some((r: { type?: string }) => r.type === "like" || r.type === "plusOne");
+
+  // Only real user messages (or a like-reaction confirm) need a reply --
+  // conversationUpdate (bot added/removed), typing indicators, other
+  // reaction types, etc. are just acked.
+  if (!isLikeReaction && (activity.type !== "message" || !activity.text)) {
     return NextResponse.json({ ok: true });
   }
 
   // In a group chat or channel, only respond when actually @mentioned --
   // replying to every unrelated message in a team channel would be noisy
   // and wrong. A 1:1 (personal) conversation has no one else to mention it
-  // for, so every message there gets a reply.
+  // for, so every message there gets a reply. Reactions skip this check --
+  // reacting to a specific message is inherently unambiguous about intent.
   const conversationType: string | undefined = activity.conversation?.conversationType;
-  if (conversationType !== "personal" && !wasBotMentioned(activity)) {
+  if (!isLikeReaction && activity.type === "message" && conversationType !== "personal" && !wasBotMentioned(activity)) {
     return NextResponse.json({ ok: true });
   }
 
-  const question = stripMentionMarkup(activity.text);
+  const question = isLikeReaction ? "yes" : stripMentionMarkup(activity.text);
   const aadObjectId: string | undefined = activity.from?.aadObjectId;
   const tenantId: string | undefined = activity.conversation?.tenantId ?? activity.channelData?.tenant?.id;
   const serviceUrl: string = activity.serviceUrl;

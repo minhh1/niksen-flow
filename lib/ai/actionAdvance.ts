@@ -242,7 +242,12 @@ export async function advanceAction(
     const value = collected[field.key];
     if (!value) continue;
     const tag = field.kind === "reference:entity" ? (entityMatches.get(field.key) ? " (existing entity)" : " (new entity)") : wasDefaulted.has(field.key) ? " (default)" : "";
-    summaryParts.push(`${cleanLabel(field.label).toLowerCase()}: ${value}${tag}`);
+    // Show the weekday alongside a date value (e.g. "Monday, 2026-07-27")
+    // so a mis-guessed relative date ("Monday" meant as this week vs next)
+    // is obvious at a glance in the confirmation, not something the user
+    // has to mentally calculate before replying "yes".
+    const displayValue = field.kind === "date" ? `${new Date(`${value}T00:00:00Z`).toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" })}, ${value}` : value;
+    summaryParts.push(`${cleanLabel(field.label).toLowerCase()}: ${displayValue}${tag}`);
   }
 
   let summary: string;

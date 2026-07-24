@@ -54,9 +54,11 @@ function isCancelMessage(text: string): boolean {
 const DEFAULT_HOSTED_MODEL_ID = HOSTED_MODELS[0].id;
 
 function todayContextMessage() {
+  const today = new Date();
+  const weekday = today.toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
   return {
     role: "system",
-    content: `Today's date is ${new Date().toISOString().slice(0, 10)} (YYYY-MM-DD). If the user gives a relative date (e.g. "today", "tomorrow", "next Wednesday", "in 3 days"), convert it to an absolute YYYY-MM-DD date yourself before returning it.`,
+    content: `Today is ${weekday}, ${today.toISOString().slice(0, 10)} (YYYY-MM-DD). If the user gives a relative date (e.g. "today", "tomorrow", "next Wednesday", "in 3 days"), convert it to an absolute YYYY-MM-DD date yourself before returning it. A bare weekday name with no qualifier (e.g. just "Monday", not "next Monday" or "this Monday") means the closest upcoming occurrence of that weekday -- today itself if today already is that weekday, otherwise the next one ahead, never one in the past.`,
   };
 }
 
@@ -141,6 +143,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ com
 
         if (message.type === "text" && message.text?.body) {
           botMessages.push({ waId: message.from, messageId: message.id, text: message.text.body, groupId: message.group_id ?? null });
+        }
+        // A 👍 reaction counts as a lightweight "yes" -- lets someone
+        // confirm a pending create/update without typing a word. Doesn't
+        // check *which* message was reacted to (message.reaction.message_id
+        // isn't cross-referenced); if there's no active pending confirmation
+        // for that person, handleMessage just treats the synthetic "yes" as
+        // an ordinary one-word question, which is harmless. Matches the
+        // base thumbs-up regardless of skin-tone modifier.
+        if (message.type === "reaction" && message.reaction?.emoji?.startsWith("\u{1F44D}")) {
+          botMessages.push({ waId: message.from, messageId: message.id, text: "yes", groupId: message.group_id ?? null });
         }
       }
     }
