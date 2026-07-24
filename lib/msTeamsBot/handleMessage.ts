@@ -9,7 +9,7 @@
 import { getBotToken, sendReply, type BotCredentials } from "@/lib/msTeamsBot/connector";
 import { resolveSourceTypes, retrieveGroundingContext, buildSystemPrompt } from "@/lib/ai/retrieval";
 import { callHostedModel, callHostedModelWithTools, callSelfHostedModel, type ToolCall } from "@/lib/ai/modelCall";
-import { buildActionTools, buildMissingFieldsTool, translateFieldAnswers, TOOL_USE_GUARDRAILS } from "@/lib/ai/actionTools";
+import { buildActionTools, buildMissingFieldsTool, translateFieldAnswers, TOOL_USE_GUARDRAILS, isConversationalOnly } from "@/lib/ai/actionTools";
 import { loadFieldConfig, type ActionType, type FieldDef } from "@/lib/ai/actionFields";
 import { advanceAction } from "@/lib/ai/actionAdvance";
 import {
@@ -229,8 +229,14 @@ export async function handleMessage(admin: any, companyId: string, botCreds: Bot
   // Tool-calling ("act on the app") is hosted-only -- self-hosted Ollama
   // models vary too much in tool-calling reliability to build real data
   // mutations on top of, so self-hosted just skips straight to plain RAG
-  // below (same as before this feature existed).
-  if (provider === "hosted") {
+  // below (same as before this feature existed). Also skipped for a
+  // greeting/filler-only message (see isConversationalOnly) regardless of
+  // provider -- TOOL_USE_GUARDRAILS already tells the model not to treat a
+  // bare "hi" as license to call a tool, but it doesn't reliably honor that
+  // once conversation history contains reconstructable field values (see
+  // lib/ai/actionTools.ts's header comment), so this is a hard guarantee
+  // rather than another prompt-only attempt.
+  if (provider === "hosted" && !isConversationalOnly(msg.question)) {
     let toolResult;
     try {
       // A separate system message, appended only for this call -- the
@@ -570,6 +576,16 @@ async function continueCollecting(
   pendingFieldKeys: string[]
 ) {
   const reply = (text: string) => sendReply(msg.serviceUrl, msg.conversationId, msg.activityId, botToken, attribute(text, msg));
+
+  // Same hard guarantee as handleMessage's tool-calling gate -- a generic
+  // free-text field (e.g. Notes) gives an extraction model just enough
+  // rope to misread pure chit-chat ("i wanna say hi") as an intended
+  // answer. Skip the extraction call entirely rather than trust it to
+  // decline on its own; nothing changed, so expires_at isn't touched.
+  if (isConversationalOnly(msg.question)) {
+    await reply("Just checking in? I'm still waiting on a few more details before I create this -- let me know when you're ready.");
+    return;
+  }
 
   if (actionType === "create_file" || actionType === "update_file") {
     let extracted: Record<string, unknown> = {};

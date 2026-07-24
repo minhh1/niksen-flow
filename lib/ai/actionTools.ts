@@ -32,6 +32,49 @@
 export const TOOL_USE_GUARDRAILS =
   "You also have tools for creating/updating tasks and projects. Only call one of these when the user's CURRENT message is clearly and explicitly asking you to create or change something specific, using real details they actually provided. Base that decision only on the current message -- earlier turns in the conversation (including a task that was previously discussed, started, confirmed, or left unfinished) are context for filling in the details of a request the current message is actually making, never a justification by themselves for calling a tool now. A current message that's just a greeting, acknowledgement, thanks, or other small talk (e.g. \"hi\", \"thanks\", \"ok\", \"lol\") must never trigger a tool call on its own, even if the conversation earlier discussed creating or updating something -- respond normally in plain text instead. Never invent a placeholder name, project, or value to fill a required field. If a request is action-like but missing a required detail (e.g. no project name for a new task), ask a clarifying question in plain text instead of guessing or calling a tool with incomplete or invented information. If the user refers back to something already in the conversation instead of restating it -- e.g. \"create the above task\", \"create above task\", \"make this a task\", \"add that as a project\" -- use the actual text of the message(s) they're pointing to (usually the immediately preceding message) to fill in the corresponding field (e.g. the referenced message's full text becomes the task/project name) instead of asking for it again or leaving it blank. Copy that referenced text verbatim -- never summarize, shorten, or paraphrase it into your own wording.";
 
+// A third occurrence of the same failure (2026-07-24, live): a cancelled
+// create_task got fully reconstructed from conversation history -- project,
+// assignee, due date/time, all of it -- in response to a plain "Hi", and
+// then "i wanna say hi" (still just chit-chat) got misread as answering a
+// still-outstanding "Notes" field with the value "hi", re-confirming the
+// same task a second time. TOOL_USE_GUARDRAILS already says a bare greeting
+// must never trigger a tool call "on its own" -- the model doesn't reliably
+// honor that once conversation history contains reconstructable field
+// values, so this is no longer a prompt-only problem: isConversationalOnly
+// is a deterministic pre-filter the bot route calls *before* ever offering
+// tools or running field-extraction for a reply, so a greeting/filler
+// message can't spawn or continue an action no matter what the model would
+// have done with it. Intentionally conservative -- only short, clearly
+// content-free messages match, so a real (if terse) answer never gets
+// silently swallowed.
+const GREETING_WORDS = new Set([
+  "hi", "hii", "hiya", "hey", "heya", "hello", "yo", "sup", "hola", "morning", "gday", "howdy",
+]);
+const CONVERSATIONAL_PHRASES = [
+  "how are you", "how's it going", "hows it going", "you there", "are you there", "still there",
+  "just saying hi", "just say hi", "wanna say hi", "want to say hi", "just wanted to say hi",
+  "good morning", "good afternoon", "good evening", "good night", "goodnight",
+  "thanks", "thank you", "no worries", "nothing much", "just checking in",
+];
+// Any of these appearing means the message is doing real work, whatever
+// else it also says -- never treat it as conversational-only.
+const ACTION_KEYWORDS = [
+  "task", "project", "create", "update", "change", "move", "due", "assign",
+  "matter", "file", "document", "delete", "remove", "rename", "status", "complete", "note",
+];
+
+export function isConversationalOnly(text: string): boolean {
+  const normalized = text.trim().toLowerCase().replace(/[^\w\s']/g, "");
+  if (!normalized) return false;
+  if (ACTION_KEYWORDS.some((k) => normalized.includes(k))) return false;
+
+  const words = normalized.split(/\s+/).filter(Boolean);
+  if (words.length === 1 && GREETING_WORDS.has(words[0])) return true;
+  if (words.length <= 3 && words.every((w) => GREETING_WORDS.has(w))) return true;
+  if (CONVERSATIONAL_PHRASES.some((p) => normalized.includes(p))) return true;
+  return false;
+}
+
 import type { FieldDef } from "./actionFields";
 
 // create_task/create_project gain one extra string property per *custom*

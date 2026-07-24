@@ -21,7 +21,7 @@ import { verifyWhatsAppSignature } from "@/lib/whatsappBot/verifySignature";
 import { sendWhatsAppReply, type WhatsAppDestination } from "@/lib/whatsappBot/sendMessage";
 import { resolveSourceTypes, retrieveGroundingContext, buildSystemPrompt } from "@/lib/ai/retrieval";
 import { callHostedModel, callHostedModelWithTools, callSelfHostedModel, type ToolCall } from "@/lib/ai/modelCall";
-import { buildActionTools, buildMissingFieldsTool, translateFieldAnswers, TOOL_USE_GUARDRAILS } from "@/lib/ai/actionTools";
+import { buildActionTools, buildMissingFieldsTool, translateFieldAnswers, TOOL_USE_GUARDRAILS, isConversationalOnly } from "@/lib/ai/actionTools";
 import { loadFieldConfig, type ActionType, type FieldDef } from "@/lib/ai/actionFields";
 import { advanceAction } from "@/lib/ai/actionAdvance";
 import {
@@ -324,7 +324,13 @@ async function handleMessage(admin: any, companyId: string, credentials: WhatsAp
     modelId = discovered;
   }
 
-  if (provider === "hosted") {
+  // Skipped for a greeting/filler-only message (see isConversationalOnly)
+  // regardless of provider -- TOOL_USE_GUARDRAILS already tells the model
+  // not to treat a bare "hi" as license to call a tool, but it doesn't
+  // reliably honor that once conversation history contains reconstructable
+  // field values (see lib/ai/actionTools.ts's header comment), so this is
+  // a hard guarantee rather than another prompt-only attempt.
+  if (provider === "hosted" && !isConversationalOnly(msg.text)) {
     let toolResult;
     try {
       const toolCallMessages = [modelMessages[0], { role: "system", content: TOOL_USE_GUARDRAILS }, todayContextMessage(), ...modelMessages.slice(1)];
@@ -577,6 +583,16 @@ async function continueCollecting(
   pendingFieldKeys: string[]
 ) {
   const reply = (text: string) => sendWhatsAppReply(credentials, destinationFor(msg), msg.messageId, attribute(text, msg));
+
+  // Same hard guarantee as handleMessage's tool-calling gate -- a generic
+  // free-text field (e.g. Notes) gives an extraction model just enough
+  // rope to misread pure chit-chat ("i wanna say hi") as an intended
+  // answer. Skip the extraction call entirely rather than trust it to
+  // decline on its own; nothing changed, so expires_at isn't touched.
+  if (isConversationalOnly(msg.text)) {
+    await reply("Just checking in? I'm still waiting on a few more details before I create this -- let me know when you're ready.");
+    return;
+  }
 
   if (actionType === "create_file" || actionType === "update_file") {
     let extracted: Record<string, unknown> = {};
