@@ -102,10 +102,37 @@ interface BotConnection {
   id: string;
   enabled: boolean;
   created_at: string;
-  bot_app_id: string;
-  bot_tenant_id: string;
+  bot_mode: "byo" | "shared";
+  teams_tenant_id: string | null;
+  bot_app_id: string | null;
+  bot_tenant_id: string | null;
   secret_expires_at: string | null;
 }
+
+// Last verified against Microsoft Q&A guidance on multitenant Azure Bot
+// configuration, 2026-07-24: multi-tenant *bot resource* creation is
+// deprecated, but a Single Tenant bot resource backed by a multitenant
+// *app registration* is the current supported way to serve many Microsoft
+// 365 tenants from one bot -- see app/api/teams/bot/shared/route.ts.
+const SHARED_BOT_HELP_STEPS = [
+  {
+    title: "Find your Microsoft 365 Tenant ID",
+    description:
+      "In the Microsoft Entra admin center, your organization's overview page shows \"Tenant ID\" directly. Any Microsoft 365 global admin can find this -- no app registration or client secret needed on your end.",
+    linkLabel: "entra.microsoft.com",
+    linkUrl: "https://entra.microsoft.com",
+  },
+  {
+    title: "Paste it in below and enable the bot",
+    description:
+      "Once saved, Diract's shared bot recognizes messages coming from your organization and routes them to your company -- nothing else to configure on the Azure side.",
+  },
+  {
+    title: "Add the shared Teams app to your organization",
+    description:
+      "Ask Diract for the shared Teams app package (one package works for every company on this shared bot, since it references the same fixed bot App ID). In the Teams Admin Center, go to Manage apps and Upload a custom app -- after that one-time upload, anyone in your organization can find and add it from Teams' \"Built for your org\" section.",
+  },
+];
 
 // Mirrors lib/ai/actionFields.ts's FieldDef -- what the Teams bot must ask
 // about before creating a task/project (required) and what to fall back to
@@ -145,6 +172,7 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
   const [botConnection, setBotConnection] = useState<BotConnection | null>(null);
   const [botLoading, setBotLoading] = useState(true);
   const [showBotForm, setShowBotForm] = useState(false);
+  const [botFormMode, setBotFormMode] = useState<"byo" | "shared">("byo");
   const [botAppId, setBotAppId] = useState("");
   const [botAppPassword, setBotAppPassword] = useState("");
   const [botTenantId, setBotTenantId] = useState("");
@@ -152,6 +180,8 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
   const [botSaving, setBotSaving] = useState(false);
   const [botError, setBotError] = useState<string | null>(null);
   const [botHelpOpen, setBotHelpOpen] = useState(false);
+  const [sharedTenantId, setSharedTenantId] = useState("");
+  const [sharedBotHelpOpen, setSharedBotHelpOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const [actionFieldsTab, setActionFieldsTab] = useState<"create_project" | "create_task">("create_project");
@@ -165,6 +195,7 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
   const consentResult = searchParams.get("msTeamsConsent");
   const consentMessage = searchParams.get("message");
   const messagingEndpointUrl = `${APP_URL}/api/teams/bot/${companyId}`;
+  const sharedMessagingEndpointUrl = `${APP_URL}/api/teams/bot/shared`;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -209,6 +240,29 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
     setBotAppPassword("");
     setBotTenantId("");
     setBotSecretExpiresAt("");
+    setShowBotForm(false);
+    loadBot();
+  };
+
+  const connectSharedBot = async () => {
+    setBotError(null);
+    if (!sharedTenantId.trim()) {
+      setBotError("Tenant ID is required");
+      return;
+    }
+    setBotSaving(true);
+    const res = await fetch("/api/teams/bot/credentials", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bot_mode: "shared", teams_tenant_id: sharedTenantId.trim() }),
+    });
+    const json = await res.json();
+    setBotSaving(false);
+    if (!res.ok) {
+      setBotError(json.error || "Failed to save");
+      return;
+    }
+    setSharedTenantId("");
     setShowBotForm(false);
     loadBot();
   };
@@ -518,7 +572,7 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
               </p>
             )}
 
-            {botConnection && (
+            {botConnection && botConnection.bot_mode === "byo" && (
               <div className="space-y-2 mb-2">
                 <div className="flex items-center gap-3 px-4 py-2.5 bg-slate-50 rounded-2xl">
                   <Bot size={13} className={botConnection.enabled ? "text-emerald-500 shrink-0" : "text-slate-400 shrink-0"} />
@@ -548,8 +602,46 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
               </div>
             )}
 
-            {(showBotForm || botConnection) && (
-              <div className="space-y-3 pt-3 border-t border-slate-100">
+            {botConnection && botConnection.bot_mode === "shared" && (
+              <div className="space-y-2 mb-2">
+                <div className="flex items-center gap-3 px-4 py-2.5 bg-slate-50 rounded-2xl">
+                  <Bot size={13} className={botConnection.enabled ? "text-emerald-500 shrink-0" : "text-slate-400 shrink-0"} />
+                  <p className="text-[12px] font-medium text-slate-700 flex-1">
+                    Using Diract&apos;s shared bot — tenant {botConnection.teams_tenant_id}
+                  </p>
+                  <button
+                    onClick={() => toggleBotEnabled(!botConnection.enabled)}
+                    className={`px-3 py-1 text-[10px] font-bold rounded-full transition-colors ${
+                      botConnection.enabled ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-500"
+                    }`}
+                  >
+                    {botConnection.enabled ? "Enabled" : "Disabled"}
+                  </button>
+                  <button onClick={disconnectBot} className="p-1 text-slate-300 hover:text-red-500 transition-colors">
+                    <Trash2 size={12} />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {showBotForm && !botConnection && (
+              <div className="flex gap-2 pt-3 border-t border-slate-100">
+                {(["byo", "shared"] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setBotFormMode(m)}
+                    className={`px-4 py-1.5 text-[11px] font-bold rounded-full transition-colors ${
+                      botFormMode === m ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-500"
+                    }`}
+                  >
+                    {m === "byo" ? "Bring your own Azure Bot" : "Use Diract's shared bot"}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {((showBotForm && botFormMode === "byo") || botConnection?.bot_mode === "byo") && (
+              <div className="space-y-3 pt-3">
                 <div className="px-4 py-3 bg-slate-50 rounded-2xl">
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1.5">
                     Messaging endpoint — paste into the Azure Bot resource&apos;s Configuration page
@@ -616,6 +708,44 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
                     </div>
                   </>
                 )}
+              </div>
+            )}
+
+            {showBotForm && !botConnection && botFormMode === "shared" && (
+              <div className="space-y-3 pt-3">
+                <div className="px-4 py-3 bg-slate-50 rounded-2xl">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wide mb-1.5">Shared messaging endpoint</p>
+                  <code className="text-[11px] text-slate-600">{sharedMessagingEndpointUrl}</code>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Already configured on Diract&apos;s side -- nothing to paste anywhere for this, shown for reference only.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSharedBotHelpOpen(true)}
+                  className="flex items-center gap-1.5 text-[11px] font-bold text-indigo-600 hover:underline"
+                >
+                  <HelpCircle size={12} /> How do I set this up?
+                </button>
+                <input
+                  value={sharedTenantId}
+                  onChange={(e) => setSharedTenantId(e.target.value)}
+                  placeholder="Your Microsoft 365 Tenant ID"
+                  className="w-full px-4 py-2 border border-slate-200 rounded-full text-[12px] outline-none focus:border-indigo-400"
+                />
+                {botError && <p className="text-[11px] text-red-500">{botError}</p>}
+                <div className="flex gap-2">
+                  <button
+                    onClick={connectSharedBot}
+                    disabled={botSaving}
+                    className="px-5 py-2 bg-indigo-600 text-white text-[12px] font-bold rounded-full hover:bg-indigo-700 disabled:opacity-40 transition-colors"
+                  >
+                    {botSaving ? "Saving..." : "Connect"}
+                  </button>
+                  <button onClick={() => setShowBotForm(false)} className="px-4 py-2 text-[12px] text-slate-400 hover:text-slate-700">
+                    Cancel
+                  </button>
+                </div>
               </div>
             )}
           </>
@@ -753,6 +883,13 @@ export default function AdminMsTeamsTab({ companyId }: Props) {
         title="Setting up the Teams bot"
         intro="This is a separate Azure resource from the sync app above -- a real Bot Framework bot registration. The last step needs your Microsoft 365 admin."
         steps={BOT_HELP_STEPS}
+      />
+      <CredentialsHelpDrawer
+        isOpen={sharedBotHelpOpen}
+        onClose={() => setSharedBotHelpOpen(false)}
+        title="Connecting to Diract's shared bot"
+        intro="No Azure Bot resource, app registration, or client secret needed on your end -- just your organization's Tenant ID and a one-time app upload."
+        steps={SHARED_BOT_HELP_STEPS}
       />
     </div>
   );

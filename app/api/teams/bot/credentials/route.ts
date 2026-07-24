@@ -14,7 +14,7 @@ export async function GET() {
 
   const { data, error } = await admin
     .from("company_teams_bot_credentials")
-    .select("id, enabled, created_at, secret_expires_at, credentials->bot_app_id, credentials->bot_tenant_id")
+    .select("id, enabled, created_at, secret_expires_at, bot_mode, teams_tenant_id, credentials->bot_app_id, credentials->bot_tenant_id")
     .eq("company_id", companyId)
     .maybeSingle();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -29,6 +29,40 @@ export async function POST(req: NextRequest) {
   if (!isAdmin) return NextResponse.json({ error: "Admin access required" }, { status: 403 });
 
   const body = await req.json().catch(() => null);
+  const botMode = body?.bot_mode === "shared" ? "shared" : "byo";
+
+  if (botMode === "shared") {
+    const teamsTenantId = body?.teams_tenant_id;
+    if (!teamsTenantId) return NextResponse.json({ error: "teams_tenant_id is required" }, { status: 400 });
+
+    const { data, error } = await admin
+      .from("company_teams_bot_credentials")
+      .upsert(
+        {
+          company_id: companyId,
+          bot_mode: "shared",
+          teams_tenant_id: teamsTenantId,
+          credentials: null,
+          secret_expires_at: null,
+          created_by: user.id,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "company_id" }
+      )
+      .select("id, created_at")
+      .single();
+    if (error) {
+      // Postgres unique_violation -- another company already registered
+      // this same Microsoft 365 tenant on the shared bot.
+      if (error.code === "23505") {
+        return NextResponse.json({ error: "This Microsoft Teams tenant is already connected to a different Diract company." }, { status: 409 });
+      }
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ connection: data });
+  }
+
   const { bot_app_id, bot_app_password, bot_tenant_id, secret_expires_at } = body ?? {};
   if (!bot_app_id || !bot_app_password || !bot_tenant_id) {
     return NextResponse.json({ error: "bot_app_id, bot_app_password, and bot_tenant_id are all required" }, { status: 400 });
@@ -39,7 +73,9 @@ export async function POST(req: NextRequest) {
     .upsert(
       {
         company_id: companyId,
+        bot_mode: "byo",
         credentials: { bot_app_id, bot_app_password, bot_tenant_id },
+        teams_tenant_id: null,
         secret_expires_at: secret_expires_at || null,
         created_by: user.id,
         updated_at: new Date().toISOString(),
