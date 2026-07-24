@@ -7,10 +7,13 @@
 // column count (12) match CanvasEditor's own <GridLayout cols={12} rowHeight={40}>
 // so switching between the interactive canvas and this static view doesn't
 // visibly reflow.
+// Below 768px (see StaticWidgetGrid.module.css) every widget collapses to
+// one full-width column in y-order instead of keeping its designed x/y/w/h
+// -- a widget's `h` was tuned for its wide layout, so a real screen-width
+// media query (not just a narrower 12-col grid) is what keeps e.g. a grid
+// widget's table or a multi-field form from being squeezed unreadably thin.
 import type { DashboardWidget } from "@/lib/dashboardWidgets/types";
-
-const ROW_HEIGHT = 40;
-const GAP = 12;
+import styles from "./StaticWidgetGrid.module.css";
 
 interface Props {
   widgets: DashboardWidget[];
@@ -23,22 +26,17 @@ export default function StaticWidgetGrid({ widgets, children }: Props) {
   }
 
   return (
-    <div
-      style={{
-        display: 'grid',
-        gridTemplateColumns: 'repeat(12, 1fr)',
-        gridAutoRows: `${ROW_HEIGHT}px`,
-        gap: GAP,
-      }}
-    >
+    <div className={styles.grid}>
       {widgets.map(w => (
         <div
           key={w.id}
+          className={styles.item}
           style={{
-            gridColumn: `${w.layout.x + 1} / span ${w.layout.w}`,
-            gridRow: `${w.layout.y + 1} / span ${w.layout.h}`,
-            minWidth: 0,
-          }}
+            '--col-start': w.layout.x + 1,
+            '--col-span': w.layout.w,
+            '--row-start': w.layout.y + 1,
+            '--row-span': w.layout.h,
+          } as React.CSSProperties}
         >
           {children(w)}
         </div>
